@@ -23,7 +23,7 @@
         Platform:               Window  Canvas  Backend     Required Compiler Flags
         Windows                 ~       ~       DirectX12
         MacOS                   ~       ~       Metal       -framework Cocoa
-        Linux                   ~       ~       Vulkan
+        Linux                   ~       ~       Vulkan      -lX11
         iOS                     ~       ~       Metal
         Android                 ~       ~       Vulkan
         HTML5                   ~       ~       WebGPU
@@ -63,6 +63,7 @@ bool __post_init_ran = false;
 #ifdef CANVAS_IMPL
 
 int __canvas_platform();
+int __canvas_update();
 
 int canvas_startup()
 {
@@ -73,6 +74,11 @@ int canvas_startup()
 
     __canvas_platform();
     return 0;
+}
+
+int canvas_update()
+{
+    return __canvas_update();
 }
 
 //
@@ -123,8 +129,6 @@ objc_id __canvas_window(int x, int y, int width, int height, const char *title)
     objc_msgSend(window, sel_registerName("setMovableByWindowBackground:"), 1);
     objc_msgSend(window, sel_registerName("makeKeyAndOrderFront:"), 1);
 
-    __post_init();
-
     return window;
 }
 
@@ -139,6 +143,13 @@ int __canvas_platform()
     return 0;
 }
 
+int __canvas_update()
+{
+    __post_init();
+
+    return 1;
+}
+
 #endif // MacOS
 
 //
@@ -151,6 +162,66 @@ int __canvas_platform()
 //
 //
 #if defined(__linux__)
+
+typedef unsigned long __x11_id;
+typedef struct __x11_display __x11_display;
+typedef __x11_id __x11_window;
+
+typedef struct
+{
+    int type;
+    unsigned long serial;
+    int send_event;
+    __x11_display *display;
+    __x11_window window;
+} __x11_event;
+
+extern __x11_display *XOpenDisplay(const char *);
+extern __x11_window XCreateSimpleWindow(__x11_display *, __x11_window, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
+extern __x11_window XDefaultRootWindow(__x11_display *);
+extern unsigned long XBlackPixel(__x11_display *, int);
+extern unsigned long XWhitePixel(__x11_display *, int);
+extern int XFlush(__x11_display *);
+extern int XNextEvent(__x11_display *, __x11_event *);
+extern int XMapWindow(__x11_display *, __x11_window);
+
+__x11_display *__canvas_display = 0;
+
+__x11_window __canvas_window(int x, int y, int width, int height, const char *title)
+{
+    canvas_startup();
+
+    __x11_window window = 0;
+
+    window = XCreateSimpleWindow(
+        __canvas_display,
+        XDefaultRootWindow(__canvas_display),
+        x, y, width, height, 0,
+        XBlackPixel(__canvas_display, 0),
+        XWhitePixel(__canvas_display, 0));
+
+    XMapWindow(__canvas_display, window);
+    XFlush(__canvas_display);
+
+    return window;
+}
+
+int __canvas_platform()
+{
+    __canvas_display = XOpenDisplay(0);
+
+    return 0;
+}
+
+int __canvas_update()
+{
+    __x11_event event;
+    while (XNextEvent(__canvas_display, &event) == 0)
+    {
+    }
+
+    return 1;
+}
 #endif
 
 #endif // CANVAS_IMPL
