@@ -21,12 +21,15 @@
         ~ not implemented, x - implemented, \ partially implemented (or wip)
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
-        Windows                 ~       ~       DirectX12
+        Windows                 ~       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi
         MacOS                   ~       ~       Metal       -framework Cocoa
         Linux                   ~       ~       Vulkan      -lX11
         iOS                     ~       ~       Metal
         Android                 ~       ~       Vulkan
         HTML5                   ~       ~       WebGPU
+
+        * note for windows:
+        x86_64-w64-mingw32-gcc for cross compiling to windows
 
         -  Building  -
 
@@ -156,6 +159,181 @@ int __canvas_update()
 //
 //
 #if defined(_WIN32) || defined(_WIN64)
+
+#define INITGUID
+#include <windows.h>
+#include <dwmapi.h>
+
+#pragma comment(lib, "dwmapi.lib")
+
+HINSTANCE __win_instance = NULL;
+
+typedef struct
+{
+    HWND hwnd;
+    // IDXGISwapChain3 *swapChain;
+    // ID3D12Resource *backBuffers[2];
+    // D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
+    float clearColor[4]; // Per-window clear color
+    BOOL needsResize;
+    int windowIndex;
+} WindowContext;
+
+typedef struct
+{
+    BOOL titlebarless;
+    WindowContext *ctx;
+} WindowData;
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    WindowData *pData = (WindowData *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        CREATESTRUCT *pCreate = (CREATESTRUCT *)lParam;
+        WindowData *pNewData = (WindowData *)pCreate->lpCreateParams;
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pNewData);
+
+        if (pNewData && pNewData->titlebarless)
+        {
+            enum DWMNCRENDERINGPOLICY policy = DWMNCRP_ENABLED;
+            DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+
+            DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+        }
+        return 0;
+    }
+
+    case WM_NCCALCSIZE:
+    {
+        if (wParam == TRUE && pData && pData->titlebarless)
+        {
+            NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
+
+            params->rgrc[0].top += 1;
+            params->rgrc[0].right -= 8;
+            params->rgrc[0].bottom -= 8;
+            params->rgrc[0].left += 8;
+
+            return 0;
+        }
+        break;
+    }
+
+    case WM_NCHITTEST:
+    {
+        if (pData && pData->titlebarless)
+        {
+            LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
+
+            if (hit == HTCAPTION)
+                return HTCLIENT;
+
+            if (hit == HTCLIENT)
+            {
+                POINT pt = {LOWORD(lParam), HIWORD(lParam)};
+                ScreenToClient(hwnd, &pt);
+
+                RECT rcWindow;
+                GetClientRect(hwnd, &rcWindow);
+
+                if (pt.y < 30 && pt.y >= 0)
+                {
+                    if (pt.x < rcWindow.right - 140)
+                    {
+                        return HTCAPTION;
+                    }
+                }
+            }
+
+            return hit;
+        }
+        break;
+    }
+
+    case WM_SIZE:
+    {
+        if (pData && pData->ctx && wParam != SIZE_MINIMIZED)
+        {
+            pData->ctx->needsResize = TRUE;
+        }
+        return 0;
+    }
+
+    case WM_DESTROY:
+        if (pData)
+            free(pData);
+
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+HWND __canvas_window(int x, int y, int width, int height, const char *title)
+{
+    bool titlebarless = true;
+
+    canvas_startup();
+
+    WNDCLASSA wc = {0};
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = __win_instance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = "CanvasWindowClass";
+
+    RegisterClassA(&wc);
+
+    WindowContext *ctx = (WindowContext *)malloc(sizeof(WindowContext));
+
+    WindowData *pData = (WindowData *)malloc(sizeof(WindowData));
+    pData->titlebarless = titlebarless;
+    pData->ctx = ctx;
+
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+
+    if (titlebarless)
+        style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
+
+    HWND window = CreateWindowA(
+        "CanvasWindowClass",
+        title,
+        style,
+        x, y, width, height,
+        NULL, NULL, __win_instance, pData);
+
+    if (window && titlebarless)
+        SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+
+    return window;
+}
+
+int __canvas_platform()
+{
+    __win_instance = GetModuleHandle(NULL);
+
+    return 0;
+}
+
+int __canvas_update()
+{
+    MSG msg;
+    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    return 1;
+}
+
 #endif
 
 //
