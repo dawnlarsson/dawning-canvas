@@ -54,6 +54,10 @@
 typedef int _Bool;
 #endif
 
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 // call first to init the native platform dependencies
 int canvas_startup();
 
@@ -90,58 +94,143 @@ int canvas_update()
 #if defined(__APPLE__)
 
 #include <TargetConditionals.h>
+#include <objc/objc.h>
+#include <objc/message.h>
 
 typedef void *objc_id;
 typedef void *objc_sel;
+
+static objc_id __mac_pool = NULL;
+static objc_id __mac_app = NULL;
+static objc_id __mac_device = NULL;
+
+#define EVENT_MASK_ANY ((unsigned long long)-1)
+
 typedef struct
 {
     double x, y, w, h;
 } CGRect;
-objc_id objc_msgSend(objc_id, objc_sel, ...);
-objc_id objc_getClass(const char *);
-objc_sel sel_registerName(const char *);
-typedef objc_id (*InitRect)(objc_id, objc_sel, CGRect, long, long, int);
 
-objc_id __mac_pool;
-objc_id __mac_app;
+typedef objc_id (*MSG_id_id_sel_noargs)(objc_id, objc_sel);
+typedef objc_id (*MSG_id_id_sel_charp)(objc_id, objc_sel, const char *);
+typedef objc_id (*MSG_id_id_sel_rect_ul_long_int)(objc_id, objc_sel, CGRect, unsigned long, long, int);
+typedef objc_id (*MSG_id_id_sel_id_sel_bool)(objc_id, objc_sel, objc_id, int);
+typedef objc_id (*MSG_id_id_sel_rect_ulong_long_int)(objc_id, objc_sel, CGRect, unsigned long long, long, int);
+typedef objc_id (*MSG_id_id_sel_noargs_return_id)(objc_id, objc_sel);
+typedef void (*MSG_void_id_sel_id)(objc_id, objc_sel, objc_id);
+typedef void (*MSG_void_id_sel_long)(objc_id, objc_sel, long);
+typedef void (*MSG_void_id_sel_bool)(objc_id, objc_sel, int);
+
+typedef objc_id (*MSG_nextEventFn)(objc_id, objc_sel,
+                                   unsigned long long, /* mask (NSEventMask) */
+                                   objc_id,            /* untilDate (NSDate*) */
+                                   objc_id,            /* inMode (NSString*) */
+                                   signed char);       /* dequeue (BOOL) */
+
+static inline objc_sel sel_c(const char *s) { return sel_registerName(s); }
+static inline objc_id cls(const char *s) { return objc_getClass(s); }
 
 void __post_init()
 {
     if (__post_init_ran)
         return;
+    __post_init_ran = 1;
 
-    __post_init_ran = true;
+    objc_id poolClass = cls("NSAutoreleasePool");
+    if (!poolClass)
+        return;
 
-    objc_msgSend(__mac_app, sel_registerName("run"));
-    objc_msgSend(__mac_pool, sel_registerName("drain"));
+    MSG_id_id_sel_noargs poolAlloc = (MSG_id_id_sel_noargs)objc_msgSend;
+    objc_id alloced = poolAlloc(poolClass, sel_c("alloc"));
+
+    MSG_id_id_sel_noargs poolInit = (MSG_id_id_sel_noargs)objc_msgSend;
+    __mac_pool = poolInit(alloced, sel_c("init"));
 }
 
 objc_id __canvas_window(int x, int y, int width, int height, const char *title)
 {
+    __post_init();
     canvas_startup();
 
-    objc_id window = ((InitRect)objc_msgSend)(
-        objc_msgSend(objc_getClass("NSWindow"), sel_registerName("alloc")),
-        sel_registerName("initWithContentRect:styleMask:backing:defer:"),
-        (CGRect){x, y, width, height}, 15, 2, 0);
+    unsigned long style =
+        (1UL << 0)   /* NSWindowStyleMaskTitled */
+        | (1UL << 1) /* NSWindowStyleMaskClosable */
+        | (1UL << 2) /* NSWindowStyleMaskMiniaturizable */
+        | (1UL << 3) /* NSWindowStyleMaskResizable */
+        ;
 
-    // Enable fullscreen support
-    objc_msgSend(window, sel_registerName("setCollectionBehavior:"), 128);
+    objc_id nsWindowClass = cls("NSWindow");
 
-    objc_msgSend(window, sel_registerName("setTitlebarAppearsTransparent:"), 1);
-    objc_msgSend(window, sel_registerName("setMovableByWindowBackground:"), 1);
-    objc_msgSend(window, sel_registerName("makeKeyAndOrderFront:"), 1);
+    if (!nsWindowClass)
+        return NULL;
+
+    MSG_id_id_sel_noargs alloc_fn = (MSG_id_id_sel_noargs)objc_msgSend;
+    objc_id windowAlloc = alloc_fn(nsWindowClass, sel_c("alloc"));
+
+    MSG_id_id_sel_rect_ul_long_int initWithRect = (MSG_id_id_sel_rect_ul_long_int)objc_msgSend;
+    CGRect rect = {(double)x, (double)y, (double)width, (double)height};
+    objc_id window = initWithRect(windowAlloc,
+                                  sel_c("initWithContentRect:styleMask:backing:defer:"),
+                                  rect,
+                                  (unsigned long)style,
+                                  (long)2, /* NSBackingStoreBuffered */
+                                  (int)0 /* defer = NO */);
+
+    if (!window)
+    {
+        return NULL;
+    }
+
+    MSG_void_id_sel_long setCollectionBehavior = (MSG_void_id_sel_long)objc_msgSend;
+    setCollectionBehavior(window, sel_c("setCollectionBehavior:"), (long)128);
+
+    MSG_void_id_sel_bool setBool = (MSG_void_id_sel_bool)objc_msgSend;
+    setBool(window, sel_c("setTitleVisibility:"), 1); /* NSWindowTitleHidden */
+    setBool(window, sel_c("setTitlebarAppearsTransparent:"), 1);
+    setBool(window, sel_c("setMovableByWindowBackground:"), 1);
+
+    MSG_void_id_sel_id makeKey = (MSG_void_id_sel_id)objc_msgSend;
+    makeKey(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
+
+    if (title)
+    {
+        objc_id nsStringClass = cls("NSString");
+        MSG_id_id_sel_charp stringWithUTF8 = (MSG_id_id_sel_charp)objc_msgSend;
+        objc_id nsTitle = stringWithUTF8(nsStringClass, sel_c("stringWithUTF8String:"), title);
+
+        if (nsTitle)
+            makeKey(window, sel_c("setTitle:"), nsTitle);
+    }
 
     return window;
 }
 
 int __canvas_platform()
 {
-    __mac_pool = objc_msgSend(objc_msgSend(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")), sel_registerName("init"));
-    __mac_app = objc_msgSend(objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
-    objc_msgSend(__mac_app, sel_registerName("setActivationPolicy:"), 0);
+    __post_init();
 
-    objc_msgSend(__mac_app, sel_registerName("activateIgnoringOtherApps:"), 1);
+    objc_id appClass = cls("NSApplication");
+    if (!appClass)
+        return -1;
+
+    MSG_id_id_sel_noargs sharedApp = (MSG_id_id_sel_noargs)objc_msgSend;
+    __mac_app = sharedApp(appClass, sel_c("sharedApplication"));
+
+    if (!__mac_app)
+        return -1;
+
+    MSG_void_id_sel_long setActivationPolicy = (MSG_void_id_sel_long)objc_msgSend;
+    setActivationPolicy(__mac_app, sel_c("setActivationPolicy:"), (long)0);
+
+    MSG_void_id_sel_bool activateIgnoring = (MSG_void_id_sel_bool)objc_msgSend;
+    activateIgnoring(__mac_app, sel_c("activateIgnoringOtherApps:"), 1);
+
+    objc_id mtlDeviceClass = cls("MTLDevice");
+    if (!mtlDeviceClass)
+        return -1;
+
+    MSG_id_id_sel_noargs getSys = (MSG_id_id_sel_noargs)objc_msgSend;
+    __mac_device = getSys(mtlDeviceClass, sel_c("systemDefaultDevice"));
 
     return 0;
 }
@@ -150,10 +239,66 @@ int __canvas_update()
 {
     __post_init();
 
+    objc_id poolClass = cls("NSAutoreleasePool");
+    objc_id framePool = NULL;
+    if (poolClass)
+    {
+        MSG_id_id_sel_noargs poolAlloc = (MSG_id_id_sel_noargs)objc_msgSend;
+        objc_id tmp = poolAlloc(poolClass, sel_c("alloc"));
+        MSG_id_id_sel_noargs poolInit = (MSG_id_id_sel_noargs)objc_msgSend;
+        framePool = poolInit(tmp, sel_c("init"));
+    }
+
+    objc_id ns_mode = NULL;
+    objc_id distantPast = NULL;
+
+    objc_id nsStringClass = cls("NSString");
+    if (nsStringClass)
+    {
+        MSG_id_id_sel_charp stringWithUTF8 = (MSG_id_id_sel_charp)objc_msgSend;
+        ns_mode = stringWithUTF8(nsStringClass, sel_c("stringWithUTF8String:"), "kCFRunLoopDefaultMode");
+    }
+
+    objc_id nsDateClass = cls("NSDate");
+    if (nsDateClass)
+    {
+        MSG_id_id_sel_noargs getDistant = (MSG_id_id_sel_noargs)objc_msgSend;
+        distantPast = getDistant(nsDateClass, sel_c("distantPast"));
+    }
+
+    MSG_nextEventFn nextEvent = (MSG_nextEventFn)objc_msgSend;
+
+    for (;;)
+    {
+        objc_id event = nextEvent(
+            __mac_app,
+            sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+            EVENT_MASK_ANY,
+            distantPast,
+            ns_mode,
+            (signed char)1);
+
+        if (!event)
+            break;
+
+        MSG_void_id_sel_id sendEvent = (MSG_void_id_sel_id)objc_msgSend;
+        sendEvent(__mac_app, sel_c("sendEvent:"), event);
+    }
+
+    typedef void (*MSG_void_id_sel_noargs)(objc_id, objc_sel);
+    MSG_void_id_sel_noargs updateWindows = (MSG_void_id_sel_noargs)objc_msgSend;
+    updateWindows(__mac_app, sel_c("updateWindows"));
+
+    if (framePool)
+    {
+        MSG_id_id_sel_noargs drain = (MSG_id_id_sel_noargs)objc_msgSend;
+        drain(framePool, sel_c("drain"));
+    }
+
     return 1;
 }
 
-#endif // MacOS
+#endif /* __APPLE__ */
 
 //
 //
