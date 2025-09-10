@@ -64,7 +64,8 @@ int canvas_startup();
 int canvas_window(int width, int height, const char *title);
 int canvas_new(int width, int height, const char *title);
 
-bool __canvas_startup_ran = false;
+bool __canvas_init_platform = false;
+bool __canvas_init_gpu = false;
 bool __post_init_ran = false;
 
 #ifdef CANVAS_IMPL
@@ -74,10 +75,10 @@ int __canvas_update();
 
 int canvas_startup()
 {
-    if (__canvas_startup_ran)
+    if (__canvas_init_platform)
         return 0;
 
-    __canvas_startup_ran = true;
+    __canvas_init_platform = true;
 
     __canvas_platform();
     return 0;
@@ -225,12 +226,58 @@ int __canvas_platform()
     MSG_void_id_sel_bool activateIgnoring = (MSG_void_id_sel_bool)objc_msgSend;
     activateIgnoring(__mac_app, sel_c("activateIgnoringOtherApps:"), 1);
 
+    return 0;
+}
+
+int __canvas_gpu_init()
+{
+    if (__canvas_init_gpu)
+        return 0;
+
+    __canvas_init_gpu = true;
+
     objc_id mtlDeviceClass = cls("MTLDevice");
     if (!mtlDeviceClass)
         return -1;
 
     MSG_id_id_sel_noargs getSys = (MSG_id_id_sel_noargs)objc_msgSend;
     __mac_device = getSys(mtlDeviceClass, sel_c("systemDefaultDevice"));
+
+    if (!__mac_device)
+        return -1;
+
+    return 0;
+}
+
+int __canvas_gpu_new_window(objc_id window)
+{
+    if (!window || !__mac_device)
+        return -1;
+
+    objc_id nsViewClass = cls("NSView");
+    if (!nsViewClass)
+        return -1;
+
+    MSG_id_id_sel_noargs alloc_fn = (MSG_id_id_sel_noargs)objc_msgSend;
+    objc_id viewAlloc = alloc_fn(nsViewClass, sel_c("alloc"));
+
+    MSG_id_id_sel_rect_ulong_long_int initWithFrame = (MSG_id_id_sel_rect_ulong_long_int)objc_msgSend;
+    CGRect rect = {0, 0, 800, 600};
+    objc_id view = initWithFrame(viewAlloc,
+                                 sel_c("initWithFrame:"),
+                                 rect,
+                                 (unsigned long long)0,
+                                 (long)0,
+                                 (int)0);
+
+    if (!view)
+        return -1;
+
+    MSG_void_id_sel_id setDevice = (MSG_void_id_sel_id)objc_msgSend;
+    setDevice(view, sel_c("setDevice:"), __mac_device);
+
+    MSG_void_id_sel_id setContentView = (MSG_void_id_sel_id)objc_msgSend;
+    setContentView(window, sel_c("setContentView:"), view);
 
     return 0;
 }
@@ -545,6 +592,15 @@ int __canvas_update()
 
     return 1;
 }
-#endif
+#endif // __linux__
+
+int canvas(int x, int y, int width, int height, const char *title)
+{
+    __canvas_gpu_init();
+
+    void *window = (void *)__canvas_window(x, y, width, height, title);
+
+    __canvas_gpu_new_window(window);
+}
 
 #endif // CANVAS_IMPL
