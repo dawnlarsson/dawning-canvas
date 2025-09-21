@@ -5,6 +5,7 @@ Goals:
 - Single file pure C
 - Zero: Build system, dependencies, complex setup or config
 - Multi windowed rendering
+- Extremely lightweight & low overhead
 
 > [!CAUTION]
 > This repo is early & experimental
