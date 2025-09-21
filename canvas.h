@@ -21,9 +21,9 @@
         ~ not implemented, x - implemented, \ partially implemented (or wip)
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
-        Windows                 ~       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi
-        MacOS                   ~       ~       Metal       -framework Cocoa
-        Linux                   ~       ~       Vulkan      -lX11
+        Windows                 \       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi
+        MacOS                   \       \       Metal       -framework Cocoa
+        Linux                   \       ~       Vulkan      -lX11
         iOS                     ~       ~       Metal
         Android                 ~       ~       Vulkan
         HTML5                   ~       ~       WebGPU
@@ -435,19 +435,10 @@ int canvas(int x, int y, int width, int height, const char *title)
 
 int canvas_color(int window, const float color[4])
 {
-#if defined(__APPLE__)
-    if (window < 0 || window >= _canvas_count)
-        return -1;
     _canvas[window].clear[0] = color[0];
     _canvas[window].clear[1] = color[1];
     _canvas[window].clear[2] = color[2];
     _canvas[window].clear[3] = color[3];
-    return 0;
-#else
-    (void)window;
-    (void)color;
-    return 0;
-#endif
 }
 
 #endif // CANVAS_IMPL
