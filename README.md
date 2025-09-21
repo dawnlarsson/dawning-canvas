@@ -1,5 +1,5 @@
 # Dawning Canvas API
-Cross platform rendering backend & windowing
+Cross platform rendering backend & windowing with reasonable defaults.
 
 Goals:
 - Single file pure C
