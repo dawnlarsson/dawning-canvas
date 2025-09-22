@@ -51,25 +51,15 @@
 
 #pragma once
 
-#define false 0
-#define true 1
+#define MAX_CANVAS 32
 
-#define bool _Bool
-#if _STDC_VERSION_ < 199901L && _GNUC_ < 3
-typedef int __Bool;
-#endif
-
-#ifndef NULL
-#define NULL ((void *)0)
-#endif
-
-// call first to init the native platform dependencies
-int canvas_startup();
+#include <stdbool.h>
 
 int canvas_window(int width, int height, const char *title);
 int canvas_new(int width, int height, const char *title);
-
-#ifdef CANVAS_IMPL
+int canvas_color(int window, const float color[4]);
+int canvas_startup();
+int canvas_update();
 
 bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
@@ -77,6 +67,37 @@ bool _post_init_ran = false;
 
 int _canvas_platform();
 int _canvas_update();
+
+typedef void *canvas_window_handle;
+
+typedef struct
+{
+    canvas_window_handle window;
+    float clear[4];
+
+} canvas_type;
+
+#ifndef CANVAS_HEADER_ONLY
+
+#if defined(__APPLE__)
+
+#include <TargetConditionals.h>
+#include <objc/objc.h>
+#include <objc/message.h>
+typedef void *objc_id;
+typedef void *objc_sel;
+static objc_id _mac_pool = NULL;
+static objc_id _mac_app = NULL;
+static objc_id _mac_device = NULL;
+static objc_id _metal_queue = NULL;
+
+#endif
+
+#if defined(_WIN32)
+
+#include <windows.h>
+
+#endif
 
 int canvas_startup()
 {
@@ -99,19 +120,6 @@ int canvas_update()
 //
 #if defined(__APPLE__)
 
-#include <TargetConditionals.h>
-#include <objc/objc.h>
-#include <objc/message.h>
-
-typedef void *objc_id;
-typedef void *objc_sel;
-
-static objc_id _mac_pool = NULL;
-static objc_id _mac_app = NULL;
-static objc_id _mac_device = NULL;
-static objc_id _metal_queue = NULL;
-
-#define MAX_CANVAS 32
 typedef struct
 {
     objc_id window;
@@ -152,6 +160,7 @@ typedef void (*MSG_void_id_bool)(objc_id, objc_sel, int);
 typedef void (*MSG_void_id_long)(objc_id, objc_sel, long);
 typedef void (*MSG_void_id_ulong)(objc_id, objc_sel, unsigned long);
 typedef void (*MSG_void_id_clear)(objc_id, objc_sel, _MTLClearColor);
+typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 
 static void _post_init()
 {
@@ -180,7 +189,7 @@ int _canvas_platform()
     return 0;
 }
 
-objc_id _canvas_window(int x, int y, int width, int height, const char *title)
+canvas_window_handle _canvas_window(int x, int y, int width, int height, const char *title)
 {
     _post_init();
     canvas_startup();
@@ -236,6 +245,22 @@ int _canvas_gpu_init()
     return _metal_queue ? 0 : -1;
 }
 
+static void _canvas_update_drawable_size(_mac_canvas *c)
+{
+    if (!c || !c->view || !c->layer)
+        return;
+    _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(c->view, sel_c("bounds"));
+    double w = b.w * c->scale;
+    double h = b.h * c->scale;
+
+    struct
+    {
+        double width;
+        double height;
+    } sz = {w, h};
+    ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(c->layer, sel_c("setDrawableSize:"), sz);
+}
+
 static int _canvas_gpu_new_window(objc_id window)
 {
     if (!window || !_mac_device || _canvas_count >= MAX_CANVAS)
@@ -258,6 +283,7 @@ static int _canvas_gpu_new_window(objc_id window)
     ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), _mac_device);
     ((MSG_void_id_long)objc_msgSend)(layer, sel_c("setPixelFormat:"), 80L /*BGRA8Unorm*/);
     ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setFramebufferOnly:"), 1);
+    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setAllowsNextDrawableTimeout:"), 1);
 
     double scale = 1.0;
     objc_id screen = m(window, sel_c("screen"));
@@ -288,11 +314,14 @@ static void _canvas_gpu_draw_all(void)
 
     for (int i = 0; i < _canvas_count; ++i)
     {
+        _canvas_update_drawable_size(&_canvas[i]);
+
         objc_id layer = _canvas[i].layer;
         if (!layer)
             continue;
 
         objc_id drawable = ((MSG_id_id)objc_msgSend)(layer, sel_c("nextDrawable"));
+
         if (!drawable)
             continue;
 
@@ -425,10 +454,10 @@ int _canvas_update()
 int canvas(int x, int y, int width, int height, const char *title)
 {
     _canvas_gpu_init();
-    void *window = (void *)_canvas_window(x, y, width, height, title);
+    canvas_window_handle window = _canvas_window(x, y, width, height, title);
     int id = -1;
 
-    id = _canvas_gpu_new_window((objc_id)window);
+    id = _canvas_gpu_new_window(window);
 
     return id;
 }
@@ -441,4 +470,4 @@ int canvas_color(int window, const float color[4])
     _canvas[window].clear[3] = color[3];
 }
 
-#endif // CANVAS_IMPL
+#endif // CANVAS_HEADER_ONLY

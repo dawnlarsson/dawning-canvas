@@ -36,7 +36,6 @@ Canvas is the full renderable surface.
 the platforms rendering backend is automaticly setup the first time a canvas is created, then persists untill the end of the program.
 
 ```c
-#define CANVAS_IMPL
 #include "canvas.h"
 
 int main()
