@@ -36,6 +36,9 @@
         example with zig on macos:
         zig cc example/simple.c -framework Cocoa -I. -s -O3 -Qn -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables -fomit-frame-pointer -fno-stack-protector -fno-stack-clash-protection
 
+        example with zig on windows:
+        zig cc example/simple.c -I. -s -O3 -Qn -mwindows -ldwmapi
+
         clang example/simple.c -framework Cocoa -I. -Oz -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables -fomit-frame-pointer -fno-stack-protector -Wl,-dead_strip && ./a.out
 
         -  Info  -
@@ -161,7 +164,7 @@ UINT g_rtvDescriptorSize = 0;
 
 typedef struct
 {
-    HWND hwnd;
+    HWND window;
     IDXGISwapChain3 *swapChain;
     ID3D12Resource *backBuffers[2];
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
@@ -180,21 +183,32 @@ HINSTANCE __win_instance = NULL;
 WindowContext _canvas[MAX_CANVAS];
 #endif
 
-int canvas_startup()
+#if defined(__linux__)
+
+typedef unsigned long _x11_id;
+typedef struct _x11_display _x11_display;
+typedef _x11_id _x11_window;
+
+typedef struct
 {
-    if (_canvas_init_platform)
-        return 0;
+    int type;
+    unsigned long serial;
+    int send_event;
+    _x11_display *display;
+    _x11_window window;
+} _x11_event;
 
-    _canvas_init_platform = true;
+extern _x11_display *XOpenDisplay(const char *);
+extern _x11_window XCreateSimpleWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
+extern _x11_window XDefaultRootWindow(_x11_display *);
+extern unsigned long XBlackPixel(_x11_display *, int);
+extern unsigned long XWhitePixel(_x11_display *, int);
+extern int XFlush(_x11_display *);
+extern int XNextEvent(_x11_display *, _x11_event *);
+extern int XMapWindow(_x11_display *, _x11_window);
 
-    _canvas_platform();
-    return 0;
-}
-
-int canvas_update()
-{
-    return _canvas_update();
-}
+_x11_display *_canvas_display = 0;
+#endif
 
 //
 //
@@ -228,10 +242,13 @@ int _canvas_platform()
     return 0;
 }
 
-canvas_window_handle _canvas_window(int x, int y, int width, int height, const char *title)
+int _canvas_window(int x, int y, int width, int height, const char *title)
 {
     _post_init();
     canvas_startup();
+
+    if (_canvas_count >= MAX_CANVAS)
+        return -1;
 
     unsigned long style =
         (1UL << 0) /*Titled*/ | (1UL << 1) /*Closable*/ |
@@ -267,7 +284,13 @@ canvas_window_handle _canvas_window(int x, int y, int width, int height, const c
     }
 
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
-    return window;
+
+    int idx = _canvas_count++;
+    _canvas[idx].hwnd = window;
+    _canvas[idx].needsResize = FALSE;
+    _canvas[idx].windowIndex = idx;
+
+    return idx;
 }
 
 int _canvas_gpu_init()
@@ -300,10 +323,12 @@ static void _canvas_update_drawable_size(_mac_canvas *c)
     ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(c->layer, sel_c("setDrawableSize:"), sz);
 }
 
-static int _canvas_gpu_new_window(objc_id window)
+static int _canvas_gpu_new_window(int window_id)
 {
-    if (!window || !_mac_device || _canvas_count >= MAX_CANVAS)
+    if (window_id < 0)
         return -1;
+
+    objc_id win = _canvas[window_id].window;
 
     MSG_id_id m = (MSG_id_id)objc_msgSend;
 
@@ -338,10 +363,6 @@ static int _canvas_gpu_new_window(objc_id window)
     _canvas[idx].view = view;
     _canvas[idx].layer = layer;
     _canvas[idx].scale = scale;
-    _canvas[idx].clear[0] = 0.0;
-    _canvas[idx].clear[1] = 0.0;
-    _canvas[idx].clear[2] = 0.0;
-    _canvas[idx].clear[3] = 1.0;
 
     return idx;
 }
@@ -429,33 +450,12 @@ int _canvas_update()
 //
 #if defined(__linux__)
 
-typedef unsigned long _x11_id;
-typedef struct _x11_display _x11_display;
-typedef _x11_id _x11_window;
-
-typedef struct
-{
-    int type;
-    unsigned long serial;
-    int send_event;
-    _x11_display *display;
-    _x11_window window;
-} _x11_event;
-
-extern _x11_display *XOpenDisplay(const char *);
-extern _x11_window XCreateSimpleWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
-extern _x11_window XDefaultRootWindow(_x11_display *);
-extern unsigned long XBlackPixel(_x11_display *, int);
-extern unsigned long XWhitePixel(_x11_display *, int);
-extern int XFlush(_x11_display *);
-extern int XNextEvent(_x11_display *, _x11_event *);
-extern int XMapWindow(_x11_display *, _x11_window);
-
-_x11_display *_canvas_display = 0;
-
-_x11_window _canvas_window(int x, int y, int width, int height, const char *title)
+int _canvas_window(int x, int y, int width, int height, const char *title)
 {
     canvas_startup();
+
+    if (_canvas_count >= MAX_CANVAS)
+        return -1;
 
     _x11_window window = 0;
 
@@ -469,7 +469,12 @@ _x11_window _canvas_window(int x, int y, int width, int height, const char *titl
     XMapWindow(_canvas_display, window);
     XFlush(_canvas_display);
 
-    return window;
+    int idx = _canvas_count++;
+    _canvas[idx].window = window;
+    _canvas[idx].needsResize = FALSE;
+    _canvas[idx].windowIndex = idx;
+
+    return idx;
 }
 
 int _canvas_platform()
@@ -488,6 +493,26 @@ int _canvas_update()
 
     return 1;
 }
+
+int _canvas_gpu_init()
+{
+    if (_canvas_init_gpu)
+        return 0;
+    _canvas_init_gpu = 1;
+    
+    // Select & init backend OpenGL / Vulkan
+
+    return 1;
+}
+
+int _canvas_gpu_new_window(int window_id)
+{
+    if(window_id < 0)
+        return -1;
+
+    return 0;
+}
+
 #endif // _linux_
 
 //
@@ -585,8 +610,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-canvas_window_handle _canvas_window(int x, int y, int width, int height, const char *title)
+int _canvas_window(int x, int y, int width, int height, const char *title)
 {
+    if (_canvas_count >= MAX_CANVAS)
+        return -1;
+
     bool titlebarless = true;
 
     canvas_startup();
@@ -622,17 +650,15 @@ canvas_window_handle _canvas_window(int x, int y, int width, int height, const c
     if (window && titlebarless)
         SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
 
-        
+    if (!window)
+        return -1;
+
     int idx = _canvas_count++;
-    _canvas[idx].hwnd = window;
+    _canvas[idx].window = window;
     _canvas[idx].needsResize = FALSE;
     _canvas[idx].windowIndex = idx;
-    _canvas[idx].clear[0] = 0.0f;
-    _canvas[idx].clear[1] = 0.0f;
-    _canvas[idx].clear[2] = 0.0f;
-    _canvas[idx].clear[3] = 1.0f;
 
-    return window;
+    return idx;
 }
 
 int _canvas_platform()
@@ -659,31 +685,56 @@ int _canvas_gpu_init()
     if (_canvas_init_gpu)
         return 0;
     _canvas_init_gpu = 1;
+
     // Initialize DirectX 12
-
-
 
     return 1;
 }
 
-int _canvas_gpu_new_window(HWND hwnd)
+int _canvas_gpu_new_window(int window_id)
 {
-    if (!hwnd || _canvas_count >= MAX_CANVAS)
+    if(window_id < 0)
         return -1;
+
+    return 0;
 }
 
 #endif
+
+int canvas_startup()
+{
+    if (_canvas_init_platform)
+        return 0;
+
+    _canvas_init_platform = true;
+
+    _canvas_platform();
+    return 0;
+}
+
+int canvas_update()
+{
+    return _canvas_update();
+}
 
 
 int canvas(int x, int y, int width, int height, const char *title)
 {
     _canvas_gpu_init();
-    canvas_window_handle window = _canvas_window(x, y, width, height, title);
-    int id = -1;
 
-    id = _canvas_gpu_new_window(window);
+    int window_id = _canvas_window(x, y, width, height, title);
 
-    return id;
+    if (!window_id)
+        return -1;
+
+    _canvas[window_id].clear[0] = 0.0f;
+    _canvas[window_id].clear[1] = 0.0f;
+    _canvas[window_id].clear[2] = 0.0f;
+    _canvas[window_id].clear[3] = 1.0f;
+    
+    _canvas_gpu_new_window(window_id);
+
+    return window_id;
 }
 
 int canvas_color(int window, const float color[4])
