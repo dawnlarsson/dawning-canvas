@@ -77,9 +77,11 @@ typedef struct
 {
     canvas_window_handle window;
     float clear[4];
-
+    bool resize;
+    int index;
 } canvas_type;
 
+canvas_type _canvas[MAX_CANVAS];
 static int _canvas_count = 0;
 
 #ifndef CANVAS_HEADER_ONLY
@@ -470,9 +472,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     XFlush(_canvas_display);
 
     int idx = _canvas_count++;
-    _canvas[idx].window = window;
-    _canvas[idx].needsResize = FALSE;
-    _canvas[idx].windowIndex = idx;
+    _canvas[idx].window = (canvas_window_handle)window;
+    _canvas[idx].resize = false;
+    _canvas[idx].index = idx;
 
     return idx;
 }
