@@ -77,6 +77,8 @@ typedef struct
 
 } canvas_type;
 
+static int _canvas_count = 0;
+
 #ifndef CANVAS_HEADER_ONLY
 
 #if defined(__APPLE__)
@@ -91,12 +93,91 @@ static objc_id _mac_app = NULL;
 static objc_id _mac_device = NULL;
 static objc_id _metal_queue = NULL;
 
+
+typedef struct
+{
+    objc_id window;
+    objc_id view;
+    objc_id layer;
+    double clear[4]; /* rgba */
+    double scale;
+} _mac_canvas;
+
+typedef struct
+{
+    double r, g, b, a;
+} _MTLClearColor;
+
+typedef struct
+{
+    double x, y, w, h;
+} _CGRect;
+
+static _mac_canvas _canvas[MAX_CANVAS];
+
+extern objc_id MTLCreateSystemDefaultDevice(void);
+
+static inline objc_sel sel_c(const char *s) { return sel_registerName(s); }
+static inline objc_id cls(const char *s) { return objc_getClass(s); }
+typedef objc_id (*MSG_id_id)(objc_id, objc_sel);
+typedef objc_id (*MSG_id_id_id)(objc_id, objc_sel, objc_id);
+typedef objc_id (*MSG_id_id_rect)(objc_id, objc_sel, _CGRect);
+typedef objc_id (*MSG_id_id_ulong)(objc_id, objc_sel, unsigned long);
+typedef objc_id (*MSG_id_id_charp)(objc_id, objc_sel, const char *);
+typedef double (*MSG_dbl_id)(objc_id, objc_sel);
+typedef unsigned long (*MSG_ulong_id)(objc_id, objc_sel);
+typedef void (*MSG_void_id)(objc_id, objc_sel);
+typedef void (*MSG_void_id_id)(objc_id, objc_sel, objc_id);
+typedef void (*MSG_void_id_bool)(objc_id, objc_sel, int);
+typedef void (*MSG_void_id_long)(objc_id, objc_sel, long);
+typedef void (*MSG_void_id_ulong)(objc_id, objc_sel, unsigned long);
+typedef void (*MSG_void_id_clear)(objc_id, objc_sel, _MTLClearColor);
+typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
+
 #endif
 
 #if defined(_WIN32)
 
+#define INITGUID
 #include <windows.h>
+#include <dwmapi.h>
 
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+ID3D12Device *g_device = NULL;
+ID3D12CommandQueue *g_cmdQueue = NULL;
+IDXGIFactory4 *g_factory = NULL;
+ID3D12CommandAllocator *g_cmdAllocator = NULL;
+ID3D12GraphicsCommandList *g_cmdList = NULL;
+ID3D12DescriptorHeap *g_rtvHeap = NULL;
+ID3D12Fence *g_fence = NULL;
+UINT64 g_fenceValue = 0;
+HANDLE g_fenceEvent = NULL;
+UINT g_rtvDescriptorSize = 0;
+
+typedef struct
+{
+    HWND hwnd;
+    IDXGISwapChain3 *swapChain;
+    ID3D12Resource *backBuffers[2];
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
+    float clear[4];
+    BOOL needsResize;
+    int windowIndex;
+} WindowContext;
+
+typedef struct
+{
+    BOOL titlebarless;
+    WindowContext *ctx;
+} WindowData;
+
+HINSTANCE __win_instance = NULL;
+WindowContext _canvas[MAX_CANVAS];
 #endif
 
 int canvas_startup()
@@ -119,48 +200,6 @@ int canvas_update()
 //
 //
 #if defined(__APPLE__)
-
-typedef struct
-{
-    objc_id window;
-    objc_id view;
-    objc_id layer;
-    double clear[4]; /* rgba */
-    double scale;
-} _mac_canvas;
-
-static _mac_canvas _canvas[MAX_CANVAS];
-static int _canvas_count = 0;
-
-extern objc_id MTLCreateSystemDefaultDevice(void);
-
-typedef struct
-{
-    double r, g, b, a;
-} _MTLClearColor;
-
-static inline objc_sel sel_c(const char *s) { return sel_registerName(s); }
-static inline objc_id cls(const char *s) { return objc_getClass(s); }
-
-typedef struct
-{
-    double x, y, w, h;
-} _CGRect;
-
-typedef objc_id (*MSG_id_id)(objc_id, objc_sel);
-typedef objc_id (*MSG_id_id_id)(objc_id, objc_sel, objc_id);
-typedef objc_id (*MSG_id_id_rect)(objc_id, objc_sel, _CGRect);
-typedef objc_id (*MSG_id_id_ulong)(objc_id, objc_sel, unsigned long);
-typedef objc_id (*MSG_id_id_charp)(objc_id, objc_sel, const char *);
-typedef double (*MSG_dbl_id)(objc_id, objc_sel);
-typedef unsigned long (*MSG_ulong_id)(objc_id, objc_sel);
-typedef void (*MSG_void_id)(objc_id, objc_sel);
-typedef void (*MSG_void_id_id)(objc_id, objc_sel, objc_id);
-typedef void (*MSG_void_id_bool)(objc_id, objc_sel, int);
-typedef void (*MSG_void_id_long)(objc_id, objc_sel, long);
-typedef void (*MSG_void_id_ulong)(objc_id, objc_sel, unsigned long);
-typedef void (*MSG_void_id_clear)(objc_id, objc_sel, _MTLClearColor);
-typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 
 static void _post_init()
 {
@@ -450,6 +489,191 @@ int _canvas_update()
     return 1;
 }
 #endif // _linux_
+
+//
+//
+//
+#if defined(_WIN32) || defined(_WIN64)
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    WindowData *pData = (WindowData *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        CREATESTRUCT *pCreate = (CREATESTRUCT *)lParam;
+        WindowData *pNewData = (WindowData *)pCreate->lpCreateParams;
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pNewData);
+
+        if (pNewData && pNewData->titlebarless)
+        {
+            enum DWMNCRENDERINGPOLICY policy = DWMNCRP_ENABLED;
+            DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+
+            DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+        }
+        return 0;
+    }
+
+    case WM_NCCALCSIZE:
+    {
+        if (wParam == TRUE && pData && pData->titlebarless)
+        {
+            NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
+
+            params->rgrc[0].top += 1;
+            params->rgrc[0].right -= 8;
+            params->rgrc[0].bottom -= 8;
+            params->rgrc[0].left += 8;
+
+            return 0;
+        }
+        break;
+    }
+
+    case WM_NCHITTEST:
+    {
+        if (pData && pData->titlebarless)
+        {
+            LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
+
+            if (hit == HTCAPTION)
+                return HTCLIENT;
+
+            if (hit == HTCLIENT)
+            {
+                POINT pt = {LOWORD(lParam), HIWORD(lParam)};
+                ScreenToClient(hwnd, &pt);
+
+                RECT rcWindow;
+                GetClientRect(hwnd, &rcWindow);
+
+                if (pt.y < 30 && pt.y >= 0)
+                {
+                    if (pt.x < rcWindow.right - 140)
+                    {
+                        return HTCAPTION;
+                    }
+                }
+            }
+
+            return hit;
+        }
+        break;
+    }
+
+    case WM_SIZE:
+    {
+        if (pData && pData->ctx && wParam != SIZE_MINIMIZED)
+        {
+            pData->ctx->needsResize = TRUE;
+        }
+        return 0;
+    }
+
+    case WM_DESTROY:
+        if (pData)
+            free(pData);
+
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+canvas_window_handle _canvas_window(int x, int y, int width, int height, const char *title)
+{
+    bool titlebarless = true;
+
+    canvas_startup();
+
+    WNDCLASSA wc = {0};
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = __win_instance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = "CanvasWindowClass";
+
+    RegisterClassA(&wc);
+
+    WindowContext *ctx = (WindowContext *)malloc(sizeof(WindowContext));
+
+    WindowData *pData = (WindowData *)malloc(sizeof(WindowData));
+    pData->titlebarless = titlebarless;
+    pData->ctx = ctx;
+
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+
+    if (titlebarless)
+        style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
+
+    HWND window = CreateWindowA(
+        "CanvasWindowClass",
+        title,
+        style,
+        x, y, width, height,
+        NULL, NULL, __win_instance, pData);
+
+    if (window && titlebarless)
+        SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+
+        
+    int idx = _canvas_count++;
+    _canvas[idx].hwnd = window;
+    _canvas[idx].needsResize = FALSE;
+    _canvas[idx].windowIndex = idx;
+    _canvas[idx].clear[0] = 0.0f;
+    _canvas[idx].clear[1] = 0.0f;
+    _canvas[idx].clear[2] = 0.0f;
+    _canvas[idx].clear[3] = 1.0f;
+
+    return window;
+}
+
+int _canvas_platform()
+{
+    __win_instance = GetModuleHandle(NULL);
+
+    return 0;
+}
+
+int _canvas_update()
+{
+    MSG msg;
+    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    return 1;
+}
+
+int _canvas_gpu_init()
+{
+    if (_canvas_init_gpu)
+        return 0;
+    _canvas_init_gpu = 1;
+    // Initialize DirectX 12
+
+
+
+    return 1;
+}
+
+int _canvas_gpu_new_window(HWND hwnd)
+{
+    if (!hwnd || _canvas_count >= MAX_CANVAS)
+        return -1;
+}
+
+#endif
+
 
 int canvas(int x, int y, int width, int height, const char *title)
 {

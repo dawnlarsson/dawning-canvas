@@ -3,3 +3,5 @@ a.out
 .gitignore
 .DS_Store
 .vscode/
+*.exe
+*.out
