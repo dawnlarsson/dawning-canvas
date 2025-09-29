@@ -58,18 +58,22 @@
 
 #include <stdbool.h>
 
-int canvas_window(int width, int height, const char *title);
-int canvas_new(int width, int height, const char *title);
-int canvas_color(int window, const float color[4]);
+// public api
 int canvas_startup();
 int canvas_update();
+int canvas(int x, int y, int width, int height, const char *title);
+int canvas_color(int window, const float color[4]);
+
+// internal api
+int _canvas_platform();
+int _canvas_update();
+int _canvas_window(int x, int y, int width, int height, const char *title);
+int _canvas_gpu_init();
+int _canvas_gpu_new_window(int window_id);
 
 bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
 bool _post_init_ran = false;
-
-int _canvas_platform();
-int _canvas_update();
 
 typedef void *canvas_window_handle;
 
@@ -78,6 +82,7 @@ typedef struct
     canvas_window_handle window;
     float clear[4];
     bool resize;
+    bool titlebar;
     int index;
 } canvas_type;
 
@@ -164,25 +169,7 @@ UINT64 g_fenceValue = 0;
 HANDLE g_fenceEvent = NULL;
 UINT g_rtvDescriptorSize = 0;
 
-typedef struct
-{
-    HWND window;
-    IDXGISwapChain3 *swapChain;
-    ID3D12Resource *backBuffers[2];
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
-    float clear[4];
-    BOOL needsResize;
-    int windowIndex;
-} WindowContext;
-
-typedef struct
-{
-    BOOL titlebarless;
-    WindowContext *ctx;
-} WindowData;
-
 HINSTANCE __win_instance = NULL;
-WindowContext _canvas[MAX_CANVAS];
 #endif
 
 #if defined(__linux__)
@@ -524,17 +511,13 @@ int _canvas_gpu_new_window(int window_id)
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    WindowData *pData = (WindowData *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    int window_index = (int)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 
     switch (msg)
     {
     case WM_CREATE:
     {
-        CREATESTRUCT *pCreate = (CREATESTRUCT *)lParam;
-        WindowData *pNewData = (WindowData *)pCreate->lpCreateParams;
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pNewData);
-
-        if (pNewData && pNewData->titlebarless)
+        if (!_canvas[window_index].titlebar)
         {
             enum DWMNCRENDERINGPOLICY policy = DWMNCRP_ENABLED;
             DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
@@ -547,7 +530,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCCALCSIZE:
     {
-        if (wParam == TRUE && pData && pData->titlebarless)
+        if (wParam == TRUE && !_canvas[window_index].titlebar)
         {
             NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
 
@@ -563,7 +546,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCHITTEST:
     {
-        if (pData && pData->titlebarless)
+        if (!_canvas[window_index].titlebar)
         {
             LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
 
@@ -594,17 +577,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_SIZE:
     {
-        if (pData && pData->ctx && wParam != SIZE_MINIMIZED)
+        if (wParam != SIZE_MINIMIZED)
         {
-            pData->ctx->needsResize = TRUE;
+            _canvas[window_index].resize = TRUE;
         }
         return 0;
     }
 
     case WM_DESTROY:
-        if (pData)
-            free(pData);
-
         PostQuitMessage(0);
         return 0;
     }
@@ -616,8 +596,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 {
     if (_canvas_count >= MAX_CANVAS)
         return -1;
-
-    bool titlebarless = true;
 
     canvas_startup();
 
@@ -631,36 +609,32 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     RegisterClassA(&wc);
 
-    WindowContext *ctx = (WindowContext *)malloc(sizeof(WindowContext));
-
-    WindowData *pData = (WindowData *)malloc(sizeof(WindowData));
-    pData->titlebarless = titlebarless;
-    pData->ctx = ctx;
-
     DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 
-    if (titlebarless)
-        style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
+    style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
+
+    int window_id = _canvas_count++;
 
     HWND window = CreateWindowA(
         "CanvasWindowClass",
         title,
         style,
         x, y, width, height,
-        NULL, NULL, __win_instance, pData);
+        NULL, NULL, __win_instance, &window_id);
 
-    if (window && titlebarless)
-        SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-
-    if (!window)
+    if (!window){
+        _canvas_count--;
         return -1;
+    }
 
-    int idx = _canvas_count++;
-    _canvas[idx].window = window;
-    _canvas[idx].needsResize = FALSE;
-    _canvas[idx].windowIndex = idx;
+    _canvas[window_id].window = window;
+    _canvas[window_id].resize = false;
+    _canvas[window_id].index = window_id;
+    _canvas[window_id].titlebar = false;
 
-    return idx;
+    SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+
+    return window_id;
 }
 
 int _canvas_platform()
@@ -729,10 +703,7 @@ int canvas(int x, int y, int width, int height, const char *title)
     if (!window_id)
         return -1;
 
-    _canvas[window_id].clear[0] = 0.0f;
-    _canvas[window_id].clear[1] = 0.0f;
-    _canvas[window_id].clear[2] = 0.0f;
-    _canvas[window_id].clear[3] = 1.0f;
+    canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
     
     _canvas_gpu_new_window(window_id);
 
