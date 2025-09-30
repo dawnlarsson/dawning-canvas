@@ -21,7 +21,7 @@
         ~ not implemented, x - implemented, \ partially implemented (or wip)
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
-        Windows                 \       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi
+        Windows                 \       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
         MacOS                   \       \       Metal       -framework Cocoa
         Linux                   \       ~       Vulkan      -lX11
         iOS                     ~       ~       Metal
@@ -77,6 +77,8 @@ bool _post_init_ran = false;
 
 typedef void *canvas_window_handle;
 
+// struct canvas_platform_data;
+
 typedef struct
 {
     canvas_window_handle window;
@@ -84,6 +86,7 @@ typedef struct
     bool resize;
     bool titlebar;
     int index;
+    // canvas_platform_data data;
 } canvas_type;
 
 canvas_type _canvas[MAX_CANVAS];
@@ -158,18 +161,19 @@ typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
 
-ID3D12Device *g_device = NULL;
-ID3D12CommandQueue *g_cmdQueue = NULL;
-IDXGIFactory4 *g_factory = NULL;
-ID3D12CommandAllocator *g_cmdAllocator = NULL;
-ID3D12GraphicsCommandList *g_cmdList = NULL;
-ID3D12DescriptorHeap *g_rtvHeap = NULL;
-ID3D12Fence *g_fence = NULL;
-UINT64 g_fenceValue = 0;
-HANDLE g_fenceEvent = NULL;
-UINT g_rtvDescriptorSize = 0;
+HINSTANCE _win_instance = NULL;
 
-HINSTANCE __win_instance = NULL;
+ID3D12Device *_win_device = NULL;
+ID3D12CommandQueue *_win_cmdQueue = NULL;
+IDXGIFactory4 *_win_factory = NULL;
+ID3D12CommandAllocator *_win_cmdAllocator = NULL;
+ID3D12GraphicsCommandList *_win_cmdList = NULL;
+ID3D12DescriptorHeap *_win_rtvHeap = NULL;
+ID3D12Fence *_win_fence = NULL;
+UINT64 _win_fenceValue = 0;
+HANDLE _win_fenceEvent = NULL;
+UINT _win_rtvDescriptorSize = 0;
+
 #endif
 
 #if defined(__linux__)
@@ -602,7 +606,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     WNDCLASSA wc = {0};
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
-    wc.hInstance = __win_instance;
+    wc.hInstance = _win_instance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = NULL;
     wc.lpszClassName = "CanvasWindowClass";
@@ -620,7 +624,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         title,
         style,
         x, y, width, height,
-        NULL, NULL, __win_instance, &window_id);
+        NULL, NULL, _win_instance, &window_id);
 
     if (!window){
         _canvas_count--;
@@ -639,7 +643,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
 int _canvas_platform()
 {
-    __win_instance = GetModuleHandle(NULL);
+    _win_instance = GetModuleHandle(NULL);
 
     return 0;
 }
@@ -660,19 +664,135 @@ int _canvas_gpu_init()
 {
     if (_canvas_init_gpu)
         return 0;
+
     _canvas_init_gpu = 1;
 
-    // Initialize DirectX 12
+    HRESULT result;
+
+    result = CreateDXGIFactory1(
+        &IID_IDXGIFactory4, 
+        (void **)&_win_factory
+    );
+
+    if (FAILED(result))
+        return -1;
+
+    result = D3D12CreateDevice(
+        NULL, 
+        D3D_FEATURE_LEVEL_11_0, 
+        &IID_ID3D12Device, 
+        (void **)&_win_device
+    );
+
+    if (FAILED(result))
+        return -1;
+
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {0};
+    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+    result = _win_device->lpVtbl->CreateCommandQueue(
+        _win_device, 
+        &queueDesc, 
+        &IID_ID3D12CommandQueue, 
+        (void **)&_win_cmdQueue
+    );
+
+    if (FAILED(result))
+        return -1;
+
+    result = _win_device->lpVtbl->CreateCommandAllocator(
+        _win_device, 
+        D3D12_COMMAND_LIST_TYPE_DIRECT, 
+        &IID_ID3D12CommandAllocator, 
+        (void **)&_win_cmdAllocator
+    );
+
+    if (FAILED(result))
+        return -1;
+
+    result = _win_device->lpVtbl->CreateCommandList(
+        _win_device, 
+        0, 
+        D3D12_COMMAND_LIST_TYPE_DIRECT, 
+        _win_cmdAllocator, 
+        NULL, 
+        &IID_ID3D12GraphicsCommandList, 
+        (void **)&_win_cmdList
+    );
+
+    if (FAILED(result))
+        return -1;
+    
+    _win_cmdList->lpVtbl->Close(_win_cmdList);
+
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
+    heapDesc.NumDescriptors = 20;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    result = _win_device->lpVtbl->CreateDescriptorHeap(
+        _win_device, 
+        &heapDesc, 
+        &IID_ID3D12DescriptorHeap, 
+        (void **)&_win_rtvHeap
+    );
+
+    if (FAILED(result))
+        return -1;
+
+    _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(
+        _win_device,
+        D3D12_DESCRIPTOR_HEAP_TYPE_RTV
+    );
+
+    result = _win_device->lpVtbl->CreateFence(
+        _win_device, 
+        0, 
+        D3D12_FENCE_FLAG_NONE, 
+        &IID_ID3D12Fence, 
+        (void **)&_win_fence
+    );
+
+    if (FAILED(result))
+        return -1;
+
+    _win_fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+    if (!_win_fenceEvent)
+        return -1;
 
     return 1;
 }
+
 
 int _canvas_gpu_new_window(int window_id)
 {
     if(window_id < 0)
         return -1;
 
-    return 0;
+    HWND hwnd = (HWND)_canvas[window_id].window;
+
+    RECT rect;
+    GetClientRect(hwnd, &rect);
+
+    DXGI_SWAP_CHAIN_DESC1 scDesc = {0};
+    scDesc.Width = rect.right - rect.left;
+    scDesc.Height = rect.bottom - rect.top;
+    scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scDesc.SampleDesc.Count = 1;
+    scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scDesc.BufferCount = 2;
+    scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+    IDXGISwapChain1 *swapChain1;
+    HRESULT hr = _win_factory->lpVtbl->CreateSwapChainForHwnd(
+        _win_factory,
+        (IUnknown *)_win_cmdQueue,
+        hwnd,
+        &scDesc,
+        NULL,
+        NULL,
+        &swapChain1);
+
 }
 
 #endif
