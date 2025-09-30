@@ -70,6 +70,7 @@ int _canvas_update();
 int _canvas_window(int x, int y, int width, int height, const char *title);
 int _canvas_gpu_init();
 int _canvas_gpu_new_window(int window_id);
+int _canvas_window_resize(int window_id);
 
 bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
@@ -83,7 +84,7 @@ typedef struct
 {
     canvas_window_handle window;
     float clear[4];
-    bool resize;
+    bool resize, close;
     bool titlebar;
     int index;
 } canvas_type;
@@ -169,8 +170,8 @@ ID3D12CommandAllocator *_win_cmdAllocator = NULL;
 ID3D12GraphicsCommandList *_win_cmdList = NULL;
 ID3D12DescriptorHeap *_win_rtvHeap = NULL;
 ID3D12Fence *_win_fence = NULL;
-UINT64 _win_fenceValue = 0;
-HANDLE _win_fenceEvent = NULL;
+UINT64 _win_fence_value = 0;
+HANDLE _win_fence_event = NULL;
 UINT _win_rtvDescriptorSize = 0;
 
 typedef struct 
@@ -542,7 +543,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCCALCSIZE:
     {
-        if (wParam == TRUE && !_canvas[window_index].titlebar)
+        if (wParam == true && !_canvas[window_index].titlebar)
         {
             NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
 
@@ -591,7 +592,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         if (wParam != SIZE_MINIMIZED)
         {
-            _canvas[window_index].resize = TRUE;
+            _canvas[window_index].resize = true;
         }
         return 0;
     }
@@ -625,14 +626,16 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
-    int window_id = _canvas_count++;
+    int window_id = _canvas_count++; // todo: check for empty slots
+
+    _canvas[window_id].index = window_id;
 
     HWND window = CreateWindowA(
         "CanvasWindowClass",
         title,
         style,
         x, y, width, height,
-        NULL, NULL, _win_instance, &window_id);
+        NULL, NULL, _win_instance, &_canvas[window_id].index);
 
     if (!window){
         _canvas_count--;
@@ -641,7 +644,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     _canvas[window_id].window = window;
     _canvas[window_id].resize = false;
-    _canvas[window_id].index = window_id;
     _canvas[window_id].titlebar = false;
 
     SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
@@ -661,8 +663,15 @@ int _canvas_update()
     MSG msg;
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
     {
+        if(_win_device) {
+            for(int i = 0; i < _canvas_count; ++i) _canvas_window_resize(i);
+        
+            _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
+            _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
+        }
+
         TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        DispatchMessage(&msg);    
     }
 
     return 1;
@@ -762,9 +771,9 @@ int _canvas_gpu_init()
     if (FAILED(result))
         return -1;
 
-    _win_fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    _win_fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
 
-    if (!_win_fenceEvent)
+    if (!_win_fence_event)
         return -1;
 
     return 1;
@@ -846,6 +855,69 @@ int _canvas_gpu_new_window(int window_id)
             NULL,
             rtvHandle
         );
+        rtvHandle.ptr += _win_rtvDescriptorSize;
+    }
+}
+
+int _canvas_window_resize(int window_id) {
+    if(window_id < 0)
+        return -1;
+    
+    canvas_data *window = &_canvas_data[window_id];
+
+    if (!window->swapChain || !_canvas[window_id].resize)
+        return 0;
+    
+    _canvas[window_id].resize = false;
+
+    _win_fence_value++;
+    _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
+    if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+    {
+        _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
+        WaitForSingleObject(_win_fence_event, INFINITE);
+    }
+
+    for (int i = 0; i < 2; i++)
+    {
+        if (window->backBuffers[i])
+        {
+            window->backBuffers[i]->lpVtbl->Release(window->backBuffers[i]);
+            window->backBuffers[i] = NULL;
+        }
+    }
+
+    RECT rect;
+    GetClientRect((HWND)_canvas[window_id].window, &rect);
+    UINT width = rect.right - rect.left;
+    UINT height = rect.bottom - rect.top;
+
+    if(width == 0 || height == 0)
+        return 0;
+    
+    HRESULT hr = window->swapChain->lpVtbl->ResizeBuffers(
+        window->swapChain,
+        2, width, height,
+        DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+    
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
+    _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
+    rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
+
+    for (int i = 0; i < 2; i++)
+    {
+        window->swapChain->lpVtbl->GetBuffer(
+            window->swapChain, i,
+            &IID_ID3D12Resource,
+            (void **)&window->backBuffers[i]);
+
+        window->rtvHandles[i] = rtvHandle;
+        _win_device->lpVtbl->CreateRenderTargetView(
+            _win_device,
+            window->backBuffers[i],
+            NULL,
+            rtvHandle);
+
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
 }
