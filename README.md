@@ -14,7 +14,7 @@ Goals:
 `~` not implemented, `x` - implemented, `\` partially implemented (or wip)
 ```sh
 Platform:               Window  Canvas  Backend     Required Compiler Flags
-Windows                 \       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi
+Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
 MacOS                   \       \       Metal       -framework Cocoa
 Linux                   \       ~       Vulkan      -lX11
 iOS                     ~       ~       Metal

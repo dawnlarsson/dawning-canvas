@@ -21,7 +21,7 @@
         ~ not implemented, x - implemented, \ partially implemented (or wip)
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
-        Windows                 \       ~       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
+        Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
         MacOS                   \       \       Metal       -framework Cocoa
         Linux                   \       ~       Vulkan      -lX11
         iOS                     ~       ~       Metal
@@ -86,7 +86,6 @@ typedef struct
     bool resize;
     bool titlebar;
     int index;
-    // canvas_platform_data data;
 } canvas_type;
 
 canvas_type _canvas[MAX_CANVAS];
@@ -173,6 +172,15 @@ ID3D12Fence *_win_fence = NULL;
 UINT64 _win_fenceValue = 0;
 HANDLE _win_fenceEvent = NULL;
 UINT _win_rtvDescriptorSize = 0;
+
+typedef struct 
+{
+    IDXGISwapChain3 *swapChain;
+    ID3D12Resource *backBuffers[2];
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
+} canvas_data;
+
+canvas_data _canvas_data[MAX_CANVAS];
 
 #endif
 
@@ -768,10 +776,12 @@ int _canvas_gpu_new_window(int window_id)
     if(window_id < 0)
         return -1;
 
-    HWND hwnd = (HWND)_canvas[window_id].window;
+    _canvas_data[window_id] = (canvas_data){0};
+
+    HWND window = (HWND)_canvas[window_id].window;
 
     RECT rect;
-    GetClientRect(hwnd, &rect);
+    GetClientRect(window, &rect);
 
     DXGI_SWAP_CHAIN_DESC1 scDesc = {0};
     scDesc.Width = rect.right - rect.left;
@@ -784,15 +794,60 @@ int _canvas_gpu_new_window(int window_id)
     scDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
     IDXGISwapChain1 *swapChain1;
-    HRESULT hr = _win_factory->lpVtbl->CreateSwapChainForHwnd(
+    HRESULT result = _win_factory->lpVtbl->CreateSwapChainForHwnd(
         _win_factory,
         (IUnknown *)_win_cmdQueue,
-        hwnd,
+        window,
         &scDesc,
         NULL,
         NULL,
         &swapChain1);
 
+    if(FAILED(result))
+        return -1;
+    
+    result = swapChain1->lpVtbl->QueryInterface(
+        swapChain1, 
+        &IID_IDXGISwapChain3,
+        (void **)&_canvas_data[window_id].swapChain
+    );
+    swapChain1->lpVtbl->Release(swapChain1);
+
+    if (FAILED(result))
+        return -1;
+
+    _win_factory->lpVtbl->MakeWindowAssociation(
+        _win_factory, 
+        window, 
+        DXGI_MWA_NO_ALT_ENTER
+    );
+    
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
+    _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
+
+    rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
+
+    for (int i = 0; i < 2; i++)
+    {
+        result = _canvas_data[window_id].swapChain->lpVtbl->GetBuffer(
+            _canvas_data[window_id].swapChain, 
+            i,
+            &IID_ID3D12Resource, 
+            (void **)&_canvas_data[window_id].backBuffers[i]
+        );
+
+        if (FAILED(result))
+            return -1;
+
+        _canvas_data[window_id].rtvHandles[i] = rtvHandle;
+        _win_device->lpVtbl->CreateRenderTargetView(
+            _win_device,
+            _canvas_data[window_id].backBuffers[i],
+            NULL,
+            rtvHandle
+        );
+        rtvHandle.ptr += _win_rtvDescriptorSize;
+    }
 }
 
 #endif
