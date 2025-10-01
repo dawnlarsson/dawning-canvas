@@ -64,6 +64,7 @@ canvas_update_callback canvas_default_update_callback = 0;
 
 typedef struct
 {
+    uint64_t start;
     double current;     // Current time in seconds since start
     double delta;       // Delta time in seconds
     double raw_delta;   // Unsmoothed delta time
@@ -94,9 +95,11 @@ int _canvas_window(int x, int y, int width, int height, const char *title);
 int _canvas_gpu_init();
 int _canvas_gpu_new_window(int window_id);
 int _canvas_window_resize(int window_id);
-void _canvas_time_init(canvas_time_data *time)
+void _canvas_time_init(canvas_time_data *time);
+void _canvas_time_update(canvas_time_data *time);
+double _canvas_get_time(canvas_time_data *time);
 
-    bool _canvas_init_platform = false;
+bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
 bool _post_init_ran = false;
 bool _canvas_os_timed = false;
@@ -140,7 +143,6 @@ static int _canvas_highest_refresh_rate = 60;
 #include <mach/mach_time.h>
 
 static mach_timebase_info_data_t _canvas_timebase = {0};
-static uint64_t _canvas_start_time = 0;
 
 typedef void *objc_id;
 typedef void *objc_sel;
@@ -231,7 +233,6 @@ canvas_data _canvas_data[MAX_CANVAS];
 #if defined(__linux__)
 
 #include <time.h>
-static uint64_t _canvas_start_time = 0;
 
 typedef unsigned long _x11_id;
 typedef struct _x11_display _x11_display;
@@ -266,14 +267,14 @@ _x11_display *_canvas_display = 0;
 void _canvas_time_init(canvas_time_data *time)
 {
     mach_timebase_info(&_canvas_timebase);
-    _canvas_start_time = mach_absolute_time();
+    time->start = mach_absolute_time();
     time->last = 0.0;
     time->frame = 0;
 }
 
-double _canvas_get_time()
+double _canvas_get_time(canvas_time_data *time)
 {
-    uint64_t elapsed = mach_absolute_time() - _canvas_start_time;
+    uint64_t elapsed = mach_absolute_time() - time->start;
     return (double)elapsed * (double)_canvas_timebase.numer /
            (double)_canvas_timebase.denom / 1e9;
 }
@@ -526,12 +527,12 @@ void _canvas_time_init(canvas_time_data *time)
     time->frame = 0;
 }
 
-double _canvas_get_time()
+double _canvas_get_time(canvas_time_data *time)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    return (double)(now - _canvas_start_time) / 1e9;
+    return (double)(now - time->start) / 1e9;
 }
 
 void canvas_sleep(double seconds)
@@ -620,11 +621,11 @@ void _canvas_time_init(canvas_time_data *time)
     time->frame = 0;
 }
 
-double _canvas_get_time()
+double _canvas_get_time(canvas_time_data *time)
 {
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
-    return (double)(counter.QuadPart - _canvas_start_counter.QuadPart) /
+    return (double)(counter.QuadPart - time->start) /
            (double)_canvas_qpc_frequency.QuadPart;
 }
 
@@ -1214,7 +1215,7 @@ void canvas_color(int window, const float color[4])
 
 void _canvas_time_update(canvas_time_data *time)
 {
-    time->current = _canvas_get_time();
+    time->current = _canvas_get_time(time);
     time->raw_delta = time->current - time->last;
 
     if (time->raw_delta > 0.1)
@@ -1270,7 +1271,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
         return;
 
     double target_frame_time = 1.0 / target_fps;
-    double elapsed = _canvas_get_time() - (time->current - time->delta);
+    double elapsed = _canvas_get_time(time) - (time->current - time->delta);
     double remaining = target_frame_time - elapsed;
 
     if (remaining > 0.0)
@@ -1280,7 +1281,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
             canvas_sleep(remaining - 0.002);
         }
 
-        while (_canvas_get_time() - (time->current - time->delta) < target_frame_time)
+        while (_canvas_get_time(time) - (time->current - time->delta) < target_frame_time)
         {
             // Busy-wait for accuracy
         }
