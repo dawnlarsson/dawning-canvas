@@ -1169,6 +1169,8 @@ void canvas_main_loop()
 
 int canvas_run(canvas_update_callback default_callback)
 {
+    canvas_default_update_callback = default_callback;
+
     while (1)
     {
         _canvas_os_timed = false;

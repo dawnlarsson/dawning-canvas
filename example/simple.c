@@ -1,8 +1,15 @@
 #include "canvas.h"
+#include <math.h>
 
 void update(int window)
 {
-        canvas_color(window, (float[]){window, 1.0f, 0.0f, 1.0f});
+        float t = canvas_main_time.current + window;
+
+        float r = (sinf(t * 0.5f) + 1.0f) * 0.5f;
+        float g = (sinf(t * 0.7f + 2.0f) + 1.0f) * 0.5f;
+        float b = (sinf(t * 0.9f + 4.0f) + 1.0f) * 0.5f;
+
+        canvas_color(window, (float[]){r, g, b, 1.0f});
 }
 
 int main()
