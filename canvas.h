@@ -5,11 +5,9 @@
         A cross-platform windowing and graphics context API,
         provides the building blocks for creating windows, and setup for the various native graphics APIs.
 
-
         -  Window  -
         A window in canvas is just a native window instance, nothing special, use this if you intend to not use
         the graphics API or any other usecases.
-
 
         -  Canvas  -
         A canvas is window or view with graphics, and other backend features setup ready to use.
@@ -62,7 +60,7 @@
 int canvas_startup();
 int canvas_update();
 int canvas(int x, int y, int width, int height, const char *title);
-int canvas_color(int window, const float color[4]);
+void canvas_color(int window, const float color[4]);
 
 // internal api
 int _canvas_platform();
@@ -106,15 +104,14 @@ static objc_id _mac_app = NULL;
 static objc_id _mac_device = NULL;
 static objc_id _metal_queue = NULL;
 
-
 typedef struct
 {
-    objc_id window;
     objc_id view;
     objc_id layer;
-    double clear[4]; /* rgba */
     double scale;
-} _mac_canvas;
+} canvas_data;
+
+canvas_data _canvas_data[MAX_CANVAS];
 
 typedef struct
 {
@@ -125,8 +122,6 @@ typedef struct
 {
     double x, y, w, h;
 } _CGRect;
-
-static _mac_canvas _canvas[MAX_CANVAS];
 
 extern objc_id MTLCreateSystemDefaultDevice(void);
 
@@ -174,7 +169,7 @@ UINT64 _win_fence_value = 0;
 HANDLE _win_fence_event = NULL;
 UINT _win_rtvDescriptorSize = 0;
 
-typedef struct 
+typedef struct
 {
     IDXGISwapChain3 *swapChain;
     ID3D12Resource *backBuffers[2];
@@ -259,8 +254,10 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     MSG_id_id m = (MSG_id_id)objc_msgSend;
 
     objc_id winClass = cls("NSWindow");
+
     if (!winClass)
-        return NULL;
+        return -1;
+
     objc_id walloc = m(winClass, sel_c("alloc"));
 
     typedef objc_id (*MSG_initWin)(objc_id, objc_sel, _CGRect, unsigned long, long, int);
@@ -268,8 +265,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     objc_id window = ((MSG_initWin)objc_msgSend)(walloc,
                                                  sel_c("initWithContentRect:styleMask:backing:defer:"),
                                                  rect, style, (long)2, 0);
+
     if (!window)
-        return NULL;
+        return -1;
 
     ((MSG_void_id_bool)objc_msgSend)(window, sel_c("setTitlebarAppearsTransparent:"), 1);
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitleVisibility:"), (objc_id)1 /*NSWindowTitleHidden*/);
@@ -288,9 +286,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
 
     int idx = _canvas_count++;
-    _canvas[idx].hwnd = window;
-    _canvas[idx].needsResize = FALSE;
-    _canvas[idx].windowIndex = idx;
+    _canvas[idx].window = window;
+    _canvas[idx].resize = false;
+    _canvas[idx].index = idx;
 
     return idx;
 }
@@ -309,28 +307,23 @@ int _canvas_gpu_init()
     return _metal_queue ? 0 : -1;
 }
 
-static void _canvas_update_drawable_size(_mac_canvas *c)
+void _canvas_update_drawable_size(int window_id)
 {
-    if (!c || !c->view || !c->layer)
-        return;
-    _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(c->view, sel_c("bounds"));
-    double w = b.w * c->scale;
-    double h = b.h * c->scale;
+    _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(_canvas_data[window_id].view, sel_c("bounds"));
+    double w = b.w * _canvas_data[window_id].scale;
+    double h = b.h * _canvas_data[window_id].scale;
 
     struct
     {
         double width;
         double height;
     } sz = {w, h};
-    ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(c->layer, sel_c("setDrawableSize:"), sz);
+    ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(_canvas_data[window_id].layer, sel_c("setDrawableSize:"), sz);
 }
 
-static int _canvas_gpu_new_window(int window_id)
+int _canvas_gpu_new_window(int window_id)
 {
-    if (window_id < 0)
-        return -1;
-
-    objc_id win = _canvas[window_id].window;
+    objc_id window = _canvas[window_id].window;
 
     MSG_id_id m = (MSG_id_id)objc_msgSend;
 
@@ -360,13 +353,11 @@ static int _canvas_gpu_new_window(int window_id)
     ((MSG_void_id_id)objc_msgSend)(view, sel_c("setLayer:"), layer);
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("setContentView:"), view);
 
-    int idx = _canvas_count++;
-    _canvas[idx].window = window;
-    _canvas[idx].view = view;
-    _canvas[idx].layer = layer;
-    _canvas[idx].scale = scale;
+    _canvas_data[window_id].view = view;
+    _canvas_data[window_id].layer = layer;
+    _canvas_data[window_id].scale = scale;
 
-    return idx;
+    return window_id;
 }
 
 static void _canvas_gpu_draw_all(void)
@@ -376,9 +367,9 @@ static void _canvas_gpu_draw_all(void)
 
     for (int i = 0; i < _canvas_count; ++i)
     {
-        _canvas_update_drawable_size(&_canvas[i]);
+        _canvas_update_drawable_size(i);
 
-        objc_id layer = _canvas[i].layer;
+        objc_id layer = _canvas_data[i].layer;
         if (!layer)
             continue;
 
@@ -501,7 +492,7 @@ int _canvas_gpu_init()
     if (_canvas_init_gpu)
         return 0;
     _canvas_init_gpu = 1;
-    
+
     // Select & init backend OpenGL / Vulkan
 
     return 1;
@@ -509,7 +500,7 @@ int _canvas_gpu_init()
 
 int _canvas_gpu_new_window(int window_id)
 {
-    if(window_id < 0)
+    if (window_id < 0)
         return -1;
 
     return 0;
@@ -637,7 +628,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         x, y, width, height,
         NULL, NULL, _win_instance, &_canvas[window_id].index);
 
-    if (!window){
+    if (!window)
+    {
         _canvas_count--;
         return -1;
     }
@@ -663,15 +655,17 @@ int _canvas_update()
     MSG msg;
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
     {
-        if(_win_device) {
-            for(int i = 0; i < _canvas_count; ++i) _canvas_window_resize(i);
-        
+        if (_win_device)
+        {
+            for (int i = 0; i < _canvas_count; ++i)
+                _canvas_window_resize(i);
+
             _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
             _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
         }
 
         TranslateMessage(&msg);
-        DispatchMessage(&msg);    
+        DispatchMessage(&msg);
     }
 
     return 1;
@@ -687,19 +681,17 @@ int _canvas_gpu_init()
     HRESULT result;
 
     result = CreateDXGIFactory1(
-        &IID_IDXGIFactory4, 
-        (void **)&_win_factory
-    );
+        &IID_IDXGIFactory4,
+        (void **)&_win_factory);
 
     if (FAILED(result))
         return -1;
 
     result = D3D12CreateDevice(
-        NULL, 
-        D3D_FEATURE_LEVEL_11_0, 
-        &IID_ID3D12Device, 
-        (void **)&_win_device
-    );
+        NULL,
+        D3D_FEATURE_LEVEL_11_0,
+        &IID_ID3D12Device,
+        (void **)&_win_device);
 
     if (FAILED(result))
         return -1;
@@ -708,65 +700,59 @@ int _canvas_gpu_init()
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
     result = _win_device->lpVtbl->CreateCommandQueue(
-        _win_device, 
-        &queueDesc, 
-        &IID_ID3D12CommandQueue, 
-        (void **)&_win_cmdQueue
-    );
+        _win_device,
+        &queueDesc,
+        &IID_ID3D12CommandQueue,
+        (void **)&_win_cmdQueue);
 
     if (FAILED(result))
         return -1;
 
     result = _win_device->lpVtbl->CreateCommandAllocator(
-        _win_device, 
-        D3D12_COMMAND_LIST_TYPE_DIRECT, 
-        &IID_ID3D12CommandAllocator, 
-        (void **)&_win_cmdAllocator
-    );
+        _win_device,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        &IID_ID3D12CommandAllocator,
+        (void **)&_win_cmdAllocator);
 
     if (FAILED(result))
         return -1;
 
     result = _win_device->lpVtbl->CreateCommandList(
-        _win_device, 
-        0, 
-        D3D12_COMMAND_LIST_TYPE_DIRECT, 
-        _win_cmdAllocator, 
-        NULL, 
-        &IID_ID3D12GraphicsCommandList, 
-        (void **)&_win_cmdList
-    );
+        _win_device,
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        _win_cmdAllocator,
+        NULL,
+        &IID_ID3D12GraphicsCommandList,
+        (void **)&_win_cmdList);
 
     if (FAILED(result))
         return -1;
-    
+
     _win_cmdList->lpVtbl->Close(_win_cmdList);
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
     heapDesc.NumDescriptors = 20;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     result = _win_device->lpVtbl->CreateDescriptorHeap(
-        _win_device, 
-        &heapDesc, 
-        &IID_ID3D12DescriptorHeap, 
-        (void **)&_win_rtvHeap
-    );
+        _win_device,
+        &heapDesc,
+        &IID_ID3D12DescriptorHeap,
+        (void **)&_win_rtvHeap);
 
     if (FAILED(result))
         return -1;
 
     _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(
         _win_device,
-        D3D12_DESCRIPTOR_HEAP_TYPE_RTV
-    );
+        D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
     result = _win_device->lpVtbl->CreateFence(
-        _win_device, 
-        0, 
-        D3D12_FENCE_FLAG_NONE, 
-        &IID_ID3D12Fence, 
-        (void **)&_win_fence
-    );
+        _win_device,
+        0,
+        D3D12_FENCE_FLAG_NONE,
+        &IID_ID3D12Fence,
+        (void **)&_win_fence);
 
     if (FAILED(result))
         return -1;
@@ -779,10 +765,9 @@ int _canvas_gpu_init()
     return 1;
 }
 
-
 int _canvas_gpu_new_window(int window_id)
 {
-    if(window_id < 0)
+    if (window_id < 0)
         return -1;
 
     _canvas_data[window_id] = (canvas_data){0};
@@ -812,25 +797,23 @@ int _canvas_gpu_new_window(int window_id)
         NULL,
         &swapChain1);
 
-    if(FAILED(result))
+    if (FAILED(result))
         return -1;
-    
+
     result = swapChain1->lpVtbl->QueryInterface(
-        swapChain1, 
+        swapChain1,
         &IID_IDXGISwapChain3,
-        (void **)&_canvas_data[window_id].swapChain
-    );
+        (void **)&_canvas_data[window_id].swapChain);
     swapChain1->lpVtbl->Release(swapChain1);
 
     if (FAILED(result))
         return -1;
 
     _win_factory->lpVtbl->MakeWindowAssociation(
-        _win_factory, 
-        window, 
-        DXGI_MWA_NO_ALT_ENTER
-    );
-    
+        _win_factory,
+        window,
+        DXGI_MWA_NO_ALT_ENTER);
+
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
 
@@ -839,11 +822,10 @@ int _canvas_gpu_new_window(int window_id)
     for (int i = 0; i < 2; i++)
     {
         result = _canvas_data[window_id].swapChain->lpVtbl->GetBuffer(
-            _canvas_data[window_id].swapChain, 
+            _canvas_data[window_id].swapChain,
             i,
-            &IID_ID3D12Resource, 
-            (void **)&_canvas_data[window_id].backBuffers[i]
-        );
+            &IID_ID3D12Resource,
+            (void **)&_canvas_data[window_id].backBuffers[i]);
 
         if (FAILED(result))
             return -1;
@@ -853,21 +835,21 @@ int _canvas_gpu_new_window(int window_id)
             _win_device,
             _canvas_data[window_id].backBuffers[i],
             NULL,
-            rtvHandle
-        );
+            rtvHandle);
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
 }
 
-int _canvas_window_resize(int window_id) {
-    if(window_id < 0)
+int _canvas_window_resize(int window_id)
+{
+    if (window_id < 0)
         return -1;
-    
+
     canvas_data *window = &_canvas_data[window_id];
 
     if (!window->swapChain || !_canvas[window_id].resize)
         return 0;
-    
+
     _canvas[window_id].resize = false;
 
     _win_fence_value++;
@@ -892,14 +874,14 @@ int _canvas_window_resize(int window_id) {
     UINT width = rect.right - rect.left;
     UINT height = rect.bottom - rect.top;
 
-    if(width == 0 || height == 0)
+    if (width == 0 || height == 0)
         return 0;
-    
+
     HRESULT hr = window->swapChain->lpVtbl->ResizeBuffers(
         window->swapChain,
         2, width, height,
         DXGI_FORMAT_R8G8B8A8_UNORM, 0);
-    
+
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
     rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
@@ -940,7 +922,6 @@ int canvas_update()
     return _canvas_update();
 }
 
-
 int canvas(int x, int y, int width, int height, const char *title)
 {
     _canvas_gpu_init();
@@ -951,13 +932,13 @@ int canvas(int x, int y, int width, int height, const char *title)
         return -1;
 
     canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
-    
+
     _canvas_gpu_new_window(window_id);
 
     return window_id;
 }
 
-int canvas_color(int window, const float color[4])
+void canvas_color(int window, const float color[4])
 {
     _canvas[window].clear[0] = color[0];
     _canvas[window].clear[1] = color[1];
