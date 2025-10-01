@@ -38,15 +38,17 @@ the platforms rendering backend is automaticly setup the first time a canvas is 
 ```c
 #include "canvas.h"
 
+void update(int window)
+{
+        canvas_color(window, (float[]){window, 0.0f, 0.0f, 1.0f});
+}
+
 int main()
 {
-        int window = canvas(400, 400, 600, 600, "My Window");
+        int window_1 = canvas(400, 400, 600, 600, "My Window");
+        int window_2 = canvas(500, 500, 600, 600, "My Window 2");
 
-        while (canvas_update())
-        {
-        }
-
-        return 0;
+        return canvas_run(update);
 }
 ```
 ### Builds out: ~35 kb on macos

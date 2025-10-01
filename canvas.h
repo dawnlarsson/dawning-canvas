@@ -67,6 +67,8 @@ int canvas(int x, int y, int width, int height, const char *title);
 void canvas_color(int window, const float color[4]);
 int canvas_run(canvas_update_callback update);
 void canvas_set_update_callback(int window, canvas_update_callback callback);
+int canvas_fixed_update(double fixed_dt);
+void canvas_limit_fps(double target_fps);
 
 // internal api
 void canvas_main_loop();
@@ -122,8 +124,9 @@ static int _canvas_frame_index = 0;
 #include <TargetConditionals.h>
 #include <objc/objc.h>
 #include <objc/message.h>
-
+#include <time.h>
 #include <mach/mach_time.h>
+
 static mach_timebase_info_data_t _canvas_timebase = {0};
 static uint64_t _canvas_start_time = 0;
 
@@ -1116,7 +1119,7 @@ int _canvas_window_resize(int window_id)
 }
 #endif
 
-static void _canvas_time_update(void)
+void _canvas_time_update(void)
 {
     canvas_time.current = _canvas_get_time();
     canvas_time.raw_delta = canvas_time.current - _canvas_last_time;
@@ -1152,7 +1155,7 @@ static void _canvas_time_update(void)
     canvas_time.frame++;
 }
 
-static int _canvas_time_fixed_step(double fixed_dt, int max_steps)
+int _canvas_time_fixed_step(double fixed_dt, int max_steps)
 {
     canvas_time.accumulator += canvas_time.delta;
 
@@ -1168,7 +1171,7 @@ static int _canvas_time_fixed_step(double fixed_dt, int max_steps)
     return steps;
 }
 
-static void canvas_limit_fps(double target_fps)
+void canvas_limit_fps(double target_fps)
 {
     if (target_fps <= 0.0)
         return;
@@ -1198,6 +1201,8 @@ int canvas_startup()
 
     _canvas_init_platform = true;
 
+    _canvas_time_init();
+
     _canvas_platform();
     return 0;
 }
@@ -1223,7 +1228,6 @@ void canvas_main_loop()
 
 int canvas_run(canvas_update_callback default_callback)
 {
-    _canvas_time_init();
 
     while (1)
     {
