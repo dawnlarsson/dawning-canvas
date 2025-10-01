@@ -53,12 +53,28 @@
 #pragma once
 
 #define MAX_CANVAS 32
+#define MAX_DISPLAYS 8
 
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef void *canvas_window_handle;
 typedef void (*canvas_update_callback)(int window);
 canvas_update_callback canvas_default_update_callback = 0;
+
+typedef struct
+{
+    double current;     // Current time in seconds since start
+    double delta;       // Delta time in seconds
+    double raw_delta;   // Unsmoothed delta time
+    double fps;         // Current FPS
+    uint64_t frame;     // Frame counter
+    double accumulator; // For fixed timestep
+    double alpha;       // Interpolation factor for fixed timestep
+    double last;        // Last time value
+    double times[60];   // For FPS smoothing
+    int frame_index;    // Index for frame times
+} canvas_time_data;
 
 // public api
 int canvas_startup();
@@ -67,8 +83,8 @@ int canvas(int x, int y, int width, int height, const char *title);
 void canvas_color(int window, const float color[4]);
 int canvas_run(canvas_update_callback update);
 void canvas_set_update_callback(int window, canvas_update_callback callback);
-int canvas_fixed_update(double fixed_dt);
-void canvas_limit_fps(double target_fps);
+int canvas_fixed_update(canvas_time_data *time, double fixed_dt);
+void canvas_limit_fps(canvas_time_data *time, double target_fps);
 
 // internal api
 void canvas_main_loop();
@@ -84,9 +100,7 @@ bool _canvas_init_gpu = false;
 bool _post_init_ran = false;
 bool _canvas_os_timed = false;
 
-typedef void *canvas_window_handle;
-
-// struct canvas_platform_data;
+static canvas_time_data canvas_main_time = {0};
 
 typedef struct
 {
@@ -95,27 +109,24 @@ typedef struct
     bool resize, close;
     bool titlebar;
     int index;
+    int display;
     canvas_update_callback update;
+    canvas_time_data time;
 } canvas_type;
+
+typedef struct
+{
+    bool primary;
+    int width, height;
+    int refresh_rate;
+} canvas_display;
 
 canvas_type _canvas[MAX_CANVAS];
 static int _canvas_count = 0;
 
-typedef struct
-{
-    double current;     // Current time in seconds since start
-    double delta;       // Delta time in seconds
-    double raw_delta;   // Unsmoothed delta time
-    double fps;         // Current FPS
-    uint64_t frame;     // Frame counter
-    double accumulator; // For fixed timestep
-    double alpha;       // Interpolation factor for fixed timestep
-} canvas_time_info;
-
-static canvas_time_info canvas_time = {0};
-static double _canvas_last_time = 0.0;
-static double _canvas_frame_times[60] = {0}; // For FPS smoothing
-static int _canvas_frame_index = 0;
+canvas_display _canvas_displays[MAX_DISPLAYS];
+static int _canvas_display_count = 0;
+static int _canvas_highest_refresh_rate = 60;
 
 #ifndef CANVAS_HEADER_ONLY
 
@@ -600,12 +611,12 @@ int _canvas_gpu_new_window(int window_id)
 //
 #if defined(_WIN32) || defined(_WIN64)
 
-void _canvas_time_init()
+void _canvas_time_init(canvas_time_data *time)
 {
     QueryPerformanceFrequency(&_canvas_qpc_frequency);
     QueryPerformanceCounter(&_canvas_start_counter);
-    _canvas_last_time = 0.0;
-    canvas_time.frame = 0;
+    time->last = 0.0;
+    time->frame = 0;
 }
 
 double _canvas_get_time()
@@ -1119,65 +1130,65 @@ int _canvas_window_resize(int window_id)
 }
 #endif
 
-void _canvas_time_update(void)
+void _canvas_time_update(canvas_time_data *time)
 {
-    canvas_time.current = _canvas_get_time();
-    canvas_time.raw_delta = canvas_time.current - _canvas_last_time;
+    time->current = _canvas_get_time();
+    time->raw_delta = time->current - time->last;
 
-    if (canvas_time.raw_delta > 0.1)
+    if (time->raw_delta > 0.1)
     {
-        canvas_time.raw_delta = 0.1;
+        time->raw_delta = 0.1;
     }
 
     const double smoothing = 0.95;
-    if (canvas_time.frame == 0)
+    if (time->frame == 0)
     {
-        canvas_time.delta = canvas_time.raw_delta;
+        time->delta = time->raw_delta;
     }
     else
     {
-        canvas_time.delta = canvas_time.delta * smoothing +
-                            canvas_time.raw_delta * (1.0 - smoothing);
+        time->delta = time->delta * smoothing +
+                      time->raw_delta * (1.0 - smoothing);
     }
 
-    _canvas_frame_times[_canvas_frame_index] = canvas_time.raw_delta;
-    _canvas_frame_index = (_canvas_frame_index + 1) % 60;
+    time->times[time->frame_index] = time->raw_delta;
+    time->frame_index = (time->frame_index + 1) % 60;
 
     double avg_frame_time = 0.0;
     for (int i = 0; i < 60; i++)
     {
-        avg_frame_time += _canvas_frame_times[i];
+        avg_frame_time += time->times[i];
     }
     avg_frame_time /= 60.0;
-    canvas_time.fps = (avg_frame_time > 0.0) ? (1.0 / avg_frame_time) : 0.0;
+    time->fps = (avg_frame_time > 0.0) ? (1.0 / avg_frame_time) : 0.0;
 
-    _canvas_last_time = canvas_time.current;
-    canvas_time.frame++;
+    time->last = time->current;
+    time->frame++;
 }
 
-int _canvas_time_fixed_step(double fixed_dt, int max_steps)
+int _canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps)
 {
-    canvas_time.accumulator += canvas_time.delta;
+    time->accumulator += time->delta;
 
     int steps = 0;
-    while (canvas_time.accumulator >= fixed_dt && steps < max_steps)
+    while (time->accumulator >= fixed_dt && steps < max_steps)
     {
-        canvas_time.accumulator -= fixed_dt;
+        time->accumulator -= fixed_dt;
         steps++;
     }
 
-    canvas_time.alpha = canvas_time.accumulator / fixed_dt;
+    time->alpha = time->accumulator / fixed_dt;
 
     return steps;
 }
 
-void canvas_limit_fps(double target_fps)
+void canvas_limit_fps(canvas_time_data *time, double target_fps)
 {
     if (target_fps <= 0.0)
         return;
 
     double target_frame_time = 1.0 / target_fps;
-    double elapsed = _canvas_get_time() - (canvas_time.current - canvas_time.delta);
+    double elapsed = _canvas_get_time() - (time->current - time->delta);
     double remaining = target_frame_time - elapsed;
 
     if (remaining > 0.0)
@@ -1187,7 +1198,7 @@ void canvas_limit_fps(double target_fps)
             canvas_sleep(remaining - 0.002);
         }
 
-        while (_canvas_get_time() - (canvas_time.current - canvas_time.delta) < target_frame_time)
+        while (_canvas_get_time() - (time->current - time->delta) < target_frame_time)
         {
             // Busy-wait for accuracy
         }
@@ -1201,7 +1212,7 @@ int canvas_startup()
 
     _canvas_init_platform = true;
 
-    _canvas_time_init();
+    _canvas_time_init(&canvas_main_time);
 
     _canvas_platform();
     return 0;
@@ -1209,7 +1220,7 @@ int canvas_startup()
 
 void canvas_main_loop()
 {
-    _canvas_time_update();
+    _canvas_time_update(&canvas_main_time);
 
     _canvas_update();
 
