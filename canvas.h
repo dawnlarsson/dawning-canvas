@@ -94,8 +94,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title);
 int _canvas_gpu_init();
 int _canvas_gpu_new_window(int window_id);
 int _canvas_window_resize(int window_id);
+void _canvas_time_init(canvas_time_data *time)
 
-bool _canvas_init_platform = false;
+    bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
 bool _post_init_ran = false;
 bool _canvas_os_timed = false;
@@ -262,12 +263,12 @@ _x11_display *_canvas_display = 0;
 //
 #if defined(__APPLE__)
 
-void _canvas_time_init()
+void _canvas_time_init(canvas_time_data *time)
 {
     mach_timebase_info(&_canvas_timebase);
     _canvas_start_time = mach_absolute_time();
-    _canvas_last_time = 0.0;
-    canvas_time.frame = 0;
+    time->last = 0.0;
+    time->frame = 0;
 }
 
 double _canvas_get_time()
@@ -516,13 +517,13 @@ int _canvas_update()
 //
 #if defined(__linux__)
 
-void _canvas_time_init(void)
+void _canvas_time_init(canvas_time_data *time)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    _canvas_start_time = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    _canvas_last_time = 0.0;
-    canvas_time.frame = 0;
+    time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    time->last = 0.0;
+    time->frame = 0;
 }
 
 double _canvas_get_time()
@@ -1130,6 +1131,87 @@ int _canvas_window_resize(int window_id)
 }
 #endif
 
+int canvas_startup()
+{
+    if (_canvas_init_platform)
+        return 0;
+
+    _canvas_init_platform = true;
+
+    _canvas_time_init(&canvas_main_time);
+
+    _canvas_platform();
+    return 0;
+}
+
+void canvas_main_loop()
+{
+    _canvas_time_update(&canvas_main_time);
+
+    _canvas_update();
+
+    for (int i = 0; i < MAX_CANVAS; ++i)
+    {
+        if (_canvas[i].window == 0)
+            continue;
+
+        if (_canvas[i].update)
+        {
+            _canvas[i].update(i);
+        }
+        else if (canvas_default_update_callback)
+        {
+            canvas_default_update_callback(i);
+        }
+    }
+}
+
+int canvas_run(canvas_update_callback default_callback)
+{
+    while (1)
+    {
+        _canvas_os_timed = false;
+        canvas_main_loop();
+    }
+
+    return 0;
+}
+
+int canvas(int x, int y, int width, int height, const char *title)
+{
+    _canvas_gpu_init();
+
+    int window_id = _canvas_window(x, y, width, height, title);
+
+    if (window_id < 0)
+        return -1;
+
+    canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
+
+    _canvas_gpu_new_window(window_id);
+
+    return window_id;
+}
+
+void canvas_set_update_callback(int window, canvas_update_callback callback)
+{
+    if (window < 0 || window >= _canvas_count)
+        return;
+    _canvas[window].update = callback;
+}
+
+void canvas_color(int window, const float color[4])
+{
+    _canvas[window].clear[0] = color[0];
+    _canvas[window].clear[1] = color[1];
+    _canvas[window].clear[2] = color[2];
+    _canvas[window].clear[3] = color[3];
+}
+
+//
+//
+// Time
+
 void _canvas_time_update(canvas_time_data *time)
 {
     time->current = _canvas_get_time();
@@ -1203,81 +1285,6 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
             // Busy-wait for accuracy
         }
     }
-}
-
-int canvas_startup()
-{
-    if (_canvas_init_platform)
-        return 0;
-
-    _canvas_init_platform = true;
-
-    _canvas_time_init(&canvas_main_time);
-
-    _canvas_platform();
-    return 0;
-}
-
-void canvas_main_loop()
-{
-    _canvas_time_update(&canvas_main_time);
-
-    _canvas_update();
-
-    for (int i = 0; i < _canvas_count; ++i)
-    {
-        if (_canvas[i].update)
-        {
-            _canvas[i].update(i);
-        }
-        else if (canvas_default_update_callback)
-        {
-            canvas_default_update_callback(i);
-        }
-    }
-}
-
-int canvas_run(canvas_update_callback default_callback)
-{
-
-    while (1)
-    {
-        _canvas_os_timed = false;
-        canvas_main_loop();
-    }
-
-    return 0;
-}
-
-int canvas(int x, int y, int width, int height, const char *title)
-{
-    _canvas_gpu_init();
-
-    int window_id = _canvas_window(x, y, width, height, title);
-
-    if (window_id < 0)
-        return -1;
-
-    canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
-
-    _canvas_gpu_new_window(window_id);
-
-    return window_id;
-}
-
-void canvas_set_update_callback(int window, canvas_update_callback callback)
-{
-    if (window < 0 || window >= _canvas_count)
-        return;
-    _canvas[window].update = callback;
-}
-
-void canvas_color(int window, const float color[4])
-{
-    _canvas[window].clear[0] = color[0];
-    _canvas[window].clear[1] = color[1];
-    _canvas[window].clear[2] = color[2];
-    _canvas[window].clear[3] = color[3];
 }
 
 #endif // CANVAS_HEADER_ONLY
