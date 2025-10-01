@@ -14,8 +14,14 @@ void update(int window)
 
 int main()
 {
-        int window_1 = canvas(400, 400, 600, 600, "My Window");
-        int window_2 = canvas(500, 500, 600, 600, "My Window 2");
+        canvas(100, 100, 500, 500, "1");
+        canvas(150, 150, 500, 500, "2");
+        canvas(200, 200, 500, 500, "3");
+        canvas(250, 250, 500, 500, "4");
+        canvas(300, 300, 500, 500, "5");
+        canvas(350, 350, 500, 500, "6");
+        canvas(400, 400, 500, 500, "7");
+        canvas(450, 450, 500, 500, "8");
 
         return canvas_run(update);
 }

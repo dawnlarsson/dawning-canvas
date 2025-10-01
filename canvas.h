@@ -52,8 +52,13 @@
 
 #pragma once
 
+#ifndef MAX_CANVAS
 #define MAX_CANVAS 32
+#endif
+
+#ifndef MAX_DISPLAYS
 #define MAX_DISPLAYS 8
+#endif
 
 #include <stdbool.h>
 #include <stdint.h>
