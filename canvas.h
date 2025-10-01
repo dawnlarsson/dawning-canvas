@@ -523,10 +523,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         if (!_canvas[window_index].titlebar)
         {
-            enum DWMNCRENDERINGPOLICY policy = DWMNCRP_ENABLED;
-            DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
-
             DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+
+            enum DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_MAINWINDOW;
+            DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+
+            BOOL useRoundedCorners = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
         }
         return 0;
@@ -613,9 +616,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     RegisterClassA(&wc);
 
-    DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
-
-    style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
+    DWORD style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
     int window_id = _canvas_count++; // todo: check for empty slots
 
@@ -626,7 +627,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         title,
         style,
         x, y, width, height,
-        NULL, NULL, _win_instance, &_canvas[window_id].index);
+        NULL, NULL, _win_instance, NULL);
 
     if (!window)
     {
@@ -639,6 +640,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[window_id].titlebar = false;
 
     SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+
+    SetWindowLongPtr((HWND)_canvas[window_id].window, GWLP_USERDATA, (LONG_PTR)window_id);
 
     return window_id;
 }
@@ -655,17 +658,68 @@ int _canvas_update()
     MSG msg;
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
     {
-        if (_win_device)
-        {
-            for (int i = 0; i < _canvas_count; ++i)
-                _canvas_window_resize(i);
-
-            _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
-            _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
-        }
-
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+
+    if (_win_device)
+    {
+        for (int i = 0; i < _canvas_count; ++i)
+        {
+            if (_canvas[i].resize)
+            {
+                _canvas_window_resize(i);
+            }
+        }
+
+        _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
+        _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
+
+        for (int i = 0; i < _canvas_count; ++i)
+        {
+            if (_canvas[i].window == NULL ||
+                _canvas_data[i].swapChain == NULL ||
+                _canvas_data[i].backBuffers[0] == NULL)
+                continue;
+
+            UINT backBufferIndex = _canvas_data[i].swapChain->lpVtbl->GetCurrentBackBufferIndex(_canvas_data[i].swapChain);
+
+            D3D12_RESOURCE_BARRIER barrier = {0};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = _canvas_data[i].backBuffers[backBufferIndex];
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            _win_cmdList->lpVtbl->ResourceBarrier(_win_cmdList, 1, &barrier);
+
+            _win_cmdList->lpVtbl->ClearRenderTargetView(_win_cmdList,
+                                                        _canvas_data[i].rtvHandles[backBufferIndex],
+                                                        _canvas[i].clear, 0, NULL);
+
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+            _win_cmdList->lpVtbl->ResourceBarrier(_win_cmdList, 1, &barrier);
+        }
+
+        _win_cmdList->lpVtbl->Close(_win_cmdList);
+        ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)_win_cmdList};
+        _win_cmdQueue->lpVtbl->ExecuteCommandLists(_win_cmdQueue, 1, cmdLists);
+
+        for (int i = 0; i < _canvas_count; ++i)
+        {
+            if (_canvas_data[i].swapChain != NULL)
+            {
+                _canvas_data[i].swapChain->lpVtbl->Present(_canvas_data[i].swapChain, 1, 0);
+            }
+        }
+
+        _win_fence_value++;
+        _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
+        if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+        {
+            _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
+            WaitForSingleObject(_win_fence_event, INFINITE);
+        }
     }
 
     return 1;
@@ -786,6 +840,8 @@ int _canvas_gpu_new_window(int window_id)
     scDesc.BufferCount = 2;
     scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    scDesc.Scaling = DXGI_SCALING_NONE;
+    scDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     IDXGISwapChain1 *swapChain1;
     HRESULT result = _win_factory->lpVtbl->CreateSwapChainForHwnd(
@@ -838,11 +894,13 @@ int _canvas_gpu_new_window(int window_id)
             rtvHandle);
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
+
+    return 0;
 }
 
 int _canvas_window_resize(int window_id)
 {
-    if (window_id < 0)
+    if (window_id < 0 || window_id >= _canvas_count)
         return -1;
 
     canvas_data *window = &_canvas_data[window_id];
@@ -852,14 +910,16 @@ int _canvas_window_resize(int window_id)
 
     _canvas[window_id].resize = false;
 
-    _win_fence_value++;
-    _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
-    if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
-    {
-        _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
-        WaitForSingleObject(_win_fence_event, INFINITE);
-    }
+    // Get new dimensions
+    RECT rect;
+    GetClientRect((HWND)_canvas[window_id].window, &rect);
+    UINT width = rect.right - rect.left;
+    UINT height = rect.bottom - rect.top;
 
+    if (width == 0 || height == 0)
+        return 0;
+
+    // Release old back buffers
     for (int i = 0; i < 2; i++)
     {
         if (window->backBuffers[i])
@@ -869,29 +929,32 @@ int _canvas_window_resize(int window_id)
         }
     }
 
-    RECT rect;
-    GetClientRect((HWND)_canvas[window_id].window, &rect);
-    UINT width = rect.right - rect.left;
-    UINT height = rect.bottom - rect.top;
-
-    if (width == 0 || height == 0)
-        return 0;
-
+    // Resize with proper flags (pass 0 for format to keep existing format)
     HRESULT hr = window->swapChain->lpVtbl->ResizeBuffers(
         window->swapChain,
-        2, width, height,
-        DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+        2,
+        width,
+        height,
+        DXGI_FORMAT_UNKNOWN, // Keep existing format
+        DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
 
+    if (FAILED(hr))
+        return -1;
+
+    // Recreate render target views
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
     rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
     {
-        window->swapChain->lpVtbl->GetBuffer(
+        hr = window->swapChain->lpVtbl->GetBuffer(
             window->swapChain, i,
             &IID_ID3D12Resource,
             (void **)&window->backBuffers[i]);
+
+        if (FAILED(hr))
+            return -1;
 
         window->rtvHandles[i] = rtvHandle;
         _win_device->lpVtbl->CreateRenderTargetView(
@@ -902,8 +965,9 @@ int _canvas_window_resize(int window_id)
 
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
-}
 
+    return 0;
+}
 #endif
 
 int canvas_startup()
@@ -928,7 +992,7 @@ int canvas(int x, int y, int width, int height, const char *title)
 
     int window_id = _canvas_window(x, y, width, height, title);
 
-    if (!window_id)
+    if (window_id < 0)
         return -1;
 
     canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
