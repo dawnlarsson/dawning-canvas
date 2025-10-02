@@ -91,6 +91,7 @@ int canvas_run(canvas_update_callback update);
 void canvas_set_update_callback(int window, canvas_update_callback callback);
 int canvas_fixed_update(canvas_time_data *time, double fixed_dt);
 void canvas_limit_fps(canvas_time_data *time, double target_fps);
+void canvas_sleep(double seconds);
 
 // internal api
 void canvas_main_loop();
@@ -146,6 +147,10 @@ static int _canvas_highest_refresh_rate = 60;
 #include <objc/message.h>
 #include <time.h>
 #include <mach/mach_time.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ApplicationServices/ApplicationServices.h>
+
+static bool _canvas_displays_changed = false;
 
 static mach_timebase_info_data_t _canvas_timebase = {0};
 
@@ -269,27 +274,131 @@ _x11_display *_canvas_display = 0;
 //
 #if defined(__APPLE__)
 
-void _canvas_time_init(canvas_time_data *time)
+void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo)
 {
-    mach_timebase_info(&_canvas_timebase);
-    time->start = mach_absolute_time();
-    time->last = 0.0;
-    time->frame = 0;
+    if (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplaySetModeFlag | kCGDisplayDesktopShapeChangedFlag))
+        _canvas_displays_changed = true;
 }
 
-double _canvas_get_time(canvas_time_data *time)
+int canvas_get_window_display(int window_id)
 {
-    uint64_t elapsed = mach_absolute_time() - time->start;
-    return (double)elapsed * (double)_canvas_timebase.numer /
-           (double)_canvas_timebase.denom / 1e9;
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    objc_id window = _canvas[window_id].window;
+    if (!window)
+        return -1;
+
+    objc_id screen = ((MSG_id_id)objc_msgSend)(window, sel_c("screen"));
+    if (!screen)
+        return 0;
+
+    objc_id device_desc = ((MSG_id_id)objc_msgSend)(screen, sel_c("deviceDescription"));
+    if (!device_desc)
+        return 0;
+
+    objc_id screen_number_key = ((MSG_id_id_charp)objc_msgSend)(
+        cls("NSString"),
+        sel_c("stringWithUTF8String:"),
+        "NSScreenNumber");
+
+    objc_id display_id_obj = ((MSG_id_id_id)objc_msgSend)(
+        device_desc,
+        sel_c("objectForKey:"),
+        screen_number_key);
+
+    if (!display_id_obj)
+        return 0;
+
+    unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
+
+    uint32_t max_displays = MAX_DISPLAYS;
+    CGDirectDisplayID displays[MAX_DISPLAYS];
+    uint32_t display_count = 0;
+
+    CGGetActiveDisplayList(max_displays, displays, &display_count);
+
+    for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
+    {
+        if (displays[i] == (CGDirectDisplayID)display_id)
+        {
+            return (int)i;
+        }
+    }
+
+    return 0;
 }
 
-void canvas_sleep(double seconds)
+void canvas_update_window_display(int window_id)
 {
-    struct timespec ts;
-    ts.tv_sec = (time_t)seconds;
-    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
-    nanosleep(&ts, NULL);
+    if (window_id < 0 || window_id >= _canvas_count)
+        return;
+
+    _canvas[window_id].display = canvas_get_window_display(window_id);
+}
+
+int canvas_refresh_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+    _canvas_displays_changed = false;
+
+    uint32_t max_displays = MAX_DISPLAYS;
+    CGDirectDisplayID displays[MAX_DISPLAYS];
+    uint32_t display_count = 0;
+
+    CGError err = CGGetActiveDisplayList(max_displays, displays, &display_count);
+    if (err != kCGErrorSuccess)
+    {
+        return -1;
+    }
+
+    CGDirectDisplayID main_display = CGMainDisplayID();
+
+    for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
+    {
+        CGDirectDisplayID display_id = displays[i];
+        CGRect bounds = CGDisplayBounds(display_id);
+        CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display_id);
+        double refresh_rate = 60.0;
+
+        if (mode)
+        {
+            refresh_rate = CGDisplayModeGetRefreshRate(mode);
+
+            if (refresh_rate == 0.0)
+                refresh_rate = 60.0;
+
+            CGDisplayModeRelease(mode);
+        }
+
+        _canvas_displays[i].primary = (display_id == main_display);
+        _canvas_displays[i].width = (int)bounds.size.width;
+        _canvas_displays[i].height = (int)bounds.size.height;
+        _canvas_displays[i].refresh_rate = (int)refresh_rate;
+
+        if ((int)refresh_rate > _canvas_highest_refresh_rate)
+            _canvas_highest_refresh_rate = (int)refresh_rate;
+
+        _canvas_display_count++;
+    }
+
+    for (int i = 0; i < _canvas_count; i++)
+    {
+        if (_canvas[i].window)
+            canvas_update_window_display(i);
+    }
+
+    return _canvas_display_count;
+}
+
+int _canvas_init_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+    CGDisplayRegisterReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
+
+    return canvas_refresh_displays();
 }
 
 void _post_init()
@@ -316,6 +425,8 @@ int _canvas_platform()
 
     ((MSG_void_id_long)objc_msgSend)(_mac_app, sel_c("setActivationPolicy:"), (long)0);
     ((MSG_void_id_bool)objc_msgSend)(_mac_app, sel_c("activateIgnoringOtherApps:"), 1);
+
+    _canvas_init_displays();
     return 0;
 }
 
@@ -507,6 +618,16 @@ int _canvas_update()
         ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
     }
 
+    objc_id tracking_mode = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), "NSEventTrackingRunLoopMode");
+    for (;;)
+    {
+        objc_id ev = nextEvent(_mac_app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+                               ~0ULL, distantPast, tracking_mode, (signed char)1);
+        if (!ev)
+            break;
+        ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
+    }
+
     ((MSG_void_id)objc_msgSend)(_mac_app, sel_c("updateWindows"));
 
     _canvas_gpu_draw_all();
@@ -514,6 +635,29 @@ int _canvas_update()
     if (framePool)
         ((MSG_void_id)objc_msgSend)(framePool, sel_c("drain"));
     return 1;
+}
+
+void canvas_sleep(double seconds)
+{
+    struct timespec ts;
+    ts.tv_sec = (time_t)seconds;
+    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
+    nanosleep(&ts, NULL);
+}
+
+void _canvas_time_init(canvas_time_data *time)
+{
+    mach_timebase_info(&_canvas_timebase);
+    time->start = mach_absolute_time();
+    time->last = 0.0;
+    time->frame = 0;
+}
+
+double _canvas_get_time(canvas_time_data *time)
+{
+    uint64_t elapsed = mach_absolute_time() - time->start;
+    return (double)elapsed * (double)_canvas_timebase.numer /
+           (double)_canvas_timebase.denom / 1e9;
 }
 
 #endif /* __APPLE__ */
@@ -1145,6 +1289,8 @@ int canvas_startup()
     _canvas_init_platform = true;
 
     _canvas_time_init(&canvas_main_time);
+
+    // _canvas_init_displays();
 
     _canvas_platform();
     return 0;
