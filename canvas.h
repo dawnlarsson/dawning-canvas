@@ -274,13 +274,7 @@ _x11_display *_canvas_display = 0;
 //
 #if defined(__APPLE__)
 
-void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo)
-{
-    if (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplaySetModeFlag | kCGDisplayDesktopShapeChangedFlag))
-        _canvas_displays_changed = true;
-}
-
-int canvas_get_window_display(int window_id)
+int _canvas_get_window_display(int window_id)
 {
     if (window_id < 0 || window_id >= _canvas_count)
         return -1;
@@ -329,15 +323,15 @@ int canvas_get_window_display(int window_id)
     return 0;
 }
 
-void canvas_update_window_display(int window_id)
+void _canvas_update_window_display(int window_id)
 {
     if (window_id < 0 || window_id >= _canvas_count)
         return;
 
-    _canvas[window_id].display = canvas_get_window_display(window_id);
+    _canvas[window_id].display = _canvas_get_window_display(window_id);
 }
 
-int canvas_refresh_displays()
+int _canvas_refresh_displays()
 {
     _canvas_display_count = 0;
     _canvas_highest_refresh_rate = 60;
@@ -386,10 +380,26 @@ int canvas_refresh_displays()
     for (int i = 0; i < _canvas_count; i++)
     {
         if (_canvas[i].window)
-            canvas_update_window_display(i);
+            _canvas_update_window_display(i);
     }
 
     return _canvas_display_count;
+}
+
+void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo)
+{
+    if (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplaySetModeFlag | kCGDisplayDesktopShapeChangedFlag))
+        _canvas_displays_changed = true;
+}
+
+bool _canvas_check_display_changes()
+{
+    if (_canvas_displays_changed)
+    {
+        _canvas_refresh_displays();
+        return true;
+    }
+    return false;
 }
 
 int _canvas_init_displays()
@@ -398,7 +408,7 @@ int _canvas_init_displays()
     _canvas_highest_refresh_rate = 60;
     CGDisplayRegisterReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
 
-    return canvas_refresh_displays();
+    return _canvas_refresh_displays();
 }
 
 void _post_init()
@@ -480,6 +490,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[idx].window = window;
     _canvas[idx].resize = false;
     _canvas[idx].index = idx;
+
+    _canvas_update_window_display(idx);
 
     return idx;
 }
@@ -594,6 +606,8 @@ void _canvas_gpu_draw_all(void)
 int _canvas_update()
 {
     _post_init();
+
+    _canvas_check_display_changes();
 
     objc_id poolClass = cls("NSAutoreleasePool");
     objc_id framePool = NULL;
