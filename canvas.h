@@ -196,6 +196,7 @@ typedef void (*MSG_void_id_bool)(objc_id, objc_sel, int);
 typedef void (*MSG_void_id_long)(objc_id, objc_sel, long);
 typedef void (*MSG_void_id_ulong)(objc_id, objc_sel, unsigned long);
 typedef void (*MSG_void_id_clear)(objc_id, objc_sel, _MTLClearColor);
+typedef void (*MSG_void_id_rect)(objc_id, objc_sel, _CGRect);
 typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 
 #endif
@@ -285,7 +286,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
         _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
-        ((MSG_void_id_rect)objc_msgSend)(window, sel_c("setFrame:"), rect);
+        typedef void (*MSG_void_id_rect_bool)(objc_id, objc_sel, _CGRect, int);
+        ((MSG_void_id_rect_bool)objc_msgSend)(window, sel_c("setFrame:display:"), rect, 1);
     }
 
     if (title)
