@@ -264,6 +264,7 @@ extern unsigned long XBlackPixel(_x11_display *, int);
 extern unsigned long XWhitePixel(_x11_display *, int);
 extern int XFlush(_x11_display *);
 extern int XNextEvent(_x11_display *, _x11_event *);
+extern int XCheckMaskEvent(_x11_display *, long, _x11_event *);
 extern int XMapWindow(_x11_display *, _x11_window);
 extern int XStoreName(_x11_display *, _x11_window, const char *);
 extern int XMoveResizeWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned);
@@ -1338,6 +1339,9 @@ int _canvas_window_resize(int window_id)
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
+    if(!_canvas_display)
+        return -1;
+
     if (window_id < 0 || window_id >= _canvas_count)
         return -1;
 
@@ -1347,7 +1351,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         return -1;
 
     if (title)
-        XStoreName(_canvas_display, window, title);
+        // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
 
     XMoveResizeWindow(_canvas_display, window, x, y, width, height);
     XFlush(_canvas_display);
@@ -1432,9 +1436,14 @@ int _canvas_platform()
 int _canvas_update()
 {
     _x11_event event;
-    while (XNextEvent(_canvas_display, &event) == 0)
+
+    while(XCheckMaskEvent(_canvas_display, ~0L, &event))
     {
+        XNextEvent(_canvas_display, &event);
+
     }
+
+    XFlush(_canvas_display);
 
     return 1;
 }
