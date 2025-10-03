@@ -265,6 +265,8 @@ extern unsigned long XWhitePixel(_x11_display *, int);
 extern int XFlush(_x11_display *);
 extern int XNextEvent(_x11_display *, _x11_event *);
 extern int XMapWindow(_x11_display *, _x11_window);
+extern int XStoreName(_x11_display *, _x11_window, const char *);
+extern int XMoveResizeWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned);
 
 _x11_display *_canvas_display = 0;
 #endif
