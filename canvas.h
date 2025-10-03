@@ -53,7 +53,7 @@
 #pragma once
 
 #ifndef MAX_CANVAS
-#define MAX_CANVAS 32
+#define MAX_CANVAS 16
 #endif
 
 #ifndef MAX_DISPLAYS
@@ -934,10 +934,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam != 1)
             break;
 
-        if (_canvas[window_index].resize)
-        {
-            canvas_main_loop();
-        }
+        canvas_main_loop();
+
         return 0;
     }
     case WM_DESTROY:
@@ -1372,6 +1370,8 @@ int canvas(int x, int y, int width, int height, const char *title)
 
     if (window_id < 0)
         return -1;
+
+    _canvas_time_init(&_canvas[window_id].time);
 
     canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
 
