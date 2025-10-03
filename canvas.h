@@ -668,116 +668,6 @@ double _canvas_get_time(canvas_time_data *time)
 //
 //
 //
-#if defined(__linux__)
-
-int _canvas_init_displays()
-{
-    _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
-    return 0;
-}
-
-int _canvas_get_window_display(int window_id)
-{
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
-
-    return 0;
-}
-
-void _canvas_time_init(canvas_time_data *time)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    time->last = 0.0;
-    time->frame = 0;
-}
-
-double _canvas_get_time(canvas_time_data *time)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    return (double)(now - time->start) / 1e9;
-}
-
-void canvas_sleep(double seconds)
-{
-    struct timespec ts;
-    ts.tv_sec = (time_t)seconds;
-    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
-    clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
-}
-
-int _canvas_window(int x, int y, int width, int height, const char *title)
-{
-    canvas_startup();
-
-    if (_canvas_count >= MAX_CANVAS)
-        return -1;
-
-    _x11_window window = 0;
-
-    window = XCreateSimpleWindow(
-        _canvas_display,
-        XDefaultRootWindow(_canvas_display),
-        x, y, width, height, 0,
-        XBlackPixel(_canvas_display, 0),
-        XWhitePixel(_canvas_display, 0));
-
-    XMapWindow(_canvas_display, window);
-    XFlush(_canvas_display);
-
-    int idx = _canvas_count++;
-    _canvas[idx].window = (canvas_window_handle)window;
-    _canvas[idx].resize = false;
-    _canvas[idx].index = idx;
-
-    return idx;
-}
-
-int _canvas_platform()
-{
-    _canvas_display = XOpenDisplay(0);
-
-    return 0;
-}
-
-int _canvas_update()
-{
-    _x11_event event;
-    while (XNextEvent(_canvas_display, &event) == 0)
-    {
-    }
-
-    return 1;
-}
-
-int _canvas_gpu_init()
-{
-    if (_canvas_init_gpu)
-        return 0;
-    _canvas_init_gpu = 1;
-
-    // Select & init backend OpenGL / Vulkan
-
-    return 1;
-}
-
-int _canvas_gpu_new_window(int window_id)
-{
-    if (window_id < 0)
-        return -1;
-
-    return 0;
-}
-
-#endif // _linux_
-
-//
-//
-//
 #if defined(_WIN32) || defined(_WIN64)
 
 int _canvas_init_displays()
@@ -1379,6 +1269,116 @@ int _canvas_window_resize(int window_id)
 }
 
 #endif
+
+//
+//
+//
+#if defined(__linux__)
+
+int _canvas_init_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+    return 0;
+}
+
+int _canvas_get_window_display(int window_id)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    return 0;
+}
+
+void _canvas_time_init(canvas_time_data *time)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    time->last = 0.0;
+    time->frame = 0;
+}
+
+double _canvas_get_time(canvas_time_data *time)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    return (double)(now - time->start) / 1e9;
+}
+
+void canvas_sleep(double seconds)
+{
+    struct timespec ts;
+    ts.tv_sec = (time_t)seconds;
+    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
+    clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+}
+
+int _canvas_window(int x, int y, int width, int height, const char *title)
+{
+    canvas_startup();
+
+    if (_canvas_count >= MAX_CANVAS)
+        return -1;
+
+    _x11_window window = 0;
+
+    window = XCreateSimpleWindow(
+        _canvas_display,
+        XDefaultRootWindow(_canvas_display),
+        x, y, width, height, 0,
+        XBlackPixel(_canvas_display, 0),
+        XWhitePixel(_canvas_display, 0));
+
+    XMapWindow(_canvas_display, window);
+    XFlush(_canvas_display);
+
+    int idx = _canvas_count++;
+    _canvas[idx].window = (canvas_window_handle)window;
+    _canvas[idx].resize = false;
+    _canvas[idx].index = idx;
+
+    return idx;
+}
+
+int _canvas_platform()
+{
+    _canvas_display = XOpenDisplay(0);
+
+    return 0;
+}
+
+int _canvas_update()
+{
+    _x11_event event;
+    while (XNextEvent(_canvas_display, &event) == 0)
+    {
+    }
+
+    return 1;
+}
+
+int _canvas_gpu_init()
+{
+    if (_canvas_init_gpu)
+        return 0;
+    _canvas_init_gpu = 1;
+
+    // Select & init backend OpenGL / Vulkan
+
+    return 1;
+}
+
+int _canvas_gpu_new_window(int window_id)
+{
+    if (window_id < 0)
+        return -1;
+
+    return 0;
+}
+
+#endif // _linux_
 
 int canvas_startup()
 {
