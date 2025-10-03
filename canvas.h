@@ -876,24 +876,43 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam != SIZE_MINIMIZED)
         {
             _canvas[window_index].resize = true;
+
+            if (!_canvas_os_timed)
+            {
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
         }
+        return 0;
     }
+
+        /* TODO
+        case WM_SIZING:
+        {
+            RECT *rect = (RECT *)lParam;
+            UINT width = rect->right - rect->left;
+            UINT height = rect->bottom - rect->top;
+
+            RECT client;
+            GetClientRect(hwnd, &client);
+            width = client.right - client.left;
+            height = client.bottom - client.top;
+
+            if (width > 0 && height > 0)
+            {
+                _canvas[window_index].resize = true;
+                _canvas_window_resize(window_index);
+                _canvas_update();
+            }
+            return TRUE;
+        }
+        */
 
     case WM_ENTERSIZEMOVE:
     {
         if (_canvas_os_timed)
             break;
 
-        HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi = {0};
-        mi.cbSize = sizeof(mi);
-        GetMonitorInfo(hMonitor, &mi);
-        int refreshRate = 60;
-
-        if (mi.rcMonitor.right - mi.rcMonitor.left > 0)
-        {
-            refreshRate = (int)(1000.0 / (mi.rcMonitor.right - mi.rcMonitor.left));
-        }
+        int refreshRate = 16;
 
         _canvas_os_timed = true;
         SetTimer(hwnd, 1, refreshRate, NULL);
@@ -902,6 +921,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_EXITSIZEMOVE:
     {
+        if (!_canvas_os_timed)
+            break;
+
         _canvas_os_timed = false;
         KillTimer(hwnd, 1);
         return 0;
@@ -912,11 +934,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam != 1)
             break;
 
-        _canvas[window_index].resize = true;
-        canvas_main_loop();
+        if (_canvas[window_index].resize)
+        {
+            canvas_main_loop();
+        }
         return 0;
     }
-
     case WM_DESTROY:
         PostQuitMessage(0);
     }
@@ -1165,7 +1188,7 @@ int _canvas_gpu_new_window(int window_id)
     scDesc.BufferCount = 2;
     scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-    scDesc.Scaling = DXGI_SCALING_NONE;
+    scDesc.Scaling = DXGI_SCALING_STRETCH; // reduces buggy black borders on very fast resize
     scDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     IDXGISwapChain1 *swapChain1;
@@ -1222,7 +1245,6 @@ int _canvas_gpu_new_window(int window_id)
 
     return 0;
 }
-
 int _canvas_window_resize(int window_id)
 {
     if (window_id < 0 || window_id >= _canvas_count)
@@ -1233,9 +1255,16 @@ int _canvas_window_resize(int window_id)
     if (!window->swapChain || !_canvas[window_id].resize)
         return 0;
 
+    _win_fence_value++;
+    _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
+    if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+    {
+        _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
+        WaitForSingleObject(_win_fence_event, INFINITE);
+    }
+
     _canvas[window_id].resize = false;
 
-    // Get new dimensions
     RECT rect;
     GetClientRect((HWND)_canvas[window_id].window, &rect);
     UINT width = rect.right - rect.left;
@@ -1244,7 +1273,6 @@ int _canvas_window_resize(int window_id)
     if (width == 0 || height == 0)
         return 0;
 
-    // Release old back buffers
     for (int i = 0; i < 2; i++)
     {
         if (window->backBuffers[i])
@@ -1254,19 +1282,14 @@ int _canvas_window_resize(int window_id)
         }
     }
 
-    // Resize with proper flags (pass 0 for format to keep existing format)
     HRESULT hr = window->swapChain->lpVtbl->ResizeBuffers(
-        window->swapChain,
-        2,
-        width,
-        height,
-        DXGI_FORMAT_UNKNOWN, // Keep existing format
+        window->swapChain, 2, width, height,
+        DXGI_FORMAT_UNKNOWN,
         DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
 
     if (FAILED(hr))
         return -1;
 
-    // Recreate render target views
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
     rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
@@ -1274,8 +1297,7 @@ int _canvas_window_resize(int window_id)
     for (int i = 0; i < 2; i++)
     {
         hr = window->swapChain->lpVtbl->GetBuffer(
-            window->swapChain, i,
-            &IID_ID3D12Resource,
+            window->swapChain, i, &IID_ID3D12Resource,
             (void **)&window->backBuffers[i]);
 
         if (FAILED(hr))
@@ -1283,16 +1305,13 @@ int _canvas_window_resize(int window_id)
 
         window->rtvHandles[i] = rtvHandle;
         _win_device->lpVtbl->CreateRenderTargetView(
-            _win_device,
-            window->backBuffers[i],
-            NULL,
-            rtvHandle);
-
+            _win_device, window->backBuffers[i], NULL, rtvHandle);
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
 
     return 0;
 }
+
 #endif
 
 int canvas_startup()
