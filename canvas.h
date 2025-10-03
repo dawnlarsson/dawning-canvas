@@ -87,6 +87,7 @@ int canvas_startup();
 int canvas_update();
 int canvas(int x, int y, int width, int height, const char *title);
 void canvas_color(int window, const float color[4]);
+int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
 int canvas_run(canvas_update_callback update);
 void canvas_set_update_callback(int window, canvas_update_callback callback);
 int canvas_fixed_update(canvas_time_data *time, double fixed_dt);
@@ -115,12 +116,11 @@ canvas_time_data canvas_main_time = {0};
 
 typedef struct
 {
-    canvas_window_handle window;
+    int index, x, y, width, height, display;
+    bool resize, close, titlebar, os_moved, os_resized;
     float clear[4];
-    bool resize, close;
-    bool titlebar;
-    int index;
-    int display;
+    const char *title;
+    canvas_window_handle window;
     canvas_update_callback update;
     canvas_time_data time;
 } canvas_type;
@@ -272,6 +272,31 @@ _x11_display *_canvas_display = 0;
 //
 //
 #if defined(__APPLE__)
+
+int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    objc_id window = _canvas[window_id].window;
+    if (!window)
+        return -1;
+
+    if (x >= 0 && y >= 0 && width > 0 && height > 0)
+    {
+        _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
+        ((MSG_void_id_rect)objc_msgSend)(window, sel_c("setFrame:"), rect);
+    }
+
+    if (title)
+    {
+        objc_id nsTitle = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), title);
+        if (nsTitle)
+            ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitle:"), nsTitle);
+    }
+
+    return 0;
+}
 
 int _canvas_get_window_display(int window_id)
 {
@@ -670,6 +695,24 @@ double _canvas_get_time(canvas_time_data *time)
 //
 #if defined(_WIN32) || defined(_WIN64)
 
+int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    HWND window = (HWND)_canvas[window_id].window;
+
+    if (!window)
+        return -1;
+
+    SetWindowPos(window, NULL, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+
+    if (title)
+        SetWindowTextA(window, title);
+
+    return 0;
+}
+
 int _canvas_init_displays()
 {
     _canvas_display_count = 0;
@@ -808,6 +851,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 {
                     if (pt.x < rcWindow.right - 140)
                     {
+                        _canvas[window_index].os_moved = true;
                         return HTCAPTION;
                     }
                 }
@@ -818,6 +862,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_DISPLAYCHANGE:
     {
+        _canvas[window_index].os_moved = true;
         _canvas_displays_changed = true;
         return 0;
     }
@@ -829,8 +874,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_MOVING:
+    {
+        _canvas[window_index].os_moved = true;
+
+        return 0;
+    }
+
     case WM_SIZE:
     {
+
         if (wParam != SIZE_MINIMIZED)
         {
             _canvas[window_index].resize = true;
@@ -843,9 +896,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_SIZING:
+    {
+
+        _canvas[window_index].os_resized = true;
+
         /* TODO
-        case WM_SIZING:
-        {
             RECT *rect = (RECT *)lParam;
             UINT width = rect->right - rect->left;
             UINT height = rect->bottom - rect->top;
@@ -861,9 +917,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 _canvas_window_resize(window_index);
                 _canvas_update();
             }
-            return TRUE;
-        }
-        */
+                */
+
+        return TRUE;
+    }
 
     case WM_ENTERSIZEMOVE:
     {
@@ -1275,6 +1332,25 @@ int _canvas_window_resize(int window_id)
 //
 #if defined(__linux__)
 
+int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    _x11_window window = (_x11_window)_canvas[window_id].window;
+
+    if (!window)
+        return -1;
+
+    if (title)
+        XStoreName(_canvas_display, window, title);
+
+    XMoveResizeWindow(_canvas_display, window, x, y, width, height);
+    XFlush(_canvas_display);
+
+    return 0;
+}
+
 int _canvas_init_displays()
 {
     _canvas_display_count = 0;
@@ -1426,6 +1502,32 @@ int canvas_run(canvas_update_callback default_callback)
         _canvas_os_timed = false;
         canvas_main_loop();
     }
+
+    return 0;
+}
+
+// display:     -1 = primary display
+// x:           -1 = centered
+// y:           -1 = centered
+// width:       window width in pixels
+// height:      window height in pixels
+// title:       window title string
+int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    _canvas[window_id].display = display;
+    _canvas[window_id].x = x;
+    _canvas[window_id].y = y;
+    _canvas[window_id].width = width;
+    _canvas[window_id].height = height;
+    _canvas[window_id].title = title;
+
+    _canvas[window_id].os_moved = false;
+    _canvas[window_id].os_resized = false;
+
+    _canvas_set(window_id, display, x, y, width, height, title);
 
     return 0;
 }

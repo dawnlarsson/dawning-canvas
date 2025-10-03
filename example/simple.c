@@ -10,18 +10,30 @@ void update(int window)
         float b = (sinf(t * 0.9f + 4.0f) + 1.0f) * 0.5f;
 
         canvas_color(window, (float[]){r, g, b, 1.0f});
+
+        // don't move if the user has moved / resized the window
+        // on windows this is quite janky for the moment...
+        if (_canvas[window].os_moved || _canvas[window].os_resized)
+                return;
+
+        canvas_set(window, 0,
+                   200 + (int)(200.0f * sinf(t * 0.6f)),
+                   200 + (int)(200.0f * cosf(t * 0.6f)),
+                   128 + (int)(32.0f * sinf(t * 1.0f)),
+                   128 + (int)(32.0f * sinf(t * 1.0f)),
+                   "Moving Window");
 }
 
 int main()
 {
-        canvas(100, 100, 500, 500, "1");
-        canvas(150, 150, 500, 500, "2");
-        canvas(200, 200, 500, 500, "3");
-        canvas(250, 250, 500, 500, "4");
-        canvas(300, 300, 500, 500, "5");
-        canvas(350, 350, 500, 500, "6");
-        canvas(400, 400, 500, 500, "7");
-        canvas(450, 450, 500, 500, "8");
+        canvas(100, 100, 128, 128, "1");
+        canvas(150, 150, 128, 128, "2");
+        canvas(200, 200, 128, 128, "3");
+        canvas(250, 250, 128, 128, "4");
+        canvas(300, 300, 128, 128, "5");
+        canvas(350, 350, 128, 128, "6");
+        canvas(400, 400, 128, 128, "7");
+        canvas(450, 450, 128, 128, "8");
 
         return canvas_run(update);
 }
