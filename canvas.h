@@ -107,10 +107,11 @@ double _canvas_get_time(canvas_time_data *time);
 
 bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
-bool _post_init_ran = false;
+bool _canvas_post_init_ran = false;
 bool _canvas_os_timed = false;
+bool _canvas_displays_changed = false;
 
-static canvas_time_data canvas_main_time = {0};
+canvas_time_data canvas_main_time = {0};
 
 typedef struct
 {
@@ -132,11 +133,11 @@ typedef struct
 } canvas_display;
 
 canvas_type _canvas[MAX_CANVAS];
-static int _canvas_count = 0;
+int _canvas_count = 0;
 
 canvas_display _canvas_displays[MAX_DISPLAYS];
-static int _canvas_display_count = 0;
-static int _canvas_highest_refresh_rate = 60;
+int _canvas_display_count = 0;
+int _canvas_highest_refresh_rate = 60;
 
 #ifndef CANVAS_HEADER_ONLY
 
@@ -149,8 +150,6 @@ static int _canvas_highest_refresh_rate = 60;
 #include <mach/mach_time.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
-
-static bool _canvas_displays_changed = false;
 
 static mach_timebase_info_data_t _canvas_timebase = {0};
 
@@ -314,21 +313,14 @@ int _canvas_get_window_display(int window_id)
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        if (displays[i] == (CGDirectDisplayID)display_id)
-        {
-            return (int)i;
-        }
+        if (displays[i] != (CGDirectDisplayID)display_id)
+            continue;
+
+        _canvas[window_id].display = i;
+        return i;
     }
 
     return 0;
-}
-
-void _canvas_update_window_display(int window_id)
-{
-    if (window_id < 0 || window_id >= _canvas_count)
-        return;
-
-    _canvas[window_id].display = _canvas_get_window_display(window_id);
 }
 
 int _canvas_refresh_displays()
@@ -380,7 +372,7 @@ int _canvas_refresh_displays()
     for (int i = 0; i < _canvas_count; i++)
     {
         if (_canvas[i].window)
-            _canvas_update_window_display(i);
+            _canvas_get_window_display(i);
     }
 
     return _canvas_display_count;
@@ -413,9 +405,9 @@ int _canvas_init_displays()
 
 void _post_init()
 {
-    if (_post_init_ran)
+    if (_canvas_post_init_ran)
         return;
-    _post_init_ran = 1;
+    _canvas_post_init_ran = 1;
     objc_id poolClass = cls("NSAutoreleasePool");
     if (!poolClass)
         return;
@@ -436,7 +428,6 @@ int _canvas_platform()
     ((MSG_void_id_long)objc_msgSend)(_mac_app, sel_c("setActivationPolicy:"), (long)0);
     ((MSG_void_id_bool)objc_msgSend)(_mac_app, sel_c("activateIgnoringOtherApps:"), 1);
 
-    _canvas_init_displays();
     return 0;
 }
 
@@ -490,8 +481,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[idx].window = window;
     _canvas[idx].resize = false;
     _canvas[idx].index = idx;
-
-    _canvas_update_window_display(idx);
 
     return idx;
 }
@@ -681,6 +670,21 @@ double _canvas_get_time(canvas_time_data *time)
 //
 #if defined(__linux__)
 
+int _canvas_init_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+    return 0;
+}
+
+int _canvas_get_window_display(int window_id)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    return 0;
+}
+
 void _canvas_time_init(canvas_time_data *time)
 {
     struct timespec ts;
@@ -776,6 +780,57 @@ int _canvas_gpu_new_window(int window_id)
 //
 #if defined(_WIN32) || defined(_WIN64)
 
+int _canvas_init_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+}
+
+int _canvas_get_window_display(int window_id)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    HWND window = (HWND)_canvas[window_id].window;
+
+    if (!window)
+        return -1;
+
+    HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY);
+
+    for (int i = 0; i < _canvas_display_count; i++)
+    {
+        DISPLAY_DEVICEA dd = {0};
+        dd.cb = sizeof(dd);
+
+        if (!EnumDisplayDevicesA(NULL, i, &dd, 0))
+            continue;
+
+        if (!(dd.StateFlags & DISPLAY_DEVICE_ACTIVE))
+            continue;
+
+        DEVMODEA dm = {0};
+        dm.dmSize = sizeof(dm);
+
+        if (!EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm))
+            continue;
+
+        MONITORINFOEXA mi = {0};
+        mi.cbSize = sizeof(mi);
+
+        if (!GetMonitorInfoA(monitor, (MONITORINFO *)&mi))
+            continue;
+
+        if (strcmp(mi.szDevice, dd.DeviceName) != 0)
+            continue;
+
+        _canvas[window_id].display = i;
+        return i;
+    }
+
+    return 0;
+}
+
 void _canvas_time_init(canvas_time_data *time)
 {
     QueryPerformanceFrequency(&_canvas_qpc_frequency);
@@ -869,6 +924,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             return hit;
         }
+    }
+
+    case WM_DISPLAYCHANGE:
+    {
+        _canvas_displays_changed = true;
+        return 0;
+    }
+
+    case WM_MOVE:
+    {
+        // _canvas_update_window_display(window_index);
+
+        return 0;
     }
 
     case WM_SIZE:
@@ -1321,7 +1389,7 @@ int canvas_startup()
 
     _canvas_time_init(&canvas_main_time);
 
-    // _canvas_init_displays();
+    _canvas_init_displays();
 
     _canvas_platform();
     return 0;
@@ -1362,16 +1430,28 @@ int canvas_run(canvas_update_callback default_callback)
     return 0;
 }
 
-int canvas(int x, int y, int width, int height, const char *title)
+int canvas_window(int x, int y, int width, int height, const char *title)
 {
-    _canvas_gpu_init();
-
     int window_id = _canvas_window(x, y, width, height, title);
 
     if (window_id < 0)
         return -1;
 
     _canvas_time_init(&_canvas[window_id].time);
+
+    _canvas_get_window_display(window_id);
+
+    return window_id;
+}
+
+int canvas(int x, int y, int width, int height, const char *title)
+{
+    _canvas_gpu_init();
+
+    int window_id = canvas_window(x, y, width, height, title);
+
+    if (window_id < 0)
+        return -1;
 
     canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
 
