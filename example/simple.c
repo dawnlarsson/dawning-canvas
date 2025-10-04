@@ -12,7 +12,6 @@ void update(int window)
         canvas_color(window, (float[]){r, g, b, 1.0f});
 
         // don't move if the user has moved / resized the window
-        // on windows this is quite janky for the moment...
         if (_canvas[window].os_moved || _canvas[window].os_resized)
                 return;
 

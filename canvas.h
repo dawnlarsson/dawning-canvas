@@ -698,7 +698,8 @@ double _canvas_get_time(canvas_time_data *time)
            (double)_canvas_timebase.denom / 1e9;
 }
 
-int _canvas_post_update() {
+int _canvas_post_update()
+{
     return 0;
 }
 
@@ -850,9 +851,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
 
-            if (hit == HTCAPTION)
-                return HTCLIENT;
-
             if (hit == HTCLIENT)
             {
                 POINT pt = {LOWORD(lParam), HIWORD(lParam)};
@@ -863,13 +861,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                 if (pt.y < 30 && pt.y >= 0)
                 {
-                    if (pt.x < rcWindow.right - 140)
-                    {
-                        _canvas[window_index].os_moved = true;
-                        return HTCAPTION;
-                    }
+                    return HTCAPTION;
                 }
             }
+
             return hit;
         }
     }
@@ -1353,7 +1348,7 @@ int _canvas_post_update()
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    if(!_canvas_display)
+    if (!_canvas_display)
         return -1;
 
     if (window_id < 0 || window_id >= _canvas_count)
@@ -1367,7 +1362,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (title)
         // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
 
-    XMoveResizeWindow(_canvas_display, window, x, y, width, height);
+        XMoveResizeWindow(_canvas_display, window, x, y, width, height);
     XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
 
     return 0;
@@ -1450,7 +1445,7 @@ int _canvas_update()
 {
     _x11_event event;
 
-    while(XCheckMaskEvent(_canvas_display, ~0L, &event))
+    while (XCheckMaskEvent(_canvas_display, ~0L, &event))
     {
         XNextEvent(_canvas_display, &event);
     }
@@ -1480,7 +1475,7 @@ int _canvas_gpu_new_window(int window_id)
 int _canvas_post_update()
 {
     XFlush(_canvas_display);
-    
+
     return 0;
 }
 
