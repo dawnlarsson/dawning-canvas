@@ -291,6 +291,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (!window)
         return -1;
 
+    y = _canvas_displays[display].height - (y + height);
+
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
         _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
@@ -627,6 +629,16 @@ void _canvas_gpu_draw_all(void)
     }
 }
 
+int _canvas_find_window_index(objc_id window)
+{
+    for (int i = 0; i < _canvas_count; i++)
+    {
+        if (_canvas[i].window == window)
+            return i;
+    }
+    return -1;
+}
+
 int _canvas_update()
 {
     _post_init();
@@ -653,6 +665,52 @@ int _canvas_update()
                                ~0ULL, distantPast, ns_mode, (signed char)1);
         if (!ev)
             break;
+
+        unsigned long eventType = ((MSG_ulong_id)objc_msgSend)(ev, sel_c("type"));
+
+        objc_id eventWindow = ((MSG_id_id)objc_msgSend)(ev, sel_c("window"));
+
+        if (eventWindow)
+        {
+            int window_idx = _canvas_find_window_index(eventWindow);
+
+            if (window_idx >= 0)
+            {
+                // NSEventType constants
+                // NSEventTypeLeftMouseDragged = 6
+                // NSEventTypeOtherMouseDragged = 27
+                // NSEventTypeRightMouseDragged = 7
+
+                switch (eventType)
+                {
+                case 6:  // NSEventTypeLeftMouseDragged
+                case 27: // NSEventTypeOtherMouseDragged
+                case 7:  // NSEventTypeRightMouseDragged
+                {
+                    _CGRect frame = ((MSG_rect_id)objc_msgSend)(eventWindow, sel_c("frame"));
+
+                    if ((int)frame.x != _canvas[window_idx].x ||
+                        (int)frame.y != _canvas[window_idx].y)
+                    {
+                        _canvas[window_idx].os_moved = true;
+                        _canvas[window_idx].x = (int)frame.x;
+                        _canvas[window_idx].y = (int)frame.y;
+                    }
+
+                    if ((int)frame.w != _canvas[window_idx].width ||
+                        (int)frame.h != _canvas[window_idx].height)
+                    {
+                        _canvas[window_idx].resize = true;
+                        _canvas[window_idx].os_resized = true;
+                        _canvas[window_idx].width = (int)frame.w;
+                        _canvas[window_idx].height = (int)frame.h;
+                    }
+                    break;
+                }
+                }
+            }
+        }
+
         ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
     }
 
