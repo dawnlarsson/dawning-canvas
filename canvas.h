@@ -994,10 +994,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (_canvas_os_timed)
             break;
 
-        int refreshRate = 16;
-
         _canvas_os_timed = true;
-        SetTimer(hwnd, 1, refreshRate, NULL);
+        SetTimer(hwnd, 1, 0, NULL); // 60 fps hard cap due to Windows...
         return 0;
     }
 
