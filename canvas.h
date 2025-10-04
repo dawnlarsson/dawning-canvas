@@ -83,6 +83,7 @@ typedef struct
 } canvas_time_data;
 
 // public api
+float canvas_limit_mainloop_fps = 240.0;
 int canvas_startup();
 int canvas_update();
 int canvas(int x, int y, int width, int height, const char *title);
@@ -269,7 +270,11 @@ extern int XMapWindow(_x11_display *, _x11_window);
 extern int XStoreName(_x11_display *, _x11_window, const char *);
 extern int XMoveResizeWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned);
 
+extern int XMoveWindow(_x11_display *, _x11_window, int, int);
+extern int XResizeWindow(_x11_display *, _x11_window, unsigned, unsigned);
+
 _x11_display *_canvas_display = 0;
+bool _canvas_x11_flush = false;
 #endif
 
 //
@@ -691,6 +696,10 @@ double _canvas_get_time(canvas_time_data *time)
     uint64_t elapsed = mach_absolute_time() - time->start;
     return (double)elapsed * (double)_canvas_timebase.numer /
            (double)_canvas_timebase.denom / 1e9;
+}
+
+int _canvas_post_update() {
+    return 0;
 }
 
 #endif /* __APPLE__ */
@@ -1330,6 +1339,11 @@ int _canvas_window_resize(int window_id)
     return 0;
 }
 
+int _canvas_post_update()
+{
+    return 0;
+}
+
 #endif
 
 //
@@ -1354,7 +1368,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
 
     XMoveResizeWindow(_canvas_display, window, x, y, width, height);
-    XFlush(_canvas_display);
+    XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
 
     return 0;
 }
@@ -1416,7 +1430,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         XWhitePixel(_canvas_display, 0));
 
     XMapWindow(_canvas_display, window);
-    XFlush(_canvas_display);
 
     int idx = _canvas_count++;
     _canvas[idx].window = (canvas_window_handle)window;
@@ -1440,10 +1453,7 @@ int _canvas_update()
     while(XCheckMaskEvent(_canvas_display, ~0L, &event))
     {
         XNextEvent(_canvas_display, &event);
-
     }
-
-    XFlush(_canvas_display);
 
     return 1;
 }
@@ -1464,6 +1474,13 @@ int _canvas_gpu_new_window(int window_id)
     if (window_id < 0)
         return -1;
 
+    return 0;
+}
+
+int _canvas_post_update()
+{
+    XFlush(_canvas_display);
+    
     return 0;
 }
 
@@ -1504,6 +1521,10 @@ void canvas_main_loop()
             canvas_default_update_callback(i);
         }
     }
+
+    _canvas_post_update();
+
+    canvas_limit_fps(&canvas_main_time, canvas_limit_mainloop_fps);
 }
 
 int canvas_run(canvas_update_callback default_callback)
