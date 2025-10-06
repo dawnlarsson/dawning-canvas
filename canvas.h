@@ -782,7 +782,7 @@ int _canvas_close(int window_id)
     }
 
     ((MSG_void_id)objc_msgSend)(window, sel_c("close"));
-    
+
     return 0;
 }
 
@@ -1780,8 +1780,6 @@ int canvas(int x, int y, int width, int height, const char *title)
 
 int canvas_close(int window)
 {
-    printf("canvas_close %d\n", window);
-
     if (window < 0 || window >= _canvas_count)
         return -1;
 
