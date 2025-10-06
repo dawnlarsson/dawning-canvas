@@ -68,7 +68,7 @@ int canvas_close(int window);
 Closes the window and destroys any attached rendering backend data (swapchain, etc.).
 
 ### Run
-```
+```c
 int canvas_run(canvas_update_callback update);
 ```
 Hands over control flow to canvas, processing OS events, timing, and updating.
@@ -80,11 +80,40 @@ void update(int window) {
 }
 ```
 
-### Rendering Color
+### Set per canvas callback
+```c
+void canvas_set_update_callback(int window, canvas_update_callback callback);
+```
+Set's a override callback function for that window
+
+### Sleep
+```c
+void canvas_sleep(double seconds)
+```
+Platform sleep
+
+## Rendering Usage
+
+### Color
 ```c
 void canvas_color(int window, const float color[4]);
 ```
 Sets the window’s clearing color rendered by the backend.
+
+## Other usage
+exposed settings:
+```c
+float canvas_limit_mainloop_fps = 240.0;
+
+#ifndef MAX_CANVAS
+#define MAX_CANVAS 16
+#endif
+
+#ifndef MAX_DISPLAYS
+#define MAX_DISPLAYS 8
+#endif
+```
+
 
 ## Support
 Did you know this effort has gone 100% out of my pocket?
