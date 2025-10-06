@@ -403,6 +403,8 @@ int _canvas_refresh_displays()
         }
 
         _canvas_displays[i].primary = (display_id == main_display);
+        _canvas_displays[i].x = (int)bounds.origin.x;
+        _canvas_displays[i].y = (int)bounds.origin.y;
         _canvas_displays[i].width = (int)bounds.size.width;
         _canvas_displays[i].height = (int)bounds.size.height;
         _canvas_displays[i].refresh_rate = (int)refresh_rate;
@@ -1543,7 +1545,23 @@ int _canvas_init_displays()
 {
     _canvas_display_count = 0;
     _canvas_highest_refresh_rate = 60;
-    return 0;
+
+    if (!_canvas_display)
+        return -1;
+
+    // TODO: Use Xinerama or XRandR for proper multi-monitor support
+    int screen = DefaultScreen(_canvas_display);
+
+    _canvas_displays[0].primary = true;
+    _canvas_displays[0].x = 0;
+    _canvas_displays[0].y = 0;
+    _canvas_displays[0].width = DisplayWidth(_canvas_display, screen);
+    _canvas_displays[0].height = DisplayHeight(_canvas_display, screen);
+    _canvas_displays[0].refresh_rate = 60;
+
+    _canvas_display_count = 1;
+
+    return _canvas_display_count;
 }
 
 int _canvas_get_window_display(int window_id)
