@@ -135,7 +135,7 @@ typedef struct
 typedef struct
 {
     bool primary;
-    int width, height;
+    int x, y, width, height;
     int refresh_rate;
 } canvas_display;
 
@@ -811,14 +811,18 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (!window)
         return -1;
 
-    SetWindowPos(window, NULL, x, y, width, height, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (display < 0 || display >= _canvas_display_count)
+        display = 0;
+
+    int screen_x = _canvas_displays[display].x + x;
+    int screen_y = _canvas_displays[display].y + y;
+
+    SetWindowPos(window, NULL, screen_x, screen_y, width, height, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
 
     if (title)
         SetWindowTextA(window, title);
 
-    if (_canvas[window_id].display != display)
-    {
-    } // todo
+    _canvas[window_id].display = display;
 
     return 0;
 }
@@ -867,7 +871,6 @@ int _canvas_get_window_display(int window_id)
 
     return 0;
 }
-
 int _canvas_refresh_displays()
 {
     _canvas_display_count = 0;
@@ -892,6 +895,8 @@ int _canvas_refresh_displays()
             continue;
 
         _canvas_displays[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+        _canvas_displays[i].x = dm.dmPosition.x;
+        _canvas_displays[i].y = dm.dmPosition.y;
         _canvas_displays[i].width = dm.dmPelsWidth;
         _canvas_displays[i].height = dm.dmPelsHeight;
         _canvas_displays[i].refresh_rate = dm.dmDisplayFrequency;
