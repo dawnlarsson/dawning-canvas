@@ -1,69 +1,102 @@
-# Dawning Canvas API
-Cross platform rendering backend & windowing with reasonable defaults.
-
-Goals:
-- Single file pure C
-- Zero: Build system, dependencies, complex setup or config
-- Multi windowed rendering
-- Extremely lightweight & low overhead
+![Dawning Micro Header (1)](https://github.com/user-attachments/assets/e39801c7-7969-4de8-ae9f-236a492b57ac)
 
 > [!CAUTION]
 > This repo is early & experimental
 
-##  Platform Status
-`~` not implemented, `x` - implemented, `\` partially implemented (or wip)
-```sh
-Platform:               Window  Canvas  Backend     Required Compiler Flags
-Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
-MacOS                   \       \       Metal       -framework Cocoa
-Linux                   \       ~       Vulkan      -lX11
-iOS                     ~       ~       Metal
-Android                 ~       ~       Vulkan
-HTML5                   ~       ~       WebGPU
-```
-note for windows: `x86_64-w64-mingw32-gcc` for cross compiling to windows
+Cross-platform rendering backend & windowing with reasonable defaults.
 
-mac build example:
+**Goals:**
+- Single file pure C
+- Zero: Build system, dependencies, complex setup or config
+- Multi-windowed rendering
+- Extremely lightweight & low overhead
+
+## Platform Status
+
+`~` not implemented     `x` implemented     `\` partially implemented (WIP)
+
+| Platform | Window | Canvas | Backend   | Required Compiler Flags |
+|----------|--------|--------|-----------|------------------------|
+| Windows  | \      | \      | DirectX12 | `-lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12` |
+| macOS    | \      | \      | Metal     | `-framework Cocoa` |
+| Linux    | \      | ~      | Vulkan    | `-lX11` |
+| iOS      | ~      | ~      | Metal     | |
+| Android  | ~      | ~      | Vulkan    | |
+| HTML5    | ~      | ~      | WebGPU    | |
+
+**Note for Windows:** Use `x86_64-w64-mingw32-gcc` for cross-compiling to Windows
+
+## Building the example
+
+**Windows**
+```sh
+zig cc example/simple.c -I. -s -O3 -Qn -ldwmapi -ldxgi -ld3d12 && .\a.exe
+```
+
+**MacOS**
 ```sh
 clang example/simple.c -framework Cocoa -framework QuartzCore -framework Metal
 ```
-# Canvas
+
+## Usage
+
+### Canvas
 ```c
 int canvas(int x, int y, int width, int height, const char *title)
 ```
-Canvas is the full renderable surface.
+A canvas is the full renderable surface. The platform’s rendering backend is automatically set up the first time a canvas is created, then persists until the end of the program.
 
-the platforms rendering backend is automaticly setup the first time a canvas is created, then persists untill the end of the program.
-
+### Window
 ```c
-#include "canvas.h"
+int canvas_window(int x, int y, int width, int height, const char *title)
+```
+Creates an empty raw OS window without any rendering setup or attached backend.
 
-void update(int window)
-{
-        canvas_color(window, (float[]){window, 0.0f, 0.0f, 1.0f});
+### Window Position, Width & Height
+```c
+int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
+```
+Changes the window position and size, and optionally the display.
+- `display = -1` -> primary display
+- `x = -1` -> center on screen x axis
+- `y = -1` -> center on screen y axis
+
+### Window Close
+```c
+int canvas_close(int window);
+```
+Closes the window and destroys any attached rendering backend data (swapchain, etc.).
+
+### Run
+```
+int canvas_run(canvas_update_callback update);
+```
+Hands over control flow to canvas, processing OS events, timing, and updating.
+
+`canvas_update_callback` - function pointer to your primary update function that runs per canvas or window:
+```c
+void update(int window) {
+        // your code per window
 }
-
-int main()
-{
-        int window_1 = canvas(400, 400, 600, 600, "My Window");
-        int window_2 = canvas(500, 500, 600, 600, "My Window 2");
-
-        return canvas_run(update);
-}
 ```
-### Builds out: ~35 kb on macos
 
-note: use `_canvas_window` to create a empty window with the platform, this dosn't trigger the rendering backend to be setup.
-
-# Calls
-
+### Rendering Color
 ```c
-int canvas_color(int window, const float color[4])
+void canvas_color(int window, const float color[4]);
 ```
-sets clear color, this is just a wrapper for the _canvas struct array
-```c
-_canvas[window].clear // = double clear[4];
-```
+Sets the window’s clearing color rendered by the backend.
 
-# Info
-Apache License 2.0, by Dawn Larsson
+## Support
+Did you know this effort has gone 100% out of my pocket?
+If you think this project speaks for itself, consider supporting on github sponsors to continue making
+projects like these a reality, open & free.
+
+Supporter or not, you can **always** reach me on <a href="https://discord.gg/cxRvzUyzG8">My Discord Server, my primary communication channel</a>
+Questions, feedback or support related to any of my projects, or if you need consulting.
+
+## License
+Logos, Branding, Trademarks - Copyright Dawn Larsson 2022
+
+Repository:
+Apache-2.0 license 
+
