@@ -112,6 +112,7 @@ int _canvas_window_resize(int window_id);
 void _canvas_time_init(canvas_time_data *time);
 void _canvas_time_update(canvas_time_data *time);
 double _canvas_get_time(canvas_time_data *time);
+int _canvas_primary_display_index();
 
 bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
@@ -927,19 +928,23 @@ int _canvas_init_displays()
 void _canvas_time_init(canvas_time_data *time)
 {
     QueryPerformanceFrequency(&_canvas_qpc_frequency);
-    QueryPerformanceCounter(&_canvas_start_counter);
+
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+
+    time->start = (uint64_t)counter.QuadPart;
     time->last = 0.0;
     time->frame = 0;
+    time->frame_index = 0;
 }
 
 double _canvas_get_time(canvas_time_data *time)
 {
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
-    return (double)(counter.QuadPart - time->start) /
+    return (double)((uint64_t)counter.QuadPart - time->start) /
            (double)_canvas_qpc_frequency.QuadPart;
 }
-
 void canvas_sleep(double seconds)
 {
     HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
@@ -1662,6 +1667,14 @@ int _canvas_post_update()
 
 #endif // _linux_
 
+int _canvas_primary_display_index(void)
+{
+    for (int i = 0; i < _canvas_display_count; ++i)
+        if (_canvas_displays[i].primary)
+            return i;
+    return 0;
+}
+
 int canvas_startup()
 {
     if (_canvas_init_platform)
@@ -1726,6 +1739,11 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 {
     if (window_id < 0 || window_id >= _canvas_count)
         return -1;
+
+    if (display < 0 || display >= _canvas_display_count)
+    {
+        display = _canvas_primary_display_index();
+    }
 
     _canvas[window_id].display = display;
     _canvas[window_id].width = width;
