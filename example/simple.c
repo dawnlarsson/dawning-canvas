@@ -25,7 +25,7 @@ void update(int window)
 
 int main()
 {
-        canvas(100, 100, 128, 128, "1");
+        canvas(-1, -1, 128, 128, "1");
         canvas(150, 150, 128, 128, "2");
         canvas(200, 200, 128, 128, "3");
         canvas(250, 250, 128, 128, "4");

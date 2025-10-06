@@ -84,9 +84,12 @@ typedef struct
 
 // public api
 float canvas_limit_mainloop_fps = 240.0;
+
+int canvas(int x, int y, int width, int height, const char *title);
+int canvas_window(int x, int y, int width, int height, const char *title);
+
 int canvas_startup();
 int canvas_update();
-int canvas(int x, int y, int width, int height, const char *title);
 void canvas_color(int window, const float color[4]);
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
 
@@ -808,10 +811,14 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (!window)
         return -1;
 
-    SetWindowPos(window, NULL, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(window, NULL, x, y, width, height, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
 
     if (title)
         SetWindowTextA(window, title);
+
+    if (_canvas[window_id].display != display)
+    {
+    } // todo
 
     return 0;
 }
@@ -1139,8 +1146,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[window_id].window = window;
     _canvas[window_id].resize = false;
     _canvas[window_id].titlebar = false;
-
-    SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
 
     SetWindowLongPtr((HWND)_canvas[window_id].window, GWLP_USERDATA, (LONG_PTR)window_id);
 
@@ -1725,25 +1730,19 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     _canvas[window_id].os_moved = false;
     _canvas[window_id].os_resized = false;
 
+    _canvas[window_id].x = x;
+    _canvas[window_id].y = y;
+
+    int target_x = x;
+    int target_y = y;
+
     if (x == -1)
-    {
-        _canvas[window_id].x = _canvas_displays[display].width / 2 - width / 2;
-    }
-    else
-    {
-        _canvas[window_id].x = x;
-    }
+        target_x = _canvas_displays[display].width / 2 - width / 2;
 
     if (y == -1)
-    {
-        _canvas[window_id].y = _canvas_displays[display].height / 2 - height / 2;
-    }
-    else
-    {
-        _canvas[window_id].y = y;
-    }
+        target_y = _canvas_displays[display].height / 2 - height / 2;
 
-    _canvas_set(window_id, display, x, y, width, height, title);
+    _canvas_set(window_id, display, target_x, target_y, width, height, title);
 
     return 0;
 }
@@ -1751,6 +1750,8 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 int canvas_window(int x, int y, int width, int height, const char *title)
 {
     int window_id = _canvas_window(x, y, width, height, title);
+
+    canvas_set(window_id, 0, x, y, width, height, title);
 
     if (window_id < 0)
         return -1;
