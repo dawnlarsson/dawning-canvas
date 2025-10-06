@@ -786,12 +786,6 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     return 0;
 }
 
-int _canvas_init_displays()
-{
-    _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
-}
-
 int _canvas_get_window_display(int window_id)
 {
     if (window_id < 0 || window_id >= _canvas_count)
@@ -835,6 +829,57 @@ int _canvas_get_window_display(int window_id)
     }
 
     return 0;
+}
+
+int _canvas_refresh_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+    _canvas_displays_changed = false;
+
+    for (int i = 0; i < MAX_DISPLAYS; i++)
+    {
+        DISPLAY_DEVICEA dd = {0};
+        dd.cb = sizeof(dd);
+
+        if (!EnumDisplayDevicesA(NULL, i, &dd, 0))
+            continue;
+
+        if (!(dd.StateFlags & DISPLAY_DEVICE_ACTIVE))
+            continue;
+
+        DEVMODEA dm = {0};
+        dm.dmSize = sizeof(dm);
+
+        if (!EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm))
+            continue;
+
+        _canvas_displays[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+        _canvas_displays[i].width = dm.dmPelsWidth;
+        _canvas_displays[i].height = dm.dmPelsHeight;
+        _canvas_displays[i].refresh_rate = dm.dmDisplayFrequency;
+
+        if (dm.dmDisplayFrequency > _canvas_highest_refresh_rate)
+            _canvas_highest_refresh_rate = dm.dmDisplayFrequency;
+
+        _canvas_display_count++;
+    }
+
+    for (int i = 0; i < _canvas_count; i++)
+    {
+        if (_canvas[i].window)
+            _canvas_get_window_display(i);
+    }
+
+    return _canvas_display_count;
+}
+
+int _canvas_init_displays()
+{
+    _canvas_display_count = 0;
+    _canvas_highest_refresh_rate = 60;
+
+    return _canvas_refresh_displays();
 }
 
 void _canvas_time_init(canvas_time_data *time)
@@ -1603,14 +1648,30 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
         return -1;
 
     _canvas[window_id].display = display;
-    _canvas[window_id].x = x;
-    _canvas[window_id].y = y;
     _canvas[window_id].width = width;
     _canvas[window_id].height = height;
     _canvas[window_id].title = title;
 
     _canvas[window_id].os_moved = false;
     _canvas[window_id].os_resized = false;
+
+    if (x == -1)
+    {
+        _canvas[window_id].x = _canvas_displays[display].width / 2 - width / 2;
+    }
+    else
+    {
+        _canvas[window_id].x = x;
+    }
+
+    if (y == -1)
+    {
+        _canvas[window_id].y = _canvas_displays[display].height / 2 - height / 2;
+    }
+    else
+    {
+        _canvas[window_id].y = y;
+    }
 
     _canvas_set(window_id, display, x, y, width, height, title);
 
