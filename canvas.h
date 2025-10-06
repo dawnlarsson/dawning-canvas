@@ -89,6 +89,9 @@ int canvas_update();
 int canvas(int x, int y, int width, int height, const char *title);
 void canvas_color(int window, const float color[4]);
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
+
+int canvas_close(int window);
+
 int canvas_run(canvas_update_callback update);
 void canvas_set_update_callback(int window, canvas_update_callback callback);
 int canvas_fixed_update(canvas_time_data *time, double fixed_dt);
@@ -754,6 +757,33 @@ double _canvas_get_time(canvas_time_data *time)
     uint64_t elapsed = mach_absolute_time() - time->start;
     return (double)elapsed * (double)_canvas_timebase.numer /
            (double)_canvas_timebase.denom / 1e9;
+}
+
+int _canvas_close(int window_id)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    objc_id window = _canvas[window_id].window;
+    if (!window)
+        return -1;
+
+    // cleanup metal layer and view
+    if (_canvas_data[window_id].layer)
+    {
+        ((MSG_void_id)objc_msgSend)(_canvas_data[window_id].layer, sel_c("release"));
+        _canvas_data[window_id].layer = NULL;
+    }
+
+    if (_canvas_data[window_id].view)
+    {
+        ((MSG_void_id)objc_msgSend)(_canvas_data[window_id].view, sel_c("release"));
+        _canvas_data[window_id].view = NULL;
+    }
+
+    ((MSG_void_id)objc_msgSend)(window, sel_c("close"));
+    
+    return 0;
 }
 
 int _canvas_post_update()
@@ -1435,6 +1465,31 @@ int _canvas_window_resize(int window_id)
     return 0;
 }
 
+int _canvas_close(int window_id)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    if (_canvas_data[window_id].swapChain)
+    {
+        _canvas_data[window_id].swapChain->lpVtbl->Release(_canvas_data[window_id].swapChain);
+        _canvas_data[window_id].swapChain = NULL;
+    }
+
+    for (int i = 0; i < 2; i++)
+    {
+        if (_canvas_data[window_id].backBuffers[i])
+        {
+            _canvas_data[window_id].backBuffers[i]->lpVtbl->Release(_canvas_data[window_id].backBuffers[i]);
+            _canvas_data[window_id].backBuffers[i] = NULL;
+        }
+    }
+
+    DestroyWindow((HWND)_canvas[window_id].window);
+
+    return 0;
+}
+
 int _canvas_post_update()
 {
     return 0;
@@ -1573,6 +1628,21 @@ int _canvas_gpu_new_window(int window_id)
     return 0;
 }
 
+int _canvas_close(int window_id)
+{
+    if (window_id < 0 || window_id >= _canvas_count)
+        return -1;
+
+    _x11_window window = (_x11_window)_canvas[window_id].window;
+
+    if (!window)
+        return -1;
+
+    XDestroyWindow(_canvas_display, window);
+
+    return 0;
+}
+
 int _canvas_post_update()
 {
     XFlush(_canvas_display);
@@ -1706,6 +1776,21 @@ int canvas(int x, int y, int width, int height, const char *title)
     _canvas_gpu_new_window(window_id);
 
     return window_id;
+}
+
+int canvas_close(int window)
+{
+    printf("canvas_close %d\n", window);
+
+    if (window < 0 || window >= _canvas_count)
+        return -1;
+
+    _canvas_close(window);
+
+    _canvas[window].window = NULL;
+    _canvas_count--;
+
+    return 0;
 }
 
 void canvas_set_update_callback(int window, canvas_update_callback callback)
