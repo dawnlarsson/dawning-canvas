@@ -148,6 +148,11 @@ int _canvas_highest_refresh_rate = 60;
 
 #define CANVAS_OK 0
 #define CANVAS_ERR_BOGUS -69
+#define CANVAS_ERR_NO_FREE -32
+#define CANVAS_ERR_GET_DISPLAY -33
+#define CANVAS_ERR_GET_WINDOW -34
+#define CANVAS_ERR_GET_GPU -35
+#define CANVAS_ERR_GET_PLATFORM -36
 
 #ifndef CANVAS_HEADER_ONLY
 
@@ -313,7 +318,8 @@ int _canvas_get_free()
         if (_canvas[i].window == NULL)
             return i;
     }
-    return -1;
+
+    return CANVAS_ERR_NO_FREE;
 }
 
 int _canvas_window_index(void *window)
@@ -323,7 +329,8 @@ int _canvas_window_index(void *window)
         if (_canvas[i].window == window)
             return i;
     }
-    return -1;
+
+    return CANVAS_ERR_BOGUS;
 }
 
 //
@@ -337,7 +344,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
     objc_id window = _canvas[window_id].window;
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     y = _canvas_displays[display].height - (y + height);
 
@@ -364,15 +371,15 @@ int _canvas_get_window_display(int window_id)
 
     objc_id window = _canvas[window_id].window;
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     objc_id screen = ((MSG_id_id)objc_msgSend)(window, sel_c("screen"));
     if (!screen)
-        return CANVAS_OK;
+        return CANVAS_ERR_GET_DISPLAY;
 
     objc_id device_desc = ((MSG_id_id)objc_msgSend)(screen, sel_c("deviceDescription"));
     if (!device_desc)
-        return CANVAS_OK;
+        return CANVAS_ERR_GET_GPU;
 
     objc_id screen_number_key = ((MSG_id_id_charp)objc_msgSend)(
         cls("NSString"),
@@ -419,9 +426,7 @@ int _canvas_refresh_displays()
 
     CGError err = CGGetActiveDisplayList(max_displays, displays, &display_count);
     if (err != kCGErrorSuccess)
-    {
-        return -1;
-    }
+        return CANVAS_ERR_GET_DISPLAY;
 
     CGDirectDisplayID main_display = CGMainDisplayID();
 
@@ -509,7 +514,7 @@ int _canvas_platform()
     MSG_id_id m = (MSG_id_id)objc_msgSend;
     _mac_app = m(cls("NSApplication"), sel_c("sharedApplication"));
     if (!_mac_app)
-        return -1;
+        return CANVAS_ERR_GET_PLATFORM;
 
     ((MSG_void_id_long)objc_msgSend)(_mac_app, sel_c("setActivationPolicy:"), (long)0);
     ((MSG_void_id_bool)objc_msgSend)(_mac_app, sel_c("activateIgnoringOtherApps:"), 1);
@@ -531,7 +536,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     objc_id winClass = cls("NSWindow");
 
     if (!winClass)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     objc_id walloc = m(winClass, sel_c("alloc"));
 
@@ -542,7 +547,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
                                                  rect, style, (long)2, 0);
 
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     ((MSG_void_id_bool)objc_msgSend)(window, sel_c("setTitlebarAppearsTransparent:"), 1);
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitleVisibility:"), (objc_id)1 /*NSWindowTitleHidden*/);
@@ -578,10 +583,10 @@ int _canvas_gpu_init()
 
     _mac_device = MTLCreateSystemDefaultDevice();
     if (!_mac_device)
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     _metal_queue = ((MSG_id_id)objc_msgSend)(_mac_device, sel_c("newCommandQueue"));
-    return _metal_queue ? 0 : -1;
+    return _metal_queue ? 0 : CANVAS_ERR_GET_GPU;
 }
 
 int _canvas_update_drawable_size(int window_id)
@@ -589,7 +594,7 @@ int _canvas_update_drawable_size(int window_id)
     CANVAS_BOGUS(window_id);
 
     if (!_canvas_data[window_id].view || !_canvas_data[window_id].layer)
-        return -1;
+        return CANVAS_ERR_GET_DISPLAY;
 
     _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(_canvas_data[window_id].view, sel_c("bounds"));
     double w = b.w * _canvas_data[window_id].scale;
@@ -616,14 +621,14 @@ int _canvas_gpu_new_window(int window_id)
     objc_id view = m(cls("NSView"), sel_c("alloc"));
     view = ((MSG_id_id_rect)objc_msgSend)(view, sel_c("initWithFrame:"), (_CGRect){0, 0, 800, 600});
     if (!view)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     ((MSG_void_id_bool)objc_msgSend)(view, sel_c("setWantsLayer:"), 1);
 
     objc_id layer = m(cls("CAMetalLayer"), sel_c("alloc"));
     layer = m(layer, sel_c("init"));
     if (!layer)
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), _mac_device);
     ((MSG_void_id_long)objc_msgSend)(layer, sel_c("setPixelFormat:"), 80L /*BGRA8Unorm*/);
@@ -813,7 +818,7 @@ int _canvas_close(int window_id)
 
     objc_id window = _canvas[window_id].window;
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     // cleanup metal layer and view
     if (_canvas_data[window_id].layer)
@@ -852,7 +857,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     HWND window = (HWND)_canvas[window_id].window;
 
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     if (display < 0 || display >= _canvas_display_count)
         display = 0;
@@ -877,7 +882,7 @@ int _canvas_get_window_display(int window_id)
     HWND window = (HWND)_canvas[window_id].window;
 
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY);
 
@@ -1162,18 +1167,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 {
     canvas_startup();
 
-    int window_id = -1;
-    for (int i = 0; i < MAX_CANVAS; i++)
-    {
-        if (_canvas[i].window == NULL)
-        {
-            window_id = i;
-            break;
-        }
-    }
-
+    int window_id = _canvas_get_free();
     if (window_id == -1)
-        return -1;
+        return CANVAS_ERR_NO_FREE;
 
     WNDCLASSA wc = {0};
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -1197,7 +1193,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         NULL, NULL, _win_instance, NULL);
 
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     _canvas[window_id].window = window;
     _canvas[window_id].resize = false;
@@ -1301,7 +1297,7 @@ int _canvas_gpu_init()
         (void **)&_win_factory);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     result = D3D12CreateDevice(
         NULL,
@@ -1310,7 +1306,7 @@ int _canvas_gpu_init()
         (void **)&_win_device);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {0};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -1322,7 +1318,7 @@ int _canvas_gpu_init()
         (void **)&_win_cmdQueue);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     result = _win_device->lpVtbl->CreateCommandAllocator(
         _win_device,
@@ -1331,7 +1327,7 @@ int _canvas_gpu_init()
         (void **)&_win_cmdAllocator);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     result = _win_device->lpVtbl->CreateCommandList(
         _win_device,
@@ -1343,7 +1339,7 @@ int _canvas_gpu_init()
         (void **)&_win_cmdList);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     _win_cmdList->lpVtbl->Close(_win_cmdList);
 
@@ -1357,7 +1353,7 @@ int _canvas_gpu_init()
         (void **)&_win_rtvHeap);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(
         _win_device,
@@ -1371,12 +1367,12 @@ int _canvas_gpu_init()
         (void **)&_win_fence);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     _win_fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     if (!_win_fence_event)
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     return CANVAS_OK;
 }
@@ -1415,7 +1411,7 @@ int _canvas_gpu_new_window(int window_id)
         &swapChain1);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     result = swapChain1->lpVtbl->QueryInterface(
         swapChain1,
@@ -1424,7 +1420,7 @@ int _canvas_gpu_new_window(int window_id)
     swapChain1->lpVtbl->Release(swapChain1);
 
     if (FAILED(result))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     _win_factory->lpVtbl->MakeWindowAssociation(
         _win_factory,
@@ -1445,7 +1441,7 @@ int _canvas_gpu_new_window(int window_id)
             (void **)&_canvas_data[window_id].backBuffers[i]);
 
         if (FAILED(result))
-            return -1;
+            return CANVAS_ERR_GET_GPU;
 
         _canvas_data[window_id].rtvHandles[i] = rtvHandle;
         _win_device->lpVtbl->CreateRenderTargetView(
@@ -1499,7 +1495,7 @@ int _canvas_window_resize(int window_id)
         DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
 
     if (FAILED(hr))
-        return -1;
+        return CANVAS_ERR_GET_GPU;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
@@ -1512,7 +1508,7 @@ int _canvas_window_resize(int window_id)
             (void **)&window->backBuffers[i]);
 
         if (FAILED(hr))
-            return -1;
+            return CANVAS_ERR_GET_GPU;
 
         window->rtvHandles[i] = rtvHandle;
         _win_device->lpVtbl->CreateRenderTargetView(
@@ -1562,14 +1558,14 @@ int _canvas_post_update()
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
     if (!_canvas_display)
-        return -1;
+        return CANVAS_ERR_GET_DISPLAY;
 
     CANVAS_BOGUS(window_id);
 
     _x11_window window = (_x11_window)_canvas[window_id].window;
 
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     if (title)
         // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
@@ -1586,7 +1582,7 @@ int _canvas_init_displays()
     _canvas_highest_refresh_rate = 60;
 
     if (!_canvas_display)
-        return -1;
+        return CANVAS_ERR_GET_DISPLAY;
 
     // TODO: Use Xinerama or XRandR for proper multi-monitor support
     int screen = XDefaultScreen(_canvas_display);
@@ -1704,7 +1700,7 @@ int _canvas_close(int window_id)
     _x11_window window = (_x11_window)_canvas[window_id].window;
 
     if (!window)
-        return -1;
+        return CANVAS_ERR_GET_WINDOW;
 
     XDestroyWindow(_canvas_display, window);
 
@@ -1835,34 +1831,34 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 
 int canvas_window(int x, int y, int width, int height, const char *title)
 {
-    int window_id = _canvas_window(x, y, width, height, title);
+    int result = _canvas_window(x, y, width, height, title);
 
-    canvas_set(window_id, 0, x, y, width, height, title);
+    canvas_set(result, 0, x, y, width, height, title);
 
-    if (window_id < 0)
-        return -1;
+    if (result < 0)
+        return result;
 
-    _canvas_time_init(&_canvas[window_id].time);
+    _canvas_time_init(&_canvas[result].time);
 
-    _canvas_get_window_display(window_id);
+    _canvas_get_window_display(result);
 
-    return window_id;
+    return result;
 }
 
 int canvas(int x, int y, int width, int height, const char *title)
 {
     _canvas_gpu_init();
 
-    int window_id = canvas_window(x, y, width, height, title);
+    int result = canvas_window(x, y, width, height, title);
 
-    if (window_id < 0)
-        return -1;
+    if (result < 0)
+        return result;
 
-    canvas_color(window_id, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
+    canvas_color(result, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
 
-    _canvas_gpu_new_window(window_id);
+    _canvas_gpu_new_window(result);
 
-    return window_id;
+    return result;
 }
 
 int canvas_close(int window_id)
