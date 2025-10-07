@@ -277,6 +277,12 @@ extern int XCheckMaskEvent(_x11_display *, long, _x11_event *);
 extern int XMapWindow(_x11_display *, _x11_window);
 extern int XStoreName(_x11_display *, _x11_window, const char *);
 extern int XMoveResizeWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned);
+extern int XDestroyWindow(_x11_display *, _x11_window);
+extern int XCloseDisplay(_x11_display *);
+extern int XPending(_x11_display *);
+extern int XDefaultScreen(_x11_display *);
+extern int XDisplayWidth(_x11_display *, int);
+extern int XDisplayHeight(_x11_display *, int);
 
 extern int XMoveWindow(_x11_display *, _x11_window, int, int);
 extern int XResizeWindow(_x11_display *, _x11_window, unsigned, unsigned);
@@ -1561,7 +1567,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (title)
         // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
 
-        XMoveResizeWindow(_canvas_display, window, x, y, width, height);
+    XMoveResizeWindow(_canvas_display, window, x, y, width, height);
     XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
 
     return 0;
@@ -1576,13 +1582,13 @@ int _canvas_init_displays()
         return -1;
 
     // TODO: Use Xinerama or XRandR for proper multi-monitor support
-    int screen = DefaultScreen(_canvas_display);
+    int screen = XDefaultScreen(_canvas_display);
 
     _canvas_displays[0].primary = true;
     _canvas_displays[0].x = 0;
     _canvas_displays[0].y = 0;
-    _canvas_displays[0].width = DisplayWidth(_canvas_display, screen);
-    _canvas_displays[0].height = DisplayHeight(_canvas_display, screen);
+    _canvas_displays[0].width = XDisplayWidth(_canvas_display, screen);
+    _canvas_displays[0].height = XDisplayHeight(_canvas_display, screen);
     _canvas_displays[0].refresh_rate = 60;
 
     _canvas_display_count = 1;
@@ -1636,6 +1642,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         XWhitePixel(_canvas_display, 0));
 
     XMapWindow(_canvas_display, window);
+
+    int idx = _canvas_get_free();
+    CANVAS_BOGUS(idx);
 
     _canvas[idx].window = (canvas_window_handle)window;
     _canvas[idx].resize = false;
