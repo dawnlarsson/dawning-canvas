@@ -1168,7 +1168,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     canvas_startup();
 
     int window_id = _canvas_get_free();
-    if (window_id == -1)
+    if (window_id < 0)
         return CANVAS_ERR_NO_FREE;
 
     WNDCLASSA wc = {0};
@@ -1459,10 +1459,14 @@ int _canvas_window_resize(int window_id)
     CANVAS_BOGUS(window_id);
 
     canvas_data *window = &_canvas_data[window_id];
-    _canvas[window_id].resize = false;
 
     if (!window->swapChain || !_canvas[window_id].resize)
+    {
+        _canvas[window_id].resize = false;
         return CANVAS_OK;
+    }
+
+    _canvas[window_id].resize = false;
 
     _win_fence_value++;
     _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
@@ -1721,7 +1725,7 @@ int _canvas_primary_display_index(void)
     for (int i = 0; i < _canvas_display_count; ++i)
         if (_canvas_displays[i].primary)
             return i;
-    return CANVAS_OK;
+    return 0;
 }
 
 int canvas_startup()
@@ -1833,10 +1837,10 @@ int canvas_window(int x, int y, int width, int height, const char *title)
 {
     int result = _canvas_window(x, y, width, height, title);
 
-    canvas_set(result, 0, x, y, width, height, title);
-
     if (result < 0)
         return result;
+
+    canvas_set(result, 0, x, y, width, height, title);
 
     _canvas_time_init(&_canvas[result].time);
 
