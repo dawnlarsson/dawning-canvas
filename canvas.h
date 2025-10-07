@@ -52,6 +52,19 @@
 
 #pragma once
 
+#ifdef __cplusplus
+#define CANVAS_EXTERN_C_BEGIN \
+    extern "C"                \
+    {
+#define CANVAS_EXTERN_C_END }
+#else
+#define CANVAS_EXTERN_C_BEGIN
+#define CANVAS_EXTERN_C_END
+#endif
+
+// prevents FMT to mangle the file
+CANVAS_EXTERN_C_BEGIN
+
 #ifndef MAX_CANVAS
 #define MAX_CANVAS 16
 #endif
@@ -65,7 +78,11 @@
 
 typedef void *canvas_window_handle;
 typedef void (*canvas_update_callback)(int window);
+#ifdef __cplusplus
+extern canvas_update_callback canvas_default_update_callback;
+#else
 canvas_update_callback canvas_default_update_callback = 0;
+#endif
 
 typedef struct
 {
@@ -218,9 +235,10 @@ typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 
 #if defined(_WIN32)
 
-#define INITGUID
 #include <windows.h>
 #include <dwmapi.h>
+
+#define INITGUID
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -1976,3 +1994,5 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
 }
 
 #endif // CANVAS_HEADER_ONLY
+
+CANVAS_EXTERN_C_END
