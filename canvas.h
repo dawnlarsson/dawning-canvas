@@ -20,7 +20,7 @@
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
         Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
-        MacOS                   \       \       Metal       -framework Cocoa
+        MacOS                   \       \       Metal       -framework Cocoa -framework QuartzCore -framework Metal
         Linux                   \       ~       Vulkan      -lX11
         iOS                     ~       ~       Metal
         Android                 ~       ~       Vulkan
@@ -581,7 +581,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
 
     int idx = _canvas_get_free();
-    CANVAS_BOGUS(idx);
+    if (idx < 0)
+        return idx;
 
     _canvas[idx].window = window;
     _canvas[idx].resize = false;
@@ -1666,7 +1667,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     XMapWindow(_canvas_display, window);
 
     int idx = _canvas_get_free();
-    CANVAS_BOGUS(idx);
+    if (idx < 0)
+        return idx;
 
     _canvas[idx].window = (canvas_window_handle)window;
     _canvas[idx].resize = false;
@@ -1763,9 +1765,10 @@ int canvas_startup()
         _canvas_data[i] = (canvas_data){0};
     }
 
+    _canvas_platform();
+
     _canvas_init_displays();
 
-    _canvas_platform();
     return CANVAS_OK;
 }
 
