@@ -111,6 +111,8 @@ int canvas_set_update_callback(int window, canvas_update_callback callback);
 void canvas_limit_fps(canvas_time_data *time, double target_fps);
 void canvas_sleep(double seconds);
 
+int canvas_quit();
+
 // internal api
 void canvas_main_loop();
 int _canvas_platform();
@@ -156,7 +158,7 @@ typedef struct
 canvas_update_callback canvas_default_update_callback = 0;
 #endif
 
-float canvas_limit_mainloop_fps = 240.0;
+double canvas_limit_mainloop_fps = 240.0;
 int _canvas_display_count = 0;
 int _canvas_highest_refresh_rate = 60;
 
@@ -165,6 +167,7 @@ bool _canvas_init_gpu = false;
 bool _canvas_post_init_ran = false;
 bool _canvas_os_timed = false;
 bool _canvas_displays_changed = false;
+bool _canvas_quit = false;
 
 canvas_type _canvas[MAX_CANVAS];
 canvas_display _canvas_displays[MAX_DISPLAYS];
@@ -565,7 +568,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         return CANVAS_ERR_GET_WINDOW;
 
     ((MSG_void_id_bool)objc_msgSend)(window, sel_c("setTitlebarAppearsTransparent:"), 1);
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitleVisibility:"), (objc_id)1 /*NSWindowTitleHidden*/);
+    ((MSG_void_id_long)objc_msgSend)(window, sel_c("setTitleVisibility:"), 1L /* NSWindowTitleHidden */);
 
     unsigned long sm = ((MSG_ulong_id)objc_msgSend)(window, sel_c("styleMask"));
     sm |= (1UL << 15); /* NSWindowStyleMaskFullSizeContentView */
@@ -819,6 +822,9 @@ void _canvas_time_init(canvas_time_data *time)
     time->start = mach_absolute_time();
     time->last = 0.0;
     time->frame = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
 }
 
 double _canvas_get_time(canvas_time_data *time)
@@ -998,6 +1004,9 @@ void _canvas_time_init(canvas_time_data *time)
     time->last = 0.0;
     time->frame = 0;
     time->frame_index = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
 }
 
 double _canvas_get_time(canvas_time_data *time)
@@ -1206,7 +1215,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         title,
         style,
         x, y, width, height,
-        NULL, NULL, _win_instance, NULL);
+        NULL, NULL, _win_instance, (LPVOID)(INT_PTR)window_id);
 
     if (!window)
         return CANVAS_ERR_GET_WINDOW;
@@ -1214,8 +1223,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[window_id].window = window;
     _canvas[window_id].resize = false;
     _canvas[window_id].titlebar = false;
-
-    SetWindowLongPtr((HWND)_canvas[window_id].window, GWLP_USERDATA, (LONG_PTR)window_id);
 
     return window_id;
 }
@@ -1633,6 +1640,9 @@ void _canvas_time_init(canvas_time_data *time)
     time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
     time->last = 0.0;
     time->frame = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
 }
 
 double _canvas_get_time(canvas_time_data *time)
@@ -1798,11 +1808,17 @@ void canvas_main_loop()
     canvas_limit_fps(&canvas_main_time, canvas_limit_mainloop_fps);
 }
 
+int canvas_quit()
+{
+    _canvas_quit = 1;
+    return CANVAS_OK;
+}
+
 int canvas_run(canvas_update_callback default_callback)
 {
     canvas_default_update_callback = default_callback;
 
-    while (1)
+    while (_canvas_quit == 0)
     {
         _canvas_os_timed = false;
         canvas_main_loop();
@@ -1820,6 +1836,9 @@ int canvas_run(canvas_update_callback default_callback)
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
     CANVAS_BOGUS(window_id);
+
+    if (_canvas_display_count <= 0)
+        return CANVAS_ERR_GET_DISPLAY;
 
     if (display < 0 || display >= _canvas_display_count)
     {
