@@ -96,7 +96,7 @@ Platform sleep
 
 ### Color
 ```c
-void canvas_color(int window, const float color[4]);
+int canvas_color(int window, const float color[4]);
 ```
 Sets the window’s clearing color rendered by the backend.
 

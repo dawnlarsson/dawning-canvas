@@ -90,7 +90,7 @@ int canvas_window(int x, int y, int width, int height, const char *title);
 
 int canvas_startup();
 int canvas_update();
-void canvas_color(int window, const float color[4]);
+int canvas_color(int window, const float color[4]);
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
 
 int canvas_close(int window);
@@ -146,6 +146,7 @@ canvas_display _canvas_displays[MAX_DISPLAYS];
 int _canvas_display_count = 0;
 int _canvas_highest_refresh_rate = 60;
 
+#define CANVAS_OK 0
 #define CANVAS_ERR_BOGUS -69
 
 #ifndef CANVAS_HEADER_ONLY
@@ -354,7 +355,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
             ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitle:"), nsTitle);
     }
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_get_window_display(int window_id)
@@ -367,11 +368,11 @@ int _canvas_get_window_display(int window_id)
 
     objc_id screen = ((MSG_id_id)objc_msgSend)(window, sel_c("screen"));
     if (!screen)
-        return 0;
+        return CANVAS_OK;
 
     objc_id device_desc = ((MSG_id_id)objc_msgSend)(screen, sel_c("deviceDescription"));
     if (!device_desc)
-        return 0;
+        return CANVAS_OK;
 
     objc_id screen_number_key = ((MSG_id_id_charp)objc_msgSend)(
         cls("NSString"),
@@ -384,7 +385,7 @@ int _canvas_get_window_display(int window_id)
         screen_number_key);
 
     if (!display_id_obj)
-        return 0;
+        return CANVAS_OK;
 
     unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
 
@@ -403,7 +404,7 @@ int _canvas_get_window_display(int window_id)
         return i;
     }
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_refresh_displays()
@@ -513,7 +514,7 @@ int _canvas_platform()
     ((MSG_void_id_long)objc_msgSend)(_mac_app, sel_c("setActivationPolicy:"), (long)0);
     ((MSG_void_id_bool)objc_msgSend)(_mac_app, sel_c("activateIgnoringOtherApps:"), 1);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_window(int x, int y, int width, int height, const char *title)
@@ -572,7 +573,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 int _canvas_gpu_init()
 {
     if (_canvas_init_gpu)
-        return 0;
+        return CANVAS_OK;
     _canvas_init_gpu = 1;
 
     _mac_device = MTLCreateSystemDefaultDevice();
@@ -587,6 +588,9 @@ int _canvas_update_drawable_size(int window_id)
 {
     CANVAS_BOGUS(window_id);
 
+    if (!_canvas_data[window_id].view || !_canvas_data[window_id].layer)
+        return -1;
+
     _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(_canvas_data[window_id].view, sel_c("bounds"));
     double w = b.w * _canvas_data[window_id].scale;
     double h = b.h * _canvas_data[window_id].scale;
@@ -598,7 +602,7 @@ int _canvas_update_drawable_size(int window_id)
     } sz = {w, h};
     ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(_canvas_data[window_id].layer, sel_c("setDrawableSize:"), sz);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_gpu_new_window(int window_id)
@@ -649,6 +653,9 @@ void _canvas_gpu_draw_all()
 
     for (int i = 0; i < MAX_CANVAS; ++i)
     {
+        if (!_canvas[i].window || !_canvas_data[i].layer)
+            continue;
+
         _canvas_update_drawable_size(i);
 
         objc_id layer = _canvas_data[i].layer;
@@ -773,7 +780,8 @@ int _canvas_update()
 
     if (framePool)
         ((MSG_void_id)objc_msgSend)(framePool, sel_c("drain"));
-    return 1;
+
+    return CANVAS_OK;
 }
 
 void canvas_sleep(double seconds)
@@ -822,12 +830,12 @@ int _canvas_close(int window_id)
 
     ((MSG_void_id)objc_msgSend)(window, sel_c("close"));
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_post_update()
 {
-    return 0;
+    return CANVAS_OK;
 }
 
 #endif /* __APPLE__ */
@@ -859,7 +867,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
     _canvas[window_id].display = display;
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_get_window_display(int window_id)
@@ -903,7 +911,7 @@ int _canvas_get_window_display(int window_id)
         return i;
     }
 
-    return 0;
+    return CANVAS_OK;
 }
 int _canvas_refresh_displays()
 {
@@ -1010,7 +1018,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             BOOL useRoundedCorners = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
         }
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_NCCALCSIZE:
@@ -1023,7 +1031,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             params->rgrc[0].right -= 8;
             params->rgrc[0].bottom -= 8;
             params->rgrc[0].left += 8;
-            return 0;
+            return CANVAS_OK;
         }
         break;
     }
@@ -1056,21 +1064,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         _canvas[window_index].os_moved = true;
         _canvas_displays_changed = true;
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_MOVE:
     {
         // _canvas_update_window_display(window_index);
 
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_MOVING:
     {
         _canvas[window_index].os_moved = true;
 
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_SIZE:
@@ -1085,7 +1093,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_SIZING:
@@ -1121,7 +1129,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         _canvas_os_timed = true;
         SetTimer(hwnd, 1, 0, NULL); // 60 fps hard cap due to Windows...
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_EXITSIZEMOVE:
@@ -1131,7 +1139,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         _canvas_os_timed = false;
         KillTimer(hwnd, 1);
-        return 0;
+        return CANVAS_OK;
     }
 
     case WM_TIMER:
@@ -1141,7 +1149,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         canvas_main_loop();
 
-        return 0;
+        return CANVAS_OK;
     }
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -1204,7 +1212,7 @@ int _canvas_platform()
 {
     _win_instance = GetModuleHandle(NULL);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_update()
@@ -1276,13 +1284,13 @@ int _canvas_update()
         }
     }
 
-    return 1;
+    return CANVAS_OK;
 }
 
 int _canvas_gpu_init()
 {
     if (_canvas_init_gpu)
-        return 0;
+        return CANVAS_OK;
 
     _canvas_init_gpu = 1;
 
@@ -1370,7 +1378,7 @@ int _canvas_gpu_init()
     if (!_win_fence_event)
         return -1;
 
-    return 1;
+    return CANVAS_OK;
 }
 
 int _canvas_gpu_new_window(int window_id)
@@ -1448,16 +1456,17 @@ int _canvas_gpu_new_window(int window_id)
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
 
-    return 0;
+    return CANVAS_OK;
 }
 int _canvas_window_resize(int window_id)
 {
     CANVAS_BOGUS(window_id);
 
     canvas_data *window = &_canvas_data[window_id];
+    _canvas[window_id].resize = false;
 
     if (!window->swapChain || !_canvas[window_id].resize)
-        return 0;
+        return CANVAS_OK;
 
     _win_fence_value++;
     _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
@@ -1467,15 +1476,13 @@ int _canvas_window_resize(int window_id)
         WaitForSingleObject(_win_fence_event, INFINITE);
     }
 
-    _canvas[window_id].resize = false;
-
     RECT rect;
     GetClientRect((HWND)_canvas[window_id].window, &rect);
     UINT width = rect.right - rect.left;
     UINT height = rect.bottom - rect.top;
 
     if (width == 0 || height == 0)
-        return 0;
+        return CANVAS_OK;
 
     for (int i = 0; i < 2; i++)
     {
@@ -1513,7 +1520,7 @@ int _canvas_window_resize(int window_id)
         rtvHandle.ptr += _win_rtvDescriptorSize;
     }
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_close(int window_id)
@@ -1537,12 +1544,12 @@ int _canvas_close(int window_id)
 
     DestroyWindow((HWND)_canvas[window_id].window);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_post_update()
 {
-    return 0;
+    return CANVAS_OK;
 }
 
 #endif
@@ -1567,10 +1574,10 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (title)
         // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
 
-    XMoveResizeWindow(_canvas_display, window, x, y, width, height);
+        XMoveResizeWindow(_canvas_display, window, x, y, width, height);
     XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_init_displays()
@@ -1600,7 +1607,7 @@ int _canvas_get_window_display(int window_id)
 {
     CANVAS_BOGUS(window_id);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 void _canvas_time_init(canvas_time_data *time)
@@ -1657,7 +1664,7 @@ int _canvas_platform()
 {
     _canvas_display = XOpenDisplay(0);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_update()
@@ -1669,25 +1676,25 @@ int _canvas_update()
         XNextEvent(_canvas_display, &event);
     }
 
-    return 1;
+    return CANVAS_OK;
 }
 
 int _canvas_gpu_init()
 {
     if (_canvas_init_gpu)
-        return 0;
+        return CANVAS_OK;
     _canvas_init_gpu = 1;
 
     // Select & init backend OpenGL / Vulkan
 
-    return 1;
+    return CANVAS_OK;
 }
 
 int _canvas_gpu_new_window(int window_id)
 {
     CANVAS_BOGUS(window_id);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_close(int window_id)
@@ -1701,14 +1708,14 @@ int _canvas_close(int window_id)
 
     XDestroyWindow(_canvas_display, window);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int _canvas_post_update()
 {
     XFlush(_canvas_display);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 #endif // _linux_
@@ -1718,22 +1725,33 @@ int _canvas_primary_display_index(void)
     for (int i = 0; i < _canvas_display_count; ++i)
         if (_canvas_displays[i].primary)
             return i;
-    return 0;
+    return CANVAS_OK;
 }
 
 int canvas_startup()
 {
     if (_canvas_init_platform)
-        return 0;
+        return CANVAS_OK;
 
     _canvas_init_platform = true;
 
     _canvas_time_init(&canvas_main_time);
 
+    for (int i = 0; i < MAX_DISPLAYS; ++i)
+    {
+        _canvas_displays[i] = (canvas_display){0};
+    }
+
+    for (int i = 0; i < MAX_CANVAS; ++i)
+    {
+        _canvas[i] = (canvas_type){0};
+        _canvas_data[i] = (canvas_data){0};
+    }
+
     _canvas_init_displays();
 
     _canvas_platform();
-    return 0;
+    return CANVAS_OK;
 }
 
 void canvas_main_loop()
@@ -1772,7 +1790,7 @@ int canvas_run(canvas_update_callback default_callback)
         canvas_main_loop();
     }
 
-    return 0;
+    return CANVAS_OK;
 }
 
 // display:     -1 = primary display
@@ -1812,7 +1830,7 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 
     _canvas_set(window_id, display, target_x, target_y, width, height, title);
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int canvas_window(int x, int y, int width, int height, const char *title)
@@ -1854,8 +1872,10 @@ int canvas_close(int window_id)
     _canvas_close(window_id);
 
     _canvas[window_id].window = NULL;
+    _canvas[window_id] = (canvas_type){0};
+    _canvas_data[window_id] = (canvas_data){0};
 
-    return 0;
+    return CANVAS_OK;
 }
 
 int canvas_set_update_callback(int window_id, canvas_update_callback callback)
@@ -1863,15 +1883,17 @@ int canvas_set_update_callback(int window_id, canvas_update_callback callback)
     CANVAS_BOGUS(window_id);
 
     _canvas[window_id].update = callback;
-    return 0;
+    return CANVAS_OK;
 }
 
-void canvas_color(int window_id, const float color[4])
+int canvas_color(int window_id, const float color[4])
 {
+    CANVAS_BOGUS(window_id);
     _canvas[window_id].clear[0] = color[0];
     _canvas[window_id].clear[1] = color[1];
     _canvas[window_id].clear[2] = color[2];
     _canvas[window_id].clear[3] = color[3];
+    return CANVAS_OK;
 }
 
 //
