@@ -285,9 +285,19 @@ _x11_display *_canvas_display = 0;
 bool _canvas_x11_flush = false;
 #endif
 
-#define CANVAS_BOGUS(window_id)                   \
-    if (window_id < 0 || window_id >= MAX_CANVAS) \
-        return CANVAS_ERR_BOGUS;
+#ifdef CANVAS_DEBUG
+#include <stdio.h>
+#define CANVAS_DBG(...) printf(__VA_ARGS__)
+#else
+#define CANVAS_DBG(...)
+#endif
+
+#define CANVAS_BOGUS(window_id)                                \
+    if (window_id < 0 || window_id >= MAX_CANVAS)              \
+    {                                                          \
+        CANVAS_DBG("canvas: bogus window id %d\n", window_id); \
+        return CANVAS_ERR_BOGUS;                               \
+    }
 
 int _canvas_get_free()
 {
@@ -543,6 +553,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
 
+    int idx = _canvas_get_free();
+    CANVAS_BOGUS(idx);
+
     _canvas[idx].window = window;
     _canvas[idx].resize = false;
     _canvas[idx].index = idx;
@@ -564,7 +577,7 @@ int _canvas_gpu_init()
     return _metal_queue ? 0 : -1;
 }
 
-void _canvas_update_drawable_size(int window_id)
+int _canvas_update_drawable_size(int window_id)
 {
     CANVAS_BOGUS(window_id);
 
@@ -578,6 +591,8 @@ void _canvas_update_drawable_size(int window_id)
         double height;
     } sz = {w, h};
     ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(_canvas_data[window_id].layer, sel_c("setDrawableSize:"), sz);
+
+    return 0;
 }
 
 int _canvas_gpu_new_window(int window_id)
@@ -694,7 +709,7 @@ int _canvas_update()
 
         if (eventWindow)
         {
-            int window_idx = _canvas_find_window_index(eventWindow);
+            int window_idx = _canvas_window_index(eventWindow);
 
             if (window_idx >= 0)
             {
