@@ -96,7 +96,7 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 int canvas_close(int window);
 
 int canvas_run(canvas_update_callback update);
-void canvas_set_update_callback(int window, canvas_update_callback callback);
+int canvas_set_update_callback(int window, canvas_update_callback callback);
 int canvas_fixed_update(canvas_time_data *time, double fixed_dt);
 void canvas_limit_fps(canvas_time_data *time, double target_fps);
 void canvas_sleep(double seconds);
@@ -141,11 +141,12 @@ typedef struct
 } canvas_display;
 
 canvas_type _canvas[MAX_CANVAS];
-int _canvas_count = 0;
 
 canvas_display _canvas_displays[MAX_DISPLAYS];
 int _canvas_display_count = 0;
 int _canvas_highest_refresh_rate = 60;
+
+#define CANVAS_ERR_BOGUS -69
 
 #ifndef CANVAS_HEADER_ONLY
 
@@ -284,6 +285,30 @@ _x11_display *_canvas_display = 0;
 bool _canvas_x11_flush = false;
 #endif
 
+#define CANVAS_BOGUS(window_id)                   \
+    if (window_id < 0 || window_id >= MAX_CANVAS) \
+        return CANVAS_ERR_BOGUS;
+
+int _canvas_get_free()
+{
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (_canvas[i].window == NULL)
+            return i;
+    }
+    return -1;
+}
+
+int _canvas_window_index(void *window)
+{
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (_canvas[i].window == window)
+            return i;
+    }
+    return -1;
+}
+
 //
 //
 //
@@ -291,8 +316,7 @@ bool _canvas_x11_flush = false;
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -319,8 +343,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
 int _canvas_get_window_display(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -415,7 +438,7 @@ int _canvas_refresh_displays()
         _canvas_display_count++;
     }
 
-    for (int i = 0; i < _canvas_count; i++)
+    for (int i = 0; i < MAX_CANVAS; i++)
     {
         if (_canvas[i].window)
             _canvas_get_window_display(i);
@@ -482,9 +505,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _post_init();
     canvas_startup();
 
-    if (_canvas_count >= MAX_CANVAS)
-        return -1;
-
     unsigned long style =
         (1UL << 0) /*Titled*/ | (1UL << 1) /*Closable*/ |
         (1UL << 2) /*Mini*/ | (1UL << 3) /*Resizable*/;
@@ -523,7 +543,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
 
-    int idx = _canvas_count++;
     _canvas[idx].window = window;
     _canvas[idx].resize = false;
     _canvas[idx].index = idx;
@@ -547,6 +566,8 @@ int _canvas_gpu_init()
 
 void _canvas_update_drawable_size(int window_id)
 {
+    CANVAS_BOGUS(window_id);
+
     _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(_canvas_data[window_id].view, sel_c("bounds"));
     double w = b.w * _canvas_data[window_id].scale;
     double h = b.h * _canvas_data[window_id].scale;
@@ -561,6 +582,8 @@ void _canvas_update_drawable_size(int window_id)
 
 int _canvas_gpu_new_window(int window_id)
 {
+    CANVAS_BOGUS(window_id);
+
     objc_id window = _canvas[window_id].window;
 
     MSG_id_id m = (MSG_id_id)objc_msgSend;
@@ -598,12 +621,12 @@ int _canvas_gpu_new_window(int window_id)
     return window_id;
 }
 
-void _canvas_gpu_draw_all(void)
+void _canvas_gpu_draw_all()
 {
     if (!_metal_queue)
         return;
 
-    for (int i = 0; i < _canvas_count; ++i)
+    for (int i = 0; i < MAX_CANVAS; ++i)
     {
         _canvas_update_drawable_size(i);
 
@@ -636,16 +659,6 @@ void _canvas_gpu_draw_all(void)
         ((MSG_void_id_id)objc_msgSend)(cmd, sel_c("presentDrawable:"), drawable);
         ((MSG_void_id)objc_msgSend)(cmd, sel_c("commit"));
     }
-}
-
-int _canvas_find_window_index(objc_id window)
-{
-    for (int i = 0; i < _canvas_count; i++)
-    {
-        if (_canvas[i].window == window)
-            return i;
-    }
-    return -1;
 }
 
 int _canvas_update()
@@ -767,8 +780,7 @@ double _canvas_get_time(canvas_time_data *time)
 
 int _canvas_close(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -806,8 +818,7 @@ int _canvas_post_update()
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
 
@@ -832,8 +843,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
 int _canvas_get_window_display(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
 
@@ -910,7 +920,7 @@ int _canvas_refresh_displays()
         _canvas_display_count++;
     }
 
-    for (int i = 0; i < _canvas_count; i++)
+    for (int i = 0; i < MAX_CANVAS; i++)
     {
         if (_canvas[i].window)
             _canvas_get_window_display(i);
@@ -1121,10 +1131,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int _canvas_window(int x, int y, int width, int height, const char *title)
 {
-    if (_canvas_count >= MAX_CANVAS)
-        return -1;
-
     canvas_startup();
+
+    int window_id = -1;
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (_canvas[i].window == NULL)
+        {
+            window_id = i;
+            break;
+        }
+    }
+
+    if (window_id == -1)
+        return -1;
 
     WNDCLASSA wc = {0};
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -1138,8 +1158,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     DWORD style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
-    int window_id = _canvas_count++; // todo: check for empty slots
-
     _canvas[window_id].index = window_id;
 
     HWND window = CreateWindowA(
@@ -1150,10 +1168,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         NULL, NULL, _win_instance, NULL);
 
     if (!window)
-    {
-        _canvas_count--;
         return -1;
-    }
 
     _canvas[window_id].window = window;
     _canvas[window_id].resize = false;
@@ -1182,7 +1197,7 @@ int _canvas_update()
 
     if (_win_device)
     {
-        for (int i = 0; i < _canvas_count; ++i)
+        for (int i = 0; i < MAX_CANVAS; ++i)
         {
             if (_canvas[i].resize)
             {
@@ -1193,7 +1208,7 @@ int _canvas_update()
         _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
         _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
 
-        for (int i = 0; i < _canvas_count; ++i)
+        for (int i = 0; i < MAX_CANVAS; ++i)
         {
             if (_canvas[i].window == NULL ||
                 _canvas_data[i].swapChain == NULL ||
@@ -1223,7 +1238,7 @@ int _canvas_update()
         ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)_win_cmdList};
         _win_cmdQueue->lpVtbl->ExecuteCommandLists(_win_cmdQueue, 1, cmdLists);
 
-        for (int i = 0; i < _canvas_count; ++i)
+        for (int i = 0; i < MAX_CANVAS; ++i)
         {
             if (_canvas_data[i].swapChain != NULL)
             {
@@ -1339,8 +1354,7 @@ int _canvas_gpu_init()
 
 int _canvas_gpu_new_window(int window_id)
 {
-    if (window_id < 0)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     _canvas_data[window_id] = (canvas_data){0};
 
@@ -1417,8 +1431,7 @@ int _canvas_gpu_new_window(int window_id)
 }
 int _canvas_window_resize(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     canvas_data *window = &_canvas_data[window_id];
 
@@ -1484,8 +1497,7 @@ int _canvas_window_resize(int window_id)
 
 int _canvas_close(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     if (_canvas_data[window_id].swapChain)
     {
@@ -1524,8 +1536,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (!_canvas_display)
         return -1;
 
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     _x11_window window = (_x11_window)_canvas[window_id].window;
 
@@ -1566,8 +1577,7 @@ int _canvas_init_displays()
 
 int _canvas_get_window_display(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     return 0;
 }
@@ -1601,9 +1611,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 {
     canvas_startup();
 
-    if (_canvas_count >= MAX_CANVAS)
-        return -1;
-
     _x11_window window = 0;
 
     window = XCreateSimpleWindow(
@@ -1615,7 +1622,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     XMapWindow(_canvas_display, window);
 
-    int idx = _canvas_count++;
     _canvas[idx].window = (canvas_window_handle)window;
     _canvas[idx].resize = false;
     _canvas[idx].index = idx;
@@ -1655,16 +1661,14 @@ int _canvas_gpu_init()
 
 int _canvas_gpu_new_window(int window_id)
 {
-    if (window_id < 0)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     return 0;
 }
 
 int _canvas_close(int window_id)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     _x11_window window = (_x11_window)_canvas[window_id].window;
 
@@ -1755,8 +1759,7 @@ int canvas_run(canvas_update_callback default_callback)
 // title:       window title string
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    if (window_id < 0 || window_id >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
     if (display < 0 || display >= _canvas_display_count)
     {
@@ -1820,32 +1823,31 @@ int canvas(int x, int y, int width, int height, const char *title)
     return window_id;
 }
 
-int canvas_close(int window)
+int canvas_close(int window_id)
 {
-    if (window < 0 || window >= _canvas_count)
-        return -1;
+    CANVAS_BOGUS(window_id);
 
-    _canvas_close(window);
+    _canvas_close(window_id);
 
-    _canvas[window].window = NULL;
-    _canvas_count--;
+    _canvas[window_id].window = NULL;
 
     return 0;
 }
 
-void canvas_set_update_callback(int window, canvas_update_callback callback)
+int canvas_set_update_callback(int window_id, canvas_update_callback callback)
 {
-    if (window < 0 || window >= _canvas_count)
-        return;
-    _canvas[window].update = callback;
+    CANVAS_BOGUS(window_id);
+
+    _canvas[window_id].update = callback;
+    return 0;
 }
 
-void canvas_color(int window, const float color[4])
+void canvas_color(int window_id, const float color[4])
 {
-    _canvas[window].clear[0] = color[0];
-    _canvas[window].clear[1] = color[1];
-    _canvas[window].clear[2] = color[2];
-    _canvas[window].clear[3] = color[3];
+    _canvas[window_id].clear[0] = color[0];
+    _canvas[window_id].clear[1] = color[1];
+    _canvas[window_id].clear[2] = color[2];
+    _canvas[window_id].clear[3] = color[3];
 }
 
 //

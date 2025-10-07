@@ -82,7 +82,7 @@ void update(int window) {
 
 ### Set per canvas callback
 ```c
-void canvas_set_update_callback(int window, canvas_update_callback callback);
+int canvas_set_update_callback(int window, canvas_update_callback callback);
 ```
 Set's a override callback function for that window
 
