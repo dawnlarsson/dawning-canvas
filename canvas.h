@@ -79,9 +79,7 @@ CANVAS_EXTERN_C_BEGIN
 typedef void *canvas_window_handle;
 typedef void (*canvas_update_callback)(int window);
 #ifdef __cplusplus
-extern canvas_update_callback canvas_default_update_callback;
-#else
-canvas_update_callback canvas_default_update_callback = 0;
+canvas_update_callback canvas_default_update_callback;
 #endif
 
 typedef struct
@@ -99,14 +97,10 @@ typedef struct
     int frame_index;    // Index for frame times
 } canvas_time_data;
 
-// public api
-float canvas_limit_mainloop_fps = 240.0;
-
 int canvas(int x, int y, int width, int height, const char *title);
 int canvas_window(int x, int y, int width, int height, const char *title);
 
 int canvas_startup();
-int canvas_update();
 int canvas_color(int window, const float color[4]);
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
 
@@ -114,7 +108,6 @@ int canvas_close(int window);
 
 int canvas_run(canvas_update_callback update);
 int canvas_set_update_callback(int window, canvas_update_callback callback);
-int canvas_fixed_update(canvas_time_data *time, double fixed_dt);
 void canvas_limit_fps(canvas_time_data *time, double target_fps);
 void canvas_sleep(double seconds);
 
@@ -130,14 +123,6 @@ void _canvas_time_init(canvas_time_data *time);
 void _canvas_time_update(canvas_time_data *time);
 double _canvas_get_time(canvas_time_data *time);
 int _canvas_primary_display_index();
-
-bool _canvas_init_platform = false;
-bool _canvas_init_gpu = false;
-bool _canvas_post_init_ran = false;
-bool _canvas_os_timed = false;
-bool _canvas_displays_changed = false;
-
-canvas_time_data canvas_main_time = {0};
 
 typedef struct
 {
@@ -157,12 +142,6 @@ typedef struct
     int refresh_rate;
 } canvas_display;
 
-canvas_type _canvas[MAX_CANVAS];
-
-canvas_display _canvas_displays[MAX_DISPLAYS];
-int _canvas_display_count = 0;
-int _canvas_highest_refresh_rate = 60;
-
 #define CANVAS_OK 0
 #define CANVAS_ERR_BOGUS -69
 #define CANVAS_ERR_NO_FREE -32
@@ -172,6 +151,24 @@ int _canvas_highest_refresh_rate = 60;
 #define CANVAS_ERR_GET_PLATFORM -36
 
 #ifndef CANVAS_HEADER_ONLY
+
+#ifndef __cplusplus
+canvas_update_callback canvas_default_update_callback = 0;
+#endif
+
+float canvas_limit_mainloop_fps = 240.0;
+int _canvas_display_count = 0;
+int _canvas_highest_refresh_rate = 60;
+
+bool _canvas_init_platform = false;
+bool _canvas_init_gpu = false;
+bool _canvas_post_init_ran = false;
+bool _canvas_os_timed = false;
+bool _canvas_displays_changed = false;
+
+canvas_type _canvas[MAX_CANVAS];
+canvas_display _canvas_displays[MAX_DISPLAYS];
+canvas_time_data canvas_main_time = {0};
 
 #if defined(__APPLE__)
 
