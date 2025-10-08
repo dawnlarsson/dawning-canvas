@@ -100,6 +100,9 @@ int canvas_startup();
 int canvas_color(int window, const float color[4]);
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
 
+int canvas_minimize(int window);
+int canvas_maximize(int window);
+int canvas_restore(int window);
 int canvas_close(int window);
 
 int canvas_run(canvas_update_callback update);
@@ -126,6 +129,7 @@ typedef struct
 {
     int index, x, y, width, height, display;
     bool resize, close, titlebar, os_moved, os_resized;
+    bool minimized, maximized;
     float clear[4];
     const char *title;
     canvas_window_handle window;
@@ -274,6 +278,7 @@ canvas_data _canvas_data[MAX_CANVAS];
 typedef unsigned long _x11_id;
 typedef struct _x11_display _x11_display;
 typedef _x11_id _x11_window;
+typedef unsigned long Atom;
 
 typedef struct
 {
@@ -283,6 +288,23 @@ typedef struct
     _x11_display *display;
     _x11_window window;
 } _x11_event;
+
+typedef struct
+{
+    int type;
+    unsigned long serial;
+    int send_event;
+    _x11_display *display;
+    _x11_window window;
+    Atom message_type;
+    int format;
+    union
+    {
+        char b[20];
+        short s[10];
+        long l[5];
+    } data;
+} XClientMessageEvent;
 
 extern _x11_display *XOpenDisplay(const char *);
 extern _x11_window XCreateSimpleWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
@@ -304,6 +326,10 @@ extern int XDisplayHeight(_x11_display *, int);
 
 extern int XMoveWindow(_x11_display *, _x11_window, int, int);
 extern int XResizeWindow(_x11_display *, _x11_window, unsigned, unsigned);
+
+extern Atom XInternAtom(_x11_display *, const char *, int);
+extern int XSendEvent(_x11_display *, _x11_window, int, long, _x11_event *);
+extern _x11_window XRootWindow(_x11_display *, int);
 
 _x11_display *_canvas_display = 0;
 bool _canvas_x11_flush = false;
@@ -349,6 +375,65 @@ int _canvas_window_index(void *window)
 //
 //
 #if defined(__APPLE__)
+
+int canvas_minimize(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    objc_id window = _canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    ((MSG_void_id_id)objc_msgSend)(window, sel_c("miniaturize:"), (objc_id)0);
+    _canvas[window_id].minimized = true;
+    _canvas[window_id].maximized = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_maximize(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    objc_id window = _canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    bool is_zoomed = ((bool (*)(objc_id, objc_sel))objc_msgSend)(window, sel_c("isZoomed"));
+
+    if (!is_zoomed)
+    {
+        ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
+        _canvas[window_id].maximized = true;
+    }
+
+    _canvas[window_id].minimized = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_restore(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    objc_id window = _canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    if (_canvas[window_id].minimized)
+    {
+        ((MSG_void_id_id)objc_msgSend)(window, sel_c("deminiaturize:"), (objc_id)0);
+    }
+    else if (_canvas[window_id].maximized)
+    {
+        ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
+    }
+
+    _canvas[window_id].minimized = false;
+    _canvas[window_id].maximized = false;
+
+    return CANVAS_OK;
+}
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
@@ -867,6 +952,51 @@ int _canvas_post_update()
 //
 #if defined(_WIN32) || defined(_WIN64)
 
+int canvas_minimize(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    HWND window = (HWND)_canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    ShowWindow(window, SW_MINIMIZE);
+    _canvas[window_id].minimized = true;
+    _canvas[window_id].maximized = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_maximize(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    HWND window = (HWND)_canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    ShowWindow(window, SW_MAXIMIZE);
+    _canvas[window_id].maximized = true;
+    _canvas[window_id].minimized = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_restore(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    HWND window = (HWND)_canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    ShowWindow(window, SW_RESTORE);
+    _canvas[window_id].minimized = false;
+    _canvas[window_id].maximized = false;
+
+    return CANVAS_OK;
+}
+
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
     CANVAS_BOGUS(window_id);
@@ -935,6 +1065,7 @@ int _canvas_get_window_display(int window_id)
 
     return CANVAS_OK;
 }
+
 int _canvas_refresh_displays()
 {
     _canvas_display_count = 0;
@@ -1181,6 +1312,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         return CANVAS_OK;
     }
+
+    case WM_SYSCOMMAND:
+    {
+        if (wParam == SC_MINIMIZE)
+            _canvas[window_index].minimized = true;
+        else if (wParam == SC_MAXIMIZE)
+            _canvas[window_index].maximized = true;
+        else if (wParam == SC_RESTORE)
+        {
+            _canvas[window_index].minimized = false;
+            _canvas[window_index].maximized = false;
+        }
+        break;
+    }
+
     case WM_DESTROY:
         PostQuitMessage(0);
     }
@@ -1581,6 +1727,109 @@ int _canvas_post_update()
 //
 //
 #if defined(__linux__)
+
+int canvas_minimize(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    if (!_canvas_display)
+        return CANVAS_ERR_GET_DISPLAY;
+
+    _x11_window window = (_x11_window)_canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    int screen = XDefaultScreen(_canvas_display);
+    XIconifyWindow(_canvas_display, window, screen);
+    XFlush(_canvas_display);
+
+    _canvas[window_id].minimized = true;
+    _canvas[window_id].maximized = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_maximize(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    if (!_canvas_display)
+        return CANVAS_ERR_GET_DISPLAY;
+
+    _x11_window window = (_x11_window)_canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    int screen = XDefaultScreen(_canvas_display);
+
+    Atom wm_state = XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
+    Atom max_horz = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+    Atom max_vert = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+
+    XClientMessageEvent ev = {0};
+    ev.type = 33;
+    ev.window = window;
+    ev.message_type = wm_state;
+    ev.format = 32;
+    ev.data.l[0] = 1;
+    ev.data.l[1] = max_horz;
+    ev.data.l[2] = max_vert;
+    ev.data.l[3] = 1;
+
+    XSendEvent(_canvas_display, XRootWindow(_canvas_display, screen),
+               0, (1L << 20) | (1L << 19), (_x11_event *)&ev);
+    XFlush(_canvas_display);
+
+    _canvas[window_id].maximized = true;
+    _canvas[window_id].minimized = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_restore(int window_id)
+{
+    CANVAS_BOGUS(window_id);
+
+    if (!_canvas_display)
+        return CANVAS_ERR_GET_DISPLAY;
+
+    _x11_window window = (_x11_window)_canvas[window_id].window;
+    if (!window)
+        return CANVAS_ERR_GET_WINDOW;
+
+    int screen = XDefaultScreen(_canvas_display);
+
+    if (_canvas[window_id].minimized)
+    {
+        XMapWindow(_canvas_display, window);
+    }
+    else if (_canvas[window_id].maximized)
+    {
+        Atom wm_state = XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
+        Atom max_horz = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+        Atom max_vert = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+
+        XClientMessageEvent ev = {0};
+        ev.type = 33;
+        ev.window = window;
+        ev.message_type = wm_state;
+        ev.format = 32;
+        ev.data.l[0] = 0;
+        ev.data.l[1] = max_horz;
+        ev.data.l[2] = max_vert;
+        ev.data.l[3] = 1;
+
+        XSendEvent(_canvas_display, XRootWindow(_canvas_display, screen),
+                   0, (1L << 20) | (1L << 19), (_x11_event *)&ev);
+    }
+
+    XFlush(_canvas_display);
+
+    _canvas[window_id].minimized = false;
+    _canvas[window_id].maximized = false;
+
+    return CANVAS_OK;
+}
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {

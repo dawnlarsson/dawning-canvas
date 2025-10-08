@@ -61,6 +61,21 @@ Changes the window position and size, and optionally the display.
 - `x = -1` -> center on screen x axis
 - `y = -1` -> center on screen y axis
 
+### Window Maximize
+```c
+int canvas_minimize(int window);
+```
+
+### Window Minimize
+```c
+int canvas_maximize(int window);
+```
+
+### Window Restore
+```c
+int canvas_restore(int window);
+```
+
 ### Window Close
 ```c
 int canvas_close(int window);
