@@ -306,6 +306,11 @@ typedef struct
     } data;
 } XClientMessageEvent;
 
+typedef struct
+{
+} canvas_data;
+
+
 extern _x11_display *XOpenDisplay(const char *);
 extern _x11_window XCreateSimpleWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
 extern _x11_window XDefaultRootWindow(_x11_display *);
@@ -324,6 +329,8 @@ extern int XDefaultScreen(_x11_display *);
 extern int XDisplayWidth(_x11_display *, int);
 extern int XDisplayHeight(_x11_display *, int);
 
+extern int XIconifyWindow(_x11_display *, _x11_window, int);
+
 extern int XMoveWindow(_x11_display *, _x11_window, int, int);
 extern int XResizeWindow(_x11_display *, _x11_window, unsigned, unsigned);
 
@@ -333,6 +340,8 @@ extern _x11_window XRootWindow(_x11_display *, int);
 
 _x11_display *_canvas_display = 0;
 bool _canvas_x11_flush = false;
+canvas_data _canvas_data[MAX_CANVAS];
+
 #endif
 
 #ifdef CANVAS_DEBUG
