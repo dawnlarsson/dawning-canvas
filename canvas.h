@@ -867,7 +867,7 @@ int _canvas_post_update()
 //
 #if defined(_WIN32) || defined(_WIN64)
 
-int _canvas_find(HWND window)
+int _canvas_window_index(HWND window)
 {
     for (int i = 0; i < MAX_CANVAS; i++)
     {
@@ -1038,7 +1038,7 @@ void _canvas_time_init(canvas_time_data *time)
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    int window_index = _canvas_find(hwnd);
+    int window_index = _canvas_window_index(hwnd);
 
     if (window_index < 0)
         return DefWindowProc(hwnd, msg, wParam, lParam);
