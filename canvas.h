@@ -78,10 +78,6 @@ CANVAS_EXTERN_C_BEGIN
 
 typedef void *canvas_window_handle;
 typedef void (*canvas_update_callback)(int window);
-#ifdef __cplusplus
-canvas_update_callback canvas_default_update_callback;
-#endif
-
 typedef struct
 {
     uint64_t start;
@@ -154,9 +150,7 @@ typedef struct
 
 #ifndef CANVAS_HEADER_ONLY
 
-#ifndef __cplusplus
-canvas_update_callback canvas_default_update_callback = 0;
-#endif
+canvas_update_callback canvas_default_update_callback;
 
 double canvas_limit_mainloop_fps = 240.0;
 int _canvas_display_count = 0;
@@ -652,7 +646,7 @@ int _canvas_gpu_new_window(int window_id)
     ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), _mac_device);
     ((MSG_void_id_long)objc_msgSend)(layer, sel_c("setPixelFormat:"), 80L /*BGRA8Unorm*/);
     ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setFramebufferOnly:"), 1);
-    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setAllowsNextDrawableTimeout:"), 1);
+    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setAllowsNextDrawableTimeout:"), 0);
 
     double scale = 1.0;
     objc_id screen = m(window, sel_c("screen"));
@@ -808,6 +802,13 @@ int _canvas_update()
     return CANVAS_OK;
 }
 
+double _canvas_get_time(canvas_time_data *time)
+{
+    uint64_t elapsed = mach_absolute_time() - time->start;
+    return (double)elapsed * (double)_canvas_timebase.numer /
+           (double)_canvas_timebase.denom / 1e9;
+}
+
 void canvas_sleep(double seconds)
 {
     struct timespec ts;
@@ -820,18 +821,12 @@ void _canvas_time_init(canvas_time_data *time)
 {
     mach_timebase_info(&_canvas_timebase);
     time->start = mach_absolute_time();
-    time->last = 0.0;
+    time->current = _canvas_get_time(time);
+    time->last = time->current;
     time->frame = 0;
 
     for (int i = 0; i < 60; i++)
         time->times[i] = 0.0;
-}
-
-double _canvas_get_time(canvas_time_data *time)
-{
-    uint64_t elapsed = mach_absolute_time() - time->start;
-    return (double)elapsed * (double)_canvas_timebase.numer /
-           (double)_canvas_timebase.denom / 1e9;
 }
 
 int _canvas_close(int window_id)
@@ -993,22 +988,6 @@ int _canvas_init_displays()
     return _canvas_refresh_displays();
 }
 
-void _canvas_time_init(canvas_time_data *time)
-{
-    QueryPerformanceFrequency(&_canvas_qpc_frequency);
-
-    LARGE_INTEGER counter;
-    QueryPerformanceCounter(&counter);
-
-    time->start = (uint64_t)counter.QuadPart;
-    time->last = 0.0;
-    time->frame = 0;
-    time->frame_index = 0;
-
-    for (int i = 0; i < 60; i++)
-        time->times[i] = 0.0;
-}
-
 double _canvas_get_time(canvas_time_data *time)
 {
     LARGE_INTEGER counter;
@@ -1016,6 +995,7 @@ double _canvas_get_time(canvas_time_data *time)
     return (double)((uint64_t)counter.QuadPart - time->start) /
            (double)_canvas_qpc_frequency.QuadPart;
 }
+
 void canvas_sleep(double seconds)
 {
     HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
@@ -1027,6 +1007,23 @@ void canvas_sleep(double seconds)
         WaitForSingleObject(timer, INFINITE);
         CloseHandle(timer);
     }
+}
+
+void _canvas_time_init(canvas_time_data *time)
+{
+    QueryPerformanceFrequency(&_canvas_qpc_frequency);
+
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+
+    time->start = (uint64_t)counter.QuadPart;
+    time->current = _canvas_get_time(time);
+    time->last = time->current;
+    time->frame = 0;
+    time->frame_index = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1633,18 +1630,6 @@ int _canvas_get_window_display(int window_id)
     return CANVAS_OK;
 }
 
-void _canvas_time_init(canvas_time_data *time)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    time->last = 0.0;
-    time->frame = 0;
-
-    for (int i = 0; i < 60; i++)
-        time->times[i] = 0.0;
-}
-
 double _canvas_get_time(canvas_time_data *time)
 {
     struct timespec ts;
@@ -1659,6 +1644,19 @@ void canvas_sleep(double seconds)
     ts.tv_sec = (time_t)seconds;
     ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
     clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+}
+
+void _canvas_time_init(canvas_time_data *time)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    time->current = _canvas_get_time(time);
+    time->last = time->current;
+    time->frame = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
 }
 
 int _canvas_window(int x, int y, int width, int height, const char *title)
