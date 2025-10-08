@@ -867,6 +867,16 @@ int _canvas_post_update()
 //
 #if defined(_WIN32) || defined(_WIN64)
 
+int _canvas_find(HWND window)
+{
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (_canvas[i].window == window)
+            return i;
+    }
+    return CANVAS_ERR_BOGUS;
+}
+
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
     CANVAS_BOGUS(window_id);
@@ -1028,7 +1038,10 @@ void _canvas_time_init(canvas_time_data *time)
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    int window_index = (int)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    int window_index = _canvas_find(hwnd);
+
+    if (window_index < 0)
+        return DefWindowProc(hwnd, msg, wParam, lParam);
 
     switch (msg)
     {
@@ -1212,7 +1225,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         title,
         style,
         x, y, width, height,
-        NULL, NULL, _win_instance, (LPVOID)(INT_PTR)window_id);
+        NULL, NULL, _win_instance, NULL);
 
     if (!window)
         return CANVAS_ERR_GET_WINDOW;
