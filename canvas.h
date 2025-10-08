@@ -867,16 +867,6 @@ int _canvas_post_update()
 //
 #if defined(_WIN32) || defined(_WIN64)
 
-int _canvas_window_index(HWND window)
-{
-    for (int i = 0; i < MAX_CANVAS; i++)
-    {
-        if (_canvas[i].window == window)
-            return i;
-    }
-    return CANVAS_ERR_BOGUS;
-}
-
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
     CANVAS_BOGUS(window_id);
