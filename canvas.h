@@ -827,6 +827,10 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     objc_id walloc = m(winClass, sel_c("alloc"));
 
+    int window_id = _canvas_get_free();
+    if (window_id < 0)
+        return window_id;
+
     typedef objc_id (*MSG_initWin)(objc_id, objc_sel, _CGRect, unsigned long, long, int);
     _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
     objc_id window = ((MSG_initWin)objc_msgSend)(walloc,
@@ -835,6 +839,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     if (!window)
     {
+        _canvas[window_id]._canvas_valid = false;
         CANVAS_ERR("create NSWindow\n");
         return CANVAS_ERR_GET_WINDOW;
     }
@@ -855,15 +860,12 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
 
-    int idx = _canvas_get_free();
-    if (idx < 0)
-        return idx;
+    _canvas[window_id].window = window;
+    _canvas[window_id].resize = false;
+    _canvas[window_id].index = window_id;
+    _canvas[window_id]._canvas_valid = true;
 
-    _canvas[idx].window = window;
-    _canvas[idx].resize = false;
-    _canvas[idx].index = idx;
-
-    return idx;
+    return window_id;
 }
 
 int _canvas_gpu_init()
@@ -1103,6 +1105,16 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
+    if (_metal_queue)
+    {
+        ((MSG_void_id)objc_msgSend)(_metal_queue, sel_c("release"));
+        _metal_queue = NULL;
+    }
+    if (_mac_device)
+    {
+        ((MSG_void_id)objc_msgSend)(_mac_device, sel_c("release"));
+        _mac_device = NULL;
+    }
     if (_mac_pool)
     {
         ((MSG_void_id)objc_msgSend)(_mac_pool, sel_c("drain"));
@@ -2320,6 +2332,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[window_id].window = (canvas_window_handle)window;
     _canvas[window_id].resize = false;
     _canvas[window_id].index = window_id;
+    _canvas[window_id]._canvas_valid = true;
 
     if (!_canvas_using_wayland)
     {
@@ -2630,10 +2643,14 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    x11.XCloseDisplay(_canvas_display);
+    if (_canvas_display)
+        x11.XCloseDisplay(_canvas_display);
 
-    dlclose(canvas_lib_x11);
-    dlclose(canvas_lib_xrandr);
+    if (canvas_lib_x11 != null)
+        dlclose(canvas_lib_x11);
+
+    if (canvas_lib_xrandr != null)
+        dlclose(canvas_lib_xrandr);
 
     return CANVAS_OK;
 }
@@ -2882,7 +2899,6 @@ int canvas_close(int window_id)
 
     _canvas_close(window_id);
 
-    _canvas[window_id].window = NULL;
     _canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
 
