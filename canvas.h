@@ -475,6 +475,14 @@ canvas_data _canvas_data[MAX_CANVAS];
         return CANVAS_INVALID;                         \
     }
 
+#define CANVAS_VALID(window_id)                            \
+    CANVAS_BOGUS(window_id)                                \
+    if (!_canvas[window_id]._canvas_valid)                 \
+    {                                                      \
+        CANVAS_ERR("window %d is not valid\n", window_id); \
+        return CANVAS_INVALID;                             \
+    }
+
 int _canvas_get_free()
 {
     for (int i = 0; i < MAX_CANVAS; i++)
@@ -506,7 +514,7 @@ int _canvas_window_index(void *window)
 
 int canvas_minimize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -524,7 +532,7 @@ int canvas_minimize(int window_id)
 
 int canvas_maximize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -548,7 +556,7 @@ int canvas_maximize(int window_id)
 
 int canvas_restore(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -574,7 +582,7 @@ int canvas_restore(int window_id)
 
 int _canvas_close(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -604,7 +612,7 @@ int _canvas_close(int window_id)
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -1159,7 +1167,7 @@ void _canvas_time_init(canvas_time_data *time)
 
 int canvas_minimize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
     if (!window)
@@ -1177,7 +1185,7 @@ int canvas_minimize(int window_id)
 
 int canvas_maximize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
     if (!window)
@@ -1195,7 +1203,7 @@ int canvas_maximize(int window_id)
 
 int canvas_restore(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
     if (!window)
@@ -1213,7 +1221,7 @@ int canvas_restore(int window_id)
 
 int _canvas_close(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     if (_canvas_data[window_id].swapChain)
     {
@@ -1236,7 +1244,7 @@ int _canvas_close(int window_id)
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
 
@@ -2036,7 +2044,7 @@ int _canvas_exit()
 
 int canvas_minimize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     if (_canvas_using_wayland)
     {
@@ -2069,7 +2077,7 @@ int canvas_minimize(int window_id)
 
 int canvas_maximize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     if (_canvas_using_wayland)
     {
@@ -2118,7 +2126,7 @@ int canvas_maximize(int window_id)
 
 int canvas_restore(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     if (_canvas_using_wayland)
     {
@@ -2175,7 +2183,7 @@ int canvas_restore(int window_id)
 
 int _canvas_close(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     if (_canvas_using_wayland)
     {
@@ -2205,7 +2213,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
     CANVAS_DISPLAY_BOGUS(display);
 
     if (_canvas_using_wayland)
@@ -2646,10 +2654,10 @@ int _canvas_exit()
     if (_canvas_display)
         x11.XCloseDisplay(_canvas_display);
 
-    if (canvas_lib_x11 != null)
+    if (canvas_lib_x11)
         dlclose(canvas_lib_x11);
 
-    if (canvas_lib_xrandr != null)
+    if (canvas_lib_xrandr)
         dlclose(canvas_lib_xrandr);
 
     return CANVAS_OK;
