@@ -64,6 +64,7 @@ CANVAS_EXTERN_C_BEGIN
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 typedef void *canvas_library_handle;
 typedef void *canvas_window_handle;
@@ -136,13 +137,16 @@ typedef struct
 
 #define CANVAS_OK 0
 #define CANVAS_FAIL -1
-#define CANVAS_ERR_BOGUS -69
+#define CANVAS_INVALID -2
+
+#define CANVAS_ERR_LOAD_LIBRARY -10
+#define CANVAS_ERR_LOAD_SYMBOL -11
+
 #define CANVAS_ERR_NO_FREE -32
 #define CANVAS_ERR_GET_DISPLAY -33
 #define CANVAS_ERR_GET_WINDOW -34
 #define CANVAS_ERR_GET_GPU -35
 #define CANVAS_ERR_GET_PLATFORM -36
-#define CANVAS_ERR_LOAD_LIBRARY -10
 
 int CANVAS_STATUS = CANVAS_OK;
 
@@ -272,6 +276,7 @@ canvas_data _canvas_data[MAX_CANVAS];
 
 canvas_library_handle canvas_lib_wayland;
 canvas_library_handle canvas_lib_x11;
+canvas_library_handle canvas_lib_xrandr;
 
 struct wl_display;
 struct wl_registry;
@@ -287,7 +292,8 @@ typedef unsigned long XID;
 
 typedef struct
 {
-    char pad[256];
+    int type;
+    char pad[256 - sizeof(int)];
 } XEvent;
 
 static struct
@@ -331,6 +337,8 @@ static struct
     unsigned long (*XWhitePixel)(Display *, int);
     Window (*XDefaultRootWindow)(Display *);
     int (*XDefaultScreen)(Display *);
+    int (*XChangeProperty)(Display *, Window, Atom, Atom, int, int, const unsigned char *, int);
+    int (*XGetWindowAttributes)(Display *, Window, void *);
 } x11;
 
 #define LOAD_X11(name)                                         \
@@ -339,11 +347,7 @@ static struct
     {                                                          \
         CANVAS_ERR("Failed to load " #name ": %s", dlerror()); \
         dlclose(canvas_lib_x11);                               \
-        return false;                                          \
-    }                                                          \
-    else                                                       \
-    {                                                          \
-        CANVAS_VERBOSE("loaded " #name " ");                   \
+        return CANVAS_ERR_LOAD_SYMBOL;                         \
     }
 
 typedef struct
@@ -374,12 +378,59 @@ typedef struct
 
 typedef struct
 {
+
+    Atom x11_wm_delete_window;
+    Atom x11_wm_protocols;
+    Atom x11_wm_state;
+    Atom x11_net_wm_state;
+    Atom x11_net_wm_state_maximized_horz;
+    Atom x11_net_wm_state_maximized_vert;
+    Atom x11_net_wm_state_fullscreen;
+    bool x11_atoms_initialized;
 } canvas_data;
+
+typedef struct
+{
+    int x, y;
+    int width, height;
+    int border_width;
+    int depth;
+    void *visual;
+    Window root;
+    int c_class;
+    int bit_gravity;
+    int win_gravity;
+    int backing_store;
+    unsigned long backing_planes;
+    unsigned long backing_pixel;
+    int save_under;
+    long your_event_mask;
+    long all_event_masks;
+    long do_not_propagate_mask;
+    int override_redirect;
+    void *screen;
+} XWindowAttributes;
+
+#define X11_KeyPress 2
+#define X11_KeyRelease 3
+#define X11_ButtonPress 4
+#define X11_ButtonRelease 5
+#define X11_MotionNotify 6
+#define X11_EnterNotify 7
+#define X11_LeaveNotify 8
+#define X11_FocusIn 9
+#define X11_FocusOut 10
+#define X11_Expose 12
+#define X11_ConfigureNotify 22
+#define X11_ClientMessage 33
+#define X11_MapNotify 19
+#define X11_UnmapNotify 18
 
 Display *_canvas_display = 0;
 
 bool _canvas_x11_flush = false;
 bool _canvas_using_wayland = false;
+
 canvas_data _canvas_data[MAX_CANVAS];
 
 #endif
@@ -413,7 +464,7 @@ canvas_data _canvas_data[MAX_CANVAS];
     if (window_id < 0 || window_id >= MAX_CANVAS)    \
     {                                                \
         CANVAS_ERR("bogus window: %d\n", window_id); \
-        return CANVAS_ERR_BOGUS;                     \
+        return CANVAS_INVALID;                       \
     }
 
 int _canvas_get_free()
@@ -437,7 +488,7 @@ int _canvas_window_index(void *window)
     }
 
     CANVAS_WARN("bogus get_window_index: %p\n", window);
-    return CANVAS_ERR_BOGUS;
+    return CANVAS_INVALID;
 }
 
 //
@@ -1936,6 +1987,7 @@ int canvas_minimize(int window_id)
 
     return CANVAS_OK;
 }
+
 int canvas_maximize(int window_id)
 {
     CANVAS_BOGUS(window_id);
@@ -1984,6 +2036,7 @@ int canvas_maximize(int window_id)
 
     return CANVAS_OK;
 }
+
 int canvas_restore(int window_id)
 {
     CANVAS_BOGUS(window_id);
@@ -2059,6 +2112,7 @@ int _canvas_close(int window_id)
         }
 
         x11.XDestroyWindow(_canvas_display, window);
+        x11.XFlush(_canvas_display);
     }
 
     return CANVAS_OK;
@@ -2089,11 +2143,13 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
         if (title)
         {
-            // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
+            x11.XStoreName(_canvas_display, window, title);
+            Atom net_wm_name = x11.XInternAtom(_canvas_display, "_NET_WM_NAME", 0);
+            Atom utf8_string = x11.XInternAtom(_canvas_display, "UTF8_STRING", 0);
+            x11.XChangeProperty(_canvas_display, window, net_wm_name, utf8_string, 8, 0, (unsigned char *)title, strlen(title));
         }
 
         x11.XMoveResizeWindow(_canvas_display, window, x, y, width, height);
-        x11.XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
     }
 
     return CANVAS_OK;
@@ -2176,17 +2232,42 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         }
 
         x11.XMapWindow(_canvas_display, (Window)window);
+
+        long event_mask = (1L << 0) |  // KeyPressMask
+                          (1L << 1) |  // KeyReleaseMask
+                          (1L << 2) |  // ButtonPressMask
+                          (1L << 3) |  // ButtonReleaseMask
+                          (1L << 5) |  // PointerMotionMask
+                          (1L << 15) | // ExposureMask
+                          (1L << 17) | // StructureNotifyMask
+                          (1L << 19);  // FocusChangeMask
+
+        x11.XSelectInput(_canvas_display, (Window)window, event_mask);
     }
 
-    int idx = _canvas_get_free();
-    if (idx < 0)
-        return idx;
+    int window_id = _canvas_get_free();
+    if (window_id < 0)
+        return window_id;
 
-    _canvas[idx].window = (canvas_window_handle)window;
-    _canvas[idx].resize = false;
-    _canvas[idx].index = idx;
+    _canvas[window_id].window = (canvas_window_handle)window;
+    _canvas[window_id].resize = false;
+    _canvas[window_id].index = window_id;
 
-    return idx;
+    if (!_canvas_using_wayland)
+    {
+        _canvas_data[window_id].x11_wm_protocols = x11.XInternAtom(_canvas_display, "WM_PROTOCOLS", 0);
+        _canvas_data[window_id].x11_wm_delete_window = x11.XInternAtom(_canvas_display, "WM_DELETE_WINDOW", 0);
+        _canvas_data[window_id].x11_wm_state = x11.XInternAtom(_canvas_display, "WM_STATE", 0);
+        _canvas_data[window_id].x11_net_wm_state = x11.XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
+        _canvas_data[window_id].x11_net_wm_state_maximized_horz = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+        _canvas_data[window_id].x11_net_wm_state_maximized_vert = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+        _canvas_data[window_id].x11_net_wm_state_fullscreen = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_FULLSCREEN", 0);
+        x11.XSetWMProtocols(_canvas_display, (Window)_canvas[window_id].window, &_canvas_data[window_id].x11_wm_delete_window, 1);
+
+        _canvas_data[window_id].x11_atoms_initialized = true;
+    }
+
+    return window_id;
 }
 
 int _canvas_init_wayland()
@@ -2246,6 +2327,8 @@ int _canvas_init_x11()
     LOAD_X11(XWhitePixel);
     LOAD_X11(XDefaultRootWindow);
     LOAD_X11(XDefaultScreen);
+    LOAD_X11(XChangeProperty);
+    LOAD_X11(XGetWindowAttributes);
 
     _canvas_display = x11.XOpenDisplay(NULL);
 
@@ -2254,6 +2337,86 @@ int _canvas_init_x11()
         CANVAS_ERR("open x11 display\n");
         return CANVAS_ERR_GET_DISPLAY;
     }
+
+    // Try to load XRandR for proper multi-monitor support
+    canvas_lib_xrandr = dlopen("libXrandr.so.2", RTLD_LAZY);
+
+    if (!canvas_lib_xrandr)
+        canvas_lib_xrandr = dlopen("libXrandr.so", RTLD_LAZY);
+
+    if (!canvas_lib_xrandr)
+    {
+        dlclose(canvas_lib_xrandr);
+        CANVAS_WARN("libXrandr.so.2 or libXrandr.so not found");
+        return CANVAS_OK;
+    }
+
+    typedef void *(*XRRGetScreenResourcesCurrentFunc)(Display *, Window);
+    typedef void (*XRRFreeScreenResourcesFunc)(void *);
+    typedef void *(*XRRGetCrtcInfoFunc)(Display *, void *, unsigned long);
+    typedef void (*XRRFreeCrtcInfoFunc)(void *);
+
+    XRRGetScreenResourcesCurrentFunc XRRGetScreenResourcesCurrent = dlsym(canvas_lib_xrandr, "XRRGetScreenResourcesCurrent");
+    XRRFreeScreenResourcesFunc XRRFreeScreenResources = dlsym(canvas_lib_xrandr, "XRRFreeScreenResources");
+    XRRGetCrtcInfoFunc XRRGetCrtcInfo = dlsym(canvas_lib_xrandr, "XRRGetCrtcInfo");
+    XRRFreeCrtcInfoFunc XRRFreeCrtcInfo = dlsym(canvas_lib_xrandr, "XRRFreeCrtcInfo");
+
+    if (!XRRGetScreenResourcesCurrent || !XRRFreeScreenResources || !XRRFreeScreenResources || !XRRFreeCrtcInfo)
+    {
+        dlclose(canvas_lib_xrandr);
+        CANVAS_WARN("failed to load Xrandr symbols");
+        return CANVAS_OK;
+    }
+
+    Window root = x11.XDefaultRootWindow(_canvas_display);
+
+    typedef struct
+    {
+        void *timestamp;
+        void *configTimestamp;
+        int ncrtc;
+        unsigned long *crtcs;
+        // ...
+    } XRRScreenResources;
+
+    typedef struct
+    {
+        long timestamp;
+        int x, y;
+        unsigned int width, height;
+        // ...
+    } XRRCrtcInfo;
+
+    XRRScreenResources *sr = XRRGetScreenResourcesCurrent(_canvas_display, root);
+
+    if (!sr)
+    {
+        dlclose(canvas_lib_xrandr);
+        CANVAS_WARN("failed call XRRGetScreenResourcesCurrent");
+        return CANVAS_OK;
+    }
+
+    for (int i = 0; i < sr->ncrtc && i < MAX_DISPLAYS; i++)
+    {
+        XRRCrtcInfo *ci = XRRGetCrtcInfo(_canvas_display, sr, sr->crtcs[i]);
+
+        if (ci && ci->width > 0 && ci->height > 0)
+        {
+            _canvas_displays[_canvas_display_count].x = ci->x;
+            _canvas_displays[_canvas_display_count].y = ci->y;
+            _canvas_displays[_canvas_display_count].width = ci->width;
+            _canvas_displays[_canvas_display_count].height = ci->height;
+            _canvas_displays[_canvas_display_count].refresh_rate = 60;
+            _canvas_displays[_canvas_display_count].primary = (i == 0);
+
+            _canvas_display_count++;
+        }
+
+        if (ci)
+            XRRFreeCrtcInfo(ci);
+    }
+
+    XRRFreeScreenResources(sr);
 }
 
 int _canvas_platform()
@@ -2283,6 +2446,76 @@ int _canvas_update()
         while (x11.XPending(_canvas_display))
         {
             x11.XNextEvent(_canvas_display, &event);
+
+            int window_idx = -1;
+            if (event.type >= 2 && event.type <= 35)
+            {
+                _x11_event *base_event = (_x11_event *)&event;
+                window_idx = _canvas_window_index((void *)base_event->window);
+            }
+
+            if (window_idx < 0)
+                continue;
+
+            switch (event.type)
+            {
+            case X11_ConfigureNotify:
+            {
+                XWindowAttributes attrs;
+                if (x11.XGetWindowAttributes(_canvas_display,
+                                             (Window)_canvas[window_idx].window,
+                                             &attrs))
+                {
+                    if (attrs.width != _canvas[window_idx].width ||
+                        attrs.height != _canvas[window_idx].height)
+                    {
+                        _canvas[window_idx].resize = true;
+                        _canvas[window_idx].width = attrs.width;
+                        _canvas[window_idx].height = attrs.height;
+                    }
+
+                    if (attrs.x != _canvas[window_idx].x ||
+                        attrs.y != _canvas[window_idx].y)
+                    {
+                        _canvas[window_idx].x = attrs.x;
+                        _canvas[window_idx].y = attrs.y;
+                    }
+                }
+                break;
+            }
+
+            case X11_ClientMessage:
+            {
+                XClientMessageEvent *cm = (XClientMessageEvent *)&event;
+
+                // Check for window close request
+                if ((Atom)cm->data.l[0] == _canvas_data[window_idx].x11_wm_delete_window)
+                {
+                    _canvas[window_idx].close = true;
+                }
+                break;
+            }
+
+            case X11_UnmapNotify:
+            {
+                // Window was minimized/hidden
+                _canvas[window_idx].minimized = true;
+                break;
+            }
+
+            case X11_MapNotify:
+            {
+                // Window was restored/shown
+                _canvas[window_idx].minimized = false;
+                break;
+            }
+
+            case X11_Expose:
+            {
+                // Window needs redraw (we handle this automatically)
+                break;
+            }
+            }
         }
     }
 
