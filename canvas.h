@@ -2451,6 +2451,8 @@ int _canvas_init_x11()
     }
 
     XRRFreeScreenResources(sr);
+
+    return CANVAS_OK;
 }
 
 int _canvas_platform()
