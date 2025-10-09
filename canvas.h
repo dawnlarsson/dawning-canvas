@@ -65,6 +65,7 @@ CANVAS_EXTERN_C_BEGIN
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef void *canvas_library_handle;
 typedef void *canvas_window_handle;
 typedef void (*canvas_update_callback)(int window);
 typedef struct
@@ -134,12 +135,16 @@ typedef struct
 } canvas_display;
 
 #define CANVAS_OK 0
+#define CANVAS_FAIL -1
 #define CANVAS_ERR_BOGUS -69
 #define CANVAS_ERR_NO_FREE -32
 #define CANVAS_ERR_GET_DISPLAY -33
 #define CANVAS_ERR_GET_WINDOW -34
 #define CANVAS_ERR_GET_GPU -35
 #define CANVAS_ERR_GET_PLATFORM -36
+#define CANVAS_ERR_LOAD_LIBRARY -10
+
+int CANVAS_STATUS = CANVAS_OK;
 
 #ifndef CANVAS_HEADER_ONLY
 
@@ -263,19 +268,91 @@ canvas_data _canvas_data[MAX_CANVAS];
 #if defined(__linux__)
 
 #include <time.h>
+#include "dlfcn.h"
 
-typedef unsigned long _x11_id;
-typedef struct _x11_display _x11_display;
-typedef _x11_id _x11_window;
+canvas_library_handle canvas_lib_wayland;
+canvas_library_handle canvas_lib_x11;
+
+struct wl_display;
+struct wl_registry;
+struct wl_compositor;
+struct wl_surface;
+struct wl_interface;
+struct wl_proxy;
+
+typedef struct _XDisplay Display;
+typedef unsigned long Window;
 typedef unsigned long Atom;
+typedef unsigned long XID;
+
+typedef struct
+{
+    char pad[256];
+} XEvent;
+
+static struct
+{
+    struct wl_display *(*wl_display_connect)(const char *);
+    void (*wl_display_disconnect)(struct wl_display *);
+    int (*wl_display_dispatch)(struct wl_display *);
+    int (*wl_display_roundtrip)(struct wl_display *);
+    void *(*wl_registry_bind)(struct wl_registry *, uint32_t, const struct wl_interface *, uint32_t);
+    int (*wl_registry_add_listener)(struct wl_registry *, const void *, void *);
+    void (*wl_registry_destroy)(struct wl_registry *);
+    struct wl_surface *(*wl_compositor_create_surface)(struct wl_compositor *);
+    void (*wl_surface_destroy)(struct wl_surface *);
+    void (*wl_compositor_destroy)(struct wl_compositor *);
+    void (*wl_proxy_destroy)(struct wl_proxy *);
+    const struct wl_interface *wl_compositor_interface;
+} wl;
+
+static struct
+{
+    Display *(*XOpenDisplay)(const char *);
+    int (*XCloseDisplay)(Display *);
+    Window (*XCreateSimpleWindow)(Display *, Window, int, int, unsigned int, unsigned int,
+                                  unsigned int, unsigned long, unsigned long);
+    int (*XDestroyWindow)(Display *, Window);
+    int (*XMapWindow)(Display *, Window);
+    int (*XStoreName)(Display *, Window, const char *);
+    int (*XSelectInput)(Display *, Window, long);
+    int (*XNextEvent)(Display *, XEvent *);
+    int (*XSendEvent)(Display *, Window, bool, long, XEvent *);
+    int (*XPending)(Display *);
+    Window (*XRootWindow)(Display *, int);
+    int (*XFlush)(Display *);
+    int (*XMoveResizeWindow)(Display *, Window, int, int, unsigned int, unsigned int);
+    int (*XDisplayWidth)(Display *, int screen_number);
+    int (*XDisplayHeight)(Display *, int screen_number);
+    Atom (*XInternAtom)(Display *, const char *, int);
+    int (*XIconifyWindow)(Display *, Window, int);
+    int (*XSetWMProtocols)(Display *, Window, Atom *, int);
+    unsigned long (*XBlackPixel)(Display *, int);
+    unsigned long (*XWhitePixel)(Display *, int);
+    Window (*XDefaultRootWindow)(Display *);
+    int (*XDefaultScreen)(Display *);
+} x11;
+
+#define LOAD_X11(name)                                         \
+    x11.name = dlsym(canvas_lib_x11, #name);                   \
+    if (!x11.name)                                             \
+    {                                                          \
+        CANVAS_ERR("Failed to load " #name ": %s", dlerror()); \
+        dlclose(canvas_lib_x11);                               \
+        return false;                                          \
+    }                                                          \
+    else                                                       \
+    {                                                          \
+        CANVAS_VERBOSE("loaded " #name " ");                   \
+    }
 
 typedef struct
 {
     int type;
     unsigned long serial;
     int send_event;
-    _x11_display *display;
-    _x11_window window;
+    Display *display;
+    Window window;
 } _x11_event;
 
 typedef struct
@@ -283,8 +360,8 @@ typedef struct
     int type;
     unsigned long serial;
     int send_event;
-    _x11_display *display;
-    _x11_window window;
+    Display *display;
+    Window window;
     Atom message_type;
     int format;
     union
@@ -299,34 +376,8 @@ typedef struct
 {
 } canvas_data;
 
-extern _x11_display *XOpenDisplay(const char *);
-extern _x11_window XCreateSimpleWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
-extern _x11_window XDefaultRootWindow(_x11_display *);
-extern unsigned long XBlackPixel(_x11_display *, int);
-extern unsigned long XWhitePixel(_x11_display *, int);
-extern int XFlush(_x11_display *);
-extern int XNextEvent(_x11_display *, _x11_event *);
-extern int XCheckMaskEvent(_x11_display *, long, _x11_event *);
-extern int XMapWindow(_x11_display *, _x11_window);
-extern int XStoreName(_x11_display *, _x11_window, const char *);
-extern int XMoveResizeWindow(_x11_display *, _x11_window, int, int, unsigned, unsigned);
-extern int XDestroyWindow(_x11_display *, _x11_window);
-extern int XCloseDisplay(_x11_display *);
-extern int XPending(_x11_display *);
-extern int XDefaultScreen(_x11_display *);
-extern int XDisplayWidth(_x11_display *, int);
-extern int XDisplayHeight(_x11_display *, int);
+Display *_canvas_display = 0;
 
-extern int XIconifyWindow(_x11_display *, _x11_window, int);
-
-extern int XMoveWindow(_x11_display *, _x11_window, int, int);
-extern int XResizeWindow(_x11_display *, _x11_window, unsigned, unsigned);
-
-extern Atom XInternAtom(_x11_display *, const char *, int);
-extern int XSendEvent(_x11_display *, _x11_window, int, long, _x11_event *);
-extern _x11_window XRootWindow(_x11_display *, int);
-
-_x11_display *_canvas_display = 0;
 bool _canvas_x11_flush = false;
 bool _canvas_using_wayland = false;
 canvas_data _canvas_data[MAX_CANVAS];
@@ -336,13 +387,13 @@ canvas_data _canvas_data[MAX_CANVAS];
 #ifndef CANVAS_NO_LOG
 #include <stdio.h>
 
-#define CANVAS_INFO(...) printf("[CANVAS - INFO] " __VA_ARGS__)
+#define CANVAS_INFO(...) printf("[CANVAS - INF] " __VA_ARGS__)
 
 #ifndef CANVAS_LOG_DEBUG
-#define CANVAS_VERBOSE(...) printf("[CANVAS - VERB] " __VA_ARGS__)
+#define CANVAS_VERBOSE(...) printf("[CANVAS - INF] " __VA_ARGS__ "\n")
 #define CANVAS_WARN(...) printf("[CANVAS - WARN] " __VA_ARGS__)
 #define CANVAS_ERR(...) printf("[CANVAS - ERR] (%s:%d) " __VA_ARGS__, __FILE__, __LINE__)
-#define CANVAS_DBG(...) printf("[CANVAS - DEBUG] (%s:%d) " __VA_ARGS__, __FILE__, __LINE__)
+#define CANVAS_DBG(...) printf("[CANVAS - DEBUG] (%s:%d) " __VA_ARGS__ "\n", __FILE__, __LINE__)
 #else
 #define CANVAS_VERBOSE(...)
 #define CANVAS_WARN(...)
@@ -352,7 +403,7 @@ canvas_data _canvas_data[MAX_CANVAS];
 
 #else
 #define CANVAS_INFO(...)
-
+#define CANVAS_ERR(...)
 #define CANVAS_VERBOSE(...)
 #define CANVAS_WARN(...)
 #define CANVAS_DBG(...)
@@ -1868,16 +1919,16 @@ int canvas_minimize(int window_id)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        _x11_window window = (_x11_window)_canvas[window_id].window;
+        Window window = (Window)_canvas[window_id].window;
         if (!window)
         {
             CANVAS_ERR("no window to minimize: %d\n", window_id);
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        int screen = XDefaultScreen(_canvas_display);
-        XIconifyWindow(_canvas_display, window, screen);
-        XFlush(_canvas_display);
+        int screen = x11.XDefaultScreen(_canvas_display);
+        x11.XIconifyWindow(_canvas_display, window, screen);
+        x11.XFlush(_canvas_display);
     }
 
     _canvas[window_id].minimized = true;
@@ -1900,18 +1951,18 @@ int canvas_maximize(int window_id)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        _x11_window window = (_x11_window)_canvas[window_id].window;
+        Window window = (Window)_canvas[window_id].window;
         if (!window)
         {
             CANVAS_ERR("no window to maximize: %d\n", window_id);
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        int screen = XDefaultScreen(_canvas_display);
+        int screen = x11.XDefaultScreen(_canvas_display);
 
-        Atom wm_state = XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
-        Atom max_horz = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
-        Atom max_vert = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+        Atom wm_state = x11.XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
+        Atom max_horz = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+        Atom max_vert = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
 
         XClientMessageEvent ev = {0};
         ev.type = 33;
@@ -1923,9 +1974,9 @@ int canvas_maximize(int window_id)
         ev.data.l[2] = max_vert;
         ev.data.l[3] = 1;
 
-        XSendEvent(_canvas_display, XRootWindow(_canvas_display, screen),
-                   0, (1L << 20) | (1L << 19), (_x11_event *)&ev);
-        XFlush(_canvas_display);
+        x11.XSendEvent(_canvas_display, x11.XRootWindow(_canvas_display, screen),
+                       0, (1L << 20) | (1L << 19), (XEvent *)&ev);
+        x11.XFlush(_canvas_display);
     }
 
     _canvas[window_id].maximized = true;
@@ -1948,24 +1999,24 @@ int canvas_restore(int window_id)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        _x11_window window = (_x11_window)_canvas[window_id].window;
+        Window window = (Window)_canvas[window_id].window;
         if (!window)
         {
             CANVAS_ERR("no window to restore: %d\n", window_id);
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        int screen = XDefaultScreen(_canvas_display);
+        int screen = x11.XDefaultScreen(_canvas_display);
 
         if (_canvas[window_id].minimized)
         {
-            XMapWindow(_canvas_display, window);
+            x11.XMapWindow(_canvas_display, window);
         }
         else if (_canvas[window_id].maximized)
         {
-            Atom wm_state = XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
-            Atom max_horz = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
-            Atom max_vert = XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+            Atom wm_state = x11.XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
+            Atom max_horz = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+            Atom max_vert = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
 
             XClientMessageEvent ev = {0};
             ev.type = 33;
@@ -1977,11 +2028,11 @@ int canvas_restore(int window_id)
             ev.data.l[2] = max_vert;
             ev.data.l[3] = 1;
 
-            XSendEvent(_canvas_display, XRootWindow(_canvas_display, screen),
-                       0, (1L << 20) | (1L << 19), (_x11_event *)&ev);
+            x11.XSendEvent(_canvas_display, x11.XRootWindow(_canvas_display, screen),
+                           0, (1L << 20) | (1L << 19), (XEvent *)&ev);
         }
 
-        XFlush(_canvas_display);
+        x11.XFlush(_canvas_display);
     }
 
     _canvas[window_id].minimized = false;
@@ -1999,7 +2050,7 @@ int _canvas_close(int window_id)
     }
     else
     {
-        _x11_window window = (_x11_window)_canvas[window_id].window;
+        Window window = (Window)_canvas[window_id].window;
 
         if (!window)
         {
@@ -2007,7 +2058,7 @@ int _canvas_close(int window_id)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        XDestroyWindow(_canvas_display, window);
+        x11.XDestroyWindow(_canvas_display, window);
     }
 
     return CANVAS_OK;
@@ -2028,7 +2079,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     }
     else
     {
-        _x11_window window = (_x11_window)_canvas[window_id].window;
+        Window window = (Window)_canvas[window_id].window;
 
         if (!window)
         {
@@ -2041,8 +2092,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
             // XStoreName(_canvas_display, window, title); TODO: CRASH! and deadlock
         }
 
-        XMoveResizeWindow(_canvas_display, window, x, y, width, height);
-        XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
+        x11.XMoveResizeWindow(_canvas_display, window, x, y, width, height);
+        x11.XFlush(_canvas_display); // TODO: omit this, let the post_update flush handle it (CRASH!)
     }
 
     return CANVAS_OK;
@@ -2065,13 +2116,13 @@ int _canvas_init_displays()
     else
     {
         // TODO: Use Xinerama or XRandR for proper multi-monitor support
-        int screen = XDefaultScreen(_canvas_display);
+        int screen = x11.XDefaultScreen(_canvas_display);
 
         _canvas_displays[0].primary = true;
         _canvas_displays[0].x = 0;
         _canvas_displays[0].y = 0;
-        _canvas_displays[0].width = XDisplayWidth(_canvas_display, screen);
-        _canvas_displays[0].height = XDisplayHeight(_canvas_display, screen);
+        _canvas_displays[0].width = x11.XDisplayWidth(_canvas_display, screen);
+        _canvas_displays[0].height = x11.XDisplayHeight(_canvas_display, screen);
         _canvas_displays[0].refresh_rate = 60;
 
         _canvas_display_count = 1;
@@ -2111,12 +2162,12 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        window = (canvas_window_handle)XCreateSimpleWindow(
+        window = (canvas_window_handle)x11.XCreateSimpleWindow(
             _canvas_display,
-            XDefaultRootWindow(_canvas_display),
+            x11.XDefaultRootWindow(_canvas_display),
             x, y, width, height, 0,
-            XBlackPixel(_canvas_display, 0),
-            XWhitePixel(_canvas_display, 0));
+            x11.XBlackPixel(_canvas_display, 0),
+            x11.XWhitePixel(_canvas_display, 0));
 
         if (!window)
         {
@@ -2124,7 +2175,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        XMapWindow(_canvas_display, (_x11_window)window);
+        x11.XMapWindow(_canvas_display, (Window)window);
     }
 
     int idx = _canvas_get_free();
@@ -2138,20 +2189,78 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     return idx;
 }
 
+int _canvas_init_wayland()
+{
+    canvas_lib_wayland = dlopen("libwayland-client.so.0", RTLD_LAZY | RTLD_NOW | RTLD_GLOBAL);
+
+    if (!canvas_lib_wayland)
+    {
+        canvas_lib_wayland = dlopen("libwayland-client.so", RTLD_LAZY | RTLD_NOW | RTLD_GLOBAL);
+    }
+
+    if (!canvas_lib_wayland)
+    {
+        dlclose(canvas_lib_wayland);
+        CANVAS_ERR("libwayland-client.so.0 or libwayland-client.so not found");
+        return CANVAS_ERR_LOAD_LIBRARY;
+    }
+
+    _canvas_using_wayland = true;
+}
+
+int _canvas_init_x11()
+{
+    canvas_lib_x11 = dlopen("libX11.so.6", RTLD_LAZY);
+
+    if (!canvas_lib_x11)
+    {
+        canvas_lib_x11 = dlopen("libX11.so", RTLD_LAZY);
+    }
+
+    if (!canvas_lib_x11)
+    {
+        dlclose(canvas_lib_x11);
+        CANVAS_ERR("libX11.so.6 or libX11.so not found");
+        return CANVAS_ERR_LOAD_LIBRARY;
+    }
+
+    LOAD_X11(XOpenDisplay);
+    LOAD_X11(XCloseDisplay);
+    LOAD_X11(XCreateSimpleWindow);
+    LOAD_X11(XDestroyWindow);
+    LOAD_X11(XMapWindow);
+    LOAD_X11(XStoreName);
+    LOAD_X11(XSelectInput);
+    LOAD_X11(XNextEvent);
+    LOAD_X11(XSendEvent);
+    LOAD_X11(XPending);
+    LOAD_X11(XRootWindow);
+    LOAD_X11(XFlush);
+    LOAD_X11(XMoveResizeWindow);
+    LOAD_X11(XDisplayWidth);
+    LOAD_X11(XDisplayHeight);
+    LOAD_X11(XInternAtom);
+    LOAD_X11(XIconifyWindow);
+    LOAD_X11(XSetWMProtocols);
+    LOAD_X11(XBlackPixel);
+    LOAD_X11(XWhitePixel);
+    LOAD_X11(XDefaultRootWindow);
+    LOAD_X11(XDefaultScreen);
+
+    _canvas_display = x11.XOpenDisplay(NULL);
+
+    if (!_canvas_display)
+    {
+        CANVAS_ERR("open x11 display\n");
+        return CANVAS_ERR_GET_DISPLAY;
+    }
+}
+
 int _canvas_platform()
 {
-    if (_canvas_using_wayland)
-    {
-    }
-    else
-    {
-        _canvas_display = XOpenDisplay(NULL);
-        if (!_canvas_display)
-        {
-            CANVAS_ERR("open x11 display\n");
-            return CANVAS_ERR_GET_DISPLAY;
-        }
-    }
+    //     int load_result = _canvas_init_wayland();
+
+    _canvas_init_x11();
 
     return CANVAS_OK;
 }
@@ -2169,17 +2278,16 @@ int _canvas_update()
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        _x11_event event;
+        XEvent event;
 
-        while (XCheckMaskEvent(_canvas_display, ~0L, &event))
+        while (x11.XPending(_canvas_display))
         {
-            XNextEvent(_canvas_display, &event);
+            x11.XNextEvent(_canvas_display, &event);
         }
     }
 
     return CANVAS_OK;
 }
-
 int _canvas_gpu_init()
 {
     if (_canvas_init_gpu)
@@ -2211,7 +2319,7 @@ int _canvas_post_update()
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        XFlush(_canvas_display);
+        x11.XFlush(_canvas_display);
     }
 
     return CANVAS_OK;
@@ -2279,6 +2387,7 @@ int canvas_startup()
     int result = _canvas_platform();
     if (result != CANVAS_OK)
     {
+        CANVAS_STATUS = CANVAS_FAIL;
         CANVAS_ERR("platform initialization failed\n");
         return result;
     }
@@ -2328,6 +2437,12 @@ int canvas_quit()
 
 int canvas_run(canvas_update_callback default_callback)
 {
+    if (CANVAS_STATUS != CANVAS_OK)
+    {
+        CANVAS_ERR("refusing run, initialization failed.");
+        return CANVAS_STATUS;
+    }
+
     canvas_default_update_callback = default_callback;
 
     while (_canvas_quit == 0)
