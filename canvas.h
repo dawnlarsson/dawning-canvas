@@ -120,7 +120,7 @@ typedef struct
 {
     int index, x, y, width, height, display;
     bool resize, close, titlebar, os_moved, os_resized;
-    bool minimized, maximized;
+    bool minimized, maximized, _canvas_valid;
     float clear[4];
     const char *title;
     canvas_window_handle window;
@@ -479,7 +479,7 @@ int _canvas_get_free()
 {
     for (int i = 0; i < MAX_CANVAS; i++)
     {
-        if (_canvas[i].window == NULL)
+        if (!_canvas[i]._canvas_valid)
             return i;
     }
 
@@ -1103,6 +1103,12 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
+    if (_mac_pool)
+    {
+        ((MSG_void_id)objc_msgSend)(_mac_pool, sel_c("drain"));
+        _mac_pool = NULL;
+    }
+    CGDisplayRemoveReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
     return CANVAS_OK;
 }
 
@@ -1614,6 +1620,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _canvas[window_id].window = window;
     _canvas[window_id].resize = false;
     _canvas[window_id].titlebar = false;
+    _canvas[window_id]._canvas_valid = true;
 
     return window_id;
 }
@@ -1987,7 +1994,24 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    CloseHandle(_win_fence_event);
+    if (_win_fence_event)
+        CloseHandle(_win_fence_event);
+    if (_win_fence)
+        _win_fence->lpVtbl->Release(_win_fence);
+    if (_win_rtvHeap)
+        _win_rtvHeap->lpVtbl->Release(_win_rtvHeap);
+    if (_win_cmdList)
+        _win_cmdList->lpVtbl->Release(_win_cmdList);
+    if (_win_cmdAllocator)
+        _win_cmdAllocator->lpVtbl->Release(_win_cmdAllocator);
+    if (_win_cmdQueue)
+        _win_cmdQueue->lpVtbl->Release(_win_cmdQueue);
+    if (_win_device)
+        _win_device->lpVtbl->Release(_win_device);
+    if (_win_factory)
+        _win_factory->lpVtbl->Release(_win_factory);
+    if (_win_main_class)
+        UnregisterClassA("CanvasWindowClass", _win_instance);
     return CANVAS_OK;
 }
 
@@ -2325,12 +2349,13 @@ int _canvas_init_wayland()
 
     if (!canvas_lib_wayland)
     {
-        dlclose(canvas_lib_wayland);
         CANVAS_ERR("libwayland-client.so.0 or libwayland-client.so not found");
         return CANVAS_ERR_LOAD_LIBRARY;
     }
 
     _canvas_using_wayland = true;
+
+    return CANVAS_OK;
 }
 
 int _canvas_init_x11()
@@ -2344,7 +2369,6 @@ int _canvas_init_x11()
 
     if (!canvas_lib_x11)
     {
-        dlclose(canvas_lib_x11);
         CANVAS_ERR("libX11.so.6 or libX11.so not found");
         return CANVAS_ERR_LOAD_LIBRARY;
     }
@@ -2850,6 +2874,11 @@ int canvas(int x, int y, int width, int height, const char *title)
 int canvas_close(int window_id)
 {
     CANVAS_BOGUS(window_id);
+
+    if (!_canvas[window_id]._canvas_valid)
+        return CANVAS_OK;
+
+    _canvas[window_id]._canvas_valid = false;
 
     _canvas_close(window_id);
 
