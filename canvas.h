@@ -246,7 +246,7 @@ static LARGE_INTEGER _canvas_qpc_frequency = {0};
 static LARGE_INTEGER _canvas_start_counter = {0};
 
 HINSTANCE _win_instance = NULL;
-Atom _win_main_class = NULL;
+ATOM _win_main_class = 0;
 
 ID3D12Device *_win_device = NULL;
 ID3D12CommandQueue *_win_cmdQueue = NULL;
@@ -1601,7 +1601,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     if (!window)
     {
-        CANVAS_ERR("create win32 window")
+        CANVAS_ERR("create win32 window");
         return CANVAS_ERR_GET_WINDOW;
     }
 
@@ -1778,7 +1778,7 @@ int _canvas_gpu_init()
 
     if (FAILED(result))
     {
-        CANVAS_ERR("create descriptor heap")
+        CANVAS_ERR("create descriptor heap");
         return CANVAS_ERR_GET_GPU;
     }
     _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(
@@ -1794,7 +1794,7 @@ int _canvas_gpu_init()
 
     if (FAILED(result))
     {
-        CANVAS_ERR("create fence")
+        CANVAS_ERR("create fence");
         return CANVAS_ERR_GET_GPU;
     }
 
@@ -1802,7 +1802,7 @@ int _canvas_gpu_init()
 
     if (!_win_fence_event)
     {
-        CANVAS_ERR("create fence event")
+        CANVAS_ERR("create fence event");
         return CANVAS_ERR_GET_GPU;
     }
 
