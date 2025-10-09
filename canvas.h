@@ -246,6 +246,7 @@ static LARGE_INTEGER _canvas_qpc_frequency = {0};
 static LARGE_INTEGER _canvas_start_counter = {0};
 
 HINSTANCE _win_instance = NULL;
+Atom _win_main_class = NULL;
 
 ID3D12Device *_win_device = NULL;
 ID3D12CommandQueue *_win_cmdQueue = NULL;
@@ -467,6 +468,13 @@ canvas_data _canvas_data[MAX_CANVAS];
         return CANVAS_INVALID;                       \
     }
 
+#define CANVAS_DISPLAY_BOGUS(display_id)               \
+    if (display_id < 0 || display_id >= MAX_DISPLAYS)  \
+    {                                                  \
+        CANVAS_ERR("bogus display: %d\n", display_id); \
+        return CANVAS_INVALID;                         \
+    }
+
 int _canvas_get_free()
 {
     for (int i = 0; i < MAX_CANVAS; i++)
@@ -589,6 +597,7 @@ int _canvas_close(int window_id)
     }
 
     ((MSG_void_id)objc_msgSend)(window, sel_c("close"));
+    ((MSG_void_id)objc_msgSend)(window, sel_c("release"));
 
     return CANVAS_OK;
 }
@@ -604,6 +613,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         return CANVAS_ERR_GET_WINDOW;
     }
 
+    CANVAS_DISPLAY_BOGUS(display);
     y = _canvas_displays[display].height - (y + height);
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
@@ -775,6 +785,7 @@ void _post_init()
     MSG_id_id m = (MSG_id_id)objc_msgSend;
     objc_id alloc = m(poolClass, sel_c("alloc"));
     _mac_pool = m(alloc, sel_c("init"));
+    mach_timebase_info(&_canvas_timebase);
 }
 
 int _canvas_platform()
@@ -1085,6 +1096,16 @@ int _canvas_update()
     return CANVAS_OK;
 }
 
+int _canvas_post_update()
+{
+    return CANVAS_OK;
+}
+
+int _canvas_exit()
+{
+    return CANVAS_OK;
+}
+
 double _canvas_get_time(canvas_time_data *time)
 {
     uint64_t elapsed = mach_absolute_time() - time->start;
@@ -1102,7 +1123,6 @@ void canvas_sleep(double seconds)
 
 void _canvas_time_init(canvas_time_data *time)
 {
-    mach_timebase_info(&_canvas_timebase);
     time->start = mach_absolute_time();
     time->current = _canvas_get_time(time);
     time->last = time->current;
@@ -1110,11 +1130,6 @@ void _canvas_time_init(canvas_time_data *time)
 
     for (int i = 0; i < 60; i++)
         time->times[i] = 0.0;
-}
-
-int _canvas_post_update()
-{
-    return CANVAS_OK;
 }
 
 #endif /* __APPLE__ */
@@ -1215,6 +1230,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
     if (display < 0 || display >= _canvas_display_count)
         display = 0;
+
+    CANVAS_DISPLAY_BOGUS(display);
 
     int screen_x = _canvas_displays[display].x + x;
     int screen_y = _canvas_displays[display].y + y;
@@ -1402,7 +1419,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             params->rgrc[0].right -= 8;
             params->rgrc[0].bottom -= 8;
             params->rgrc[0].left += 8;
-            return CANVAS_OK;
+            return 0;
         }
         break;
     }
@@ -1552,15 +1569,24 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     if (window_id < 0)
         return window_id;
 
-    WNDCLASSA wc = {0};
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = _win_instance;
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = NULL;
-    wc.lpszClassName = "CanvasWindowClass";
+    if (!_win_main_class)
+    {
+        WNDCLASSA wc = {0};
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = WndProc;
+        wc.hInstance = _win_instance;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = NULL;
+        wc.lpszClassName = "CanvasWindowClass";
 
-    RegisterClassA(&wc);
+        _win_main_class = RegisterClassA(&wc);
+
+        if (!_win_main_class)
+        {
+            CANVAS_ERR("register windows class failed");
+            return CANVAS_ERR_GET_PLATFORM;
+        }
+    }
 
     DWORD style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
@@ -1741,7 +1767,8 @@ int _canvas_gpu_init()
     _win_cmdList->lpVtbl->Close(_win_cmdList);
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
-    heapDesc.NumDescriptors = 20;
+    heapDesc.NumDescriptors = MAX_CANVAS * 2;
+
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     result = _win_device->lpVtbl->CreateDescriptorHeap(
         _win_device,
@@ -1948,6 +1975,12 @@ int _canvas_post_update()
     return CANVAS_OK;
 }
 
+int _canvas_exit()
+{
+    CloseHandle(_win_fence_event);
+    return CANVAS_OK;
+}
+
 #endif
 
 //
@@ -2127,6 +2160,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     }
 
     CANVAS_BOGUS(window_id);
+    CANVAS_DISPLAY_BOGUS(display);
 
     if (_canvas_using_wayland)
     {
@@ -2361,7 +2395,7 @@ int _canvas_init_x11()
     XRRGetCrtcInfoFunc XRRGetCrtcInfo = dlsym(canvas_lib_xrandr, "XRRGetCrtcInfo");
     XRRFreeCrtcInfoFunc XRRFreeCrtcInfo = dlsym(canvas_lib_xrandr, "XRRFreeCrtcInfo");
 
-    if (!XRRGetScreenResourcesCurrent || !XRRFreeScreenResources || !XRRFreeScreenResources || !XRRFreeCrtcInfo)
+    if (!XRRGetScreenResourcesCurrent || !XRRFreeScreenResources || !XRRGetCrtcInfo || !XRRFreeCrtcInfo)
     {
         dlclose(canvas_lib_xrandr);
         CANVAS_WARN("failed to load Xrandr symbols");
@@ -2423,9 +2457,7 @@ int _canvas_platform()
 {
     //     int load_result = _canvas_init_wayland();
 
-    _canvas_init_x11();
-
-    return CANVAS_OK;
+    return _canvas_init_x11();
 }
 
 int _canvas_update()
@@ -2500,6 +2532,7 @@ int _canvas_update()
             {
                 // Window was minimized/hidden
                 _canvas[window_idx].minimized = true;
+                _canvas[window_idx].maximized = false;
                 break;
             }
 
@@ -2521,6 +2554,7 @@ int _canvas_update()
 
     return CANVAS_OK;
 }
+
 int _canvas_gpu_init()
 {
     if (_canvas_init_gpu)
@@ -2554,6 +2588,16 @@ int _canvas_post_update()
 
         x11.XFlush(_canvas_display);
     }
+
+    return CANVAS_OK;
+}
+
+int _canvas_exit()
+{
+    x11.XCloseDisplay(_canvas_display);
+
+    dlclose(canvas_lib_x11);
+    dlclose(canvas_lib_xrandr);
 
     return CANVAS_OK;
 }
@@ -2661,6 +2705,11 @@ void canvas_main_loop()
     canvas_limit_fps(&canvas_main_time, canvas_limit_mainloop_fps);
 }
 
+int canvas_exit()
+{
+    return _canvas_exit();
+}
+
 int canvas_quit()
 {
     CANVAS_INFO("quitting canvas");
@@ -2722,6 +2771,8 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     int target_x = x;
     int target_y = y;
 
+    CANVAS_DISPLAY_BOGUS(display);
+
     if (x == -1)
         target_x = _canvas_displays[display].width / 2 - width / 2;
 
@@ -2741,7 +2792,7 @@ int canvas_window(int x, int y, int width, int height, const char *title)
         return result;
     }
 
-    int set_result = canvas_set(result, 0, x, y, width, height, title);
+    int set_result = canvas_set(result, -1, x, y, width, height, title);
     if (set_result != CANVAS_OK)
     {
         CANVAS_ERR("window configuration failed\n");
