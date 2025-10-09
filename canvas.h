@@ -444,8 +444,8 @@ canvas_data _canvas_data[MAX_CANVAS];
 #ifndef CANVAS_LOG_DEBUG
 #define CANVAS_VERBOSE(...) printf("[CANVAS - INF] " __VA_ARGS__ "\n")
 #define CANVAS_WARN(...) printf("[CANVAS - WARN] " __VA_ARGS__)
-#define CANVAS_ERR(...) printf("[CANVAS - ERR] (%s:%d) " __VA_ARGS__, __FILE__, __LINE__)
-#define CANVAS_DBG(...) printf("[CANVAS - DEBUG] (%s:%d) " __VA_ARGS__ "\n", __FILE__, __LINE__)
+#define CANVAS_ERR(...) printf("[CANVAS - ERR] " __VA_ARGS__)
+#define CANVAS_DBG(...) printf("[CANVAS - DBG] " __VA_ARGS__)
 #else
 #define CANVAS_VERBOSE(...)
 #define CANVAS_WARN(...)
@@ -1554,6 +1554,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
     }
 
+    case WM_CLOSE:
+    {
+        _canvas[window_index].close = true;
+        return 0;
+    }
+
     case WM_DESTROY:
         PostQuitMessage(0);
     }
@@ -1700,114 +1706,118 @@ int _canvas_gpu_init()
 
     HRESULT result;
 
-    result = CreateDXGIFactory1(
-        &IID_IDXGIFactory4,
-        (void **)&_win_factory);
-
+    result = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&_win_factory);
     if (FAILED(result))
     {
-        CANVAS_ERR("create dx12 factory");
+        CANVAS_ERR("create dx12 factory failed (HRESULT: 0x%08lX)\n", result);
         return CANVAS_ERR_GET_GPU;
     }
 
-    result = D3D12CreateDevice(
-        NULL,
-        D3D_FEATURE_LEVEL_11_0,
-        &IID_ID3D12Device,
-        (void **)&_win_device);
-
+    result = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&_win_device);
     if (FAILED(result))
     {
-        CANVAS_ERR("create dx12 device");
+        CANVAS_ERR("create dx12 device failed (HRESULT: 0x%08lX)\n", result);
+        _win_factory->lpVtbl->Release(_win_factory);
+        _win_factory = NULL;
         return CANVAS_ERR_GET_GPU;
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {0};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-    result = _win_device->lpVtbl->CreateCommandQueue(
-        _win_device,
-        &queueDesc,
-        &IID_ID3D12CommandQueue,
-        (void **)&_win_cmdQueue);
-
+    result = _win_device->lpVtbl->CreateCommandQueue(_win_device, &queueDesc, &IID_ID3D12CommandQueue, (void **)&_win_cmdQueue);
     if (FAILED(result))
     {
-        CANVAS_ERR("create command queue");
-        return CANVAS_ERR_GET_GPU;
+        CANVAS_ERR("create command queue failed (HRESULT: 0x%08lX)\n", result);
+        goto cleanup_gpu;
     }
 
-    result = _win_device->lpVtbl->CreateCommandAllocator(
-        _win_device,
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        &IID_ID3D12CommandAllocator,
-        (void **)&_win_cmdAllocator);
-
+    result = _win_device->lpVtbl->CreateCommandAllocator(_win_device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&_win_cmdAllocator);
     if (FAILED(result))
     {
-        CANVAS_ERR("create command alloc");
-        return CANVAS_ERR_GET_GPU;
+        CANVAS_ERR("create command allocator failed (HRESULT: 0x%08lX)\n", result);
+        goto cleanup_gpu;
     }
 
-    result = _win_device->lpVtbl->CreateCommandList(
-        _win_device,
-        0,
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        _win_cmdAllocator,
-        NULL,
-        &IID_ID3D12GraphicsCommandList,
-        (void **)&_win_cmdList);
-
+    result = _win_device->lpVtbl->CreateCommandList(_win_device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, _win_cmdAllocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&_win_cmdList);
     if (FAILED(result))
     {
-        CANVAS_ERR("create command list");
-        return CANVAS_ERR_GET_GPU;
+        CANVAS_ERR("create command list failed (HRESULT: 0x%08lX)\n", result);
+        goto cleanup_gpu;
     }
 
     _win_cmdList->lpVtbl->Close(_win_cmdList);
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
     heapDesc.NumDescriptors = MAX_CANVAS * 2;
-
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    result = _win_device->lpVtbl->CreateDescriptorHeap(
-        _win_device,
-        &heapDesc,
-        &IID_ID3D12DescriptorHeap,
-        (void **)&_win_rtvHeap);
 
+    result = _win_device->lpVtbl->CreateDescriptorHeap(_win_device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&_win_rtvHeap);
     if (FAILED(result))
     {
-        CANVAS_ERR("create descriptor heap");
-        return CANVAS_ERR_GET_GPU;
+        CANVAS_ERR("create descriptor heap failed (HRESULT: 0x%08lX)\n", result);
+        goto cleanup_gpu;
     }
-    _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(
-        _win_device,
-        D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-    result = _win_device->lpVtbl->CreateFence(
-        _win_device,
-        0,
-        D3D12_FENCE_FLAG_NONE,
-        &IID_ID3D12Fence,
-        (void **)&_win_fence);
+    _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(_win_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
+    result = _win_device->lpVtbl->CreateFence(_win_device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&_win_fence);
     if (FAILED(result))
     {
-        CANVAS_ERR("create fence");
-        return CANVAS_ERR_GET_GPU;
+        CANVAS_ERR("create fence failed (HRESULT: 0x%08lX)\n", result);
+        goto cleanup_gpu;
     }
 
     _win_fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-
     if (!_win_fence_event)
     {
-        CANVAS_ERR("create fence event");
-        return CANVAS_ERR_GET_GPU;
+        CANVAS_ERR("create fence event failed (GetLastError: %lu)\n", GetLastError());
+        goto cleanup_gpu;
     }
 
     return CANVAS_OK;
+
+cleanup_gpu:
+    if (_win_fence)
+    {
+        _win_fence->lpVtbl->Release(_win_fence);
+        _win_fence = NULL;
+    }
+    if (_win_rtvHeap)
+    {
+        _win_rtvHeap->lpVtbl->Release(_win_rtvHeap);
+        _win_rtvHeap = NULL;
+    }
+    if (_win_cmdList)
+    {
+        _win_cmdList->lpVtbl->Release(_win_cmdList);
+        _win_cmdList = NULL;
+    }
+    if (_win_cmdAllocator)
+    {
+        _win_cmdAllocator->lpVtbl->Release(_win_cmdAllocator);
+        _win_cmdAllocator = NULL;
+    }
+    if (_win_cmdQueue)
+    {
+        _win_cmdQueue->lpVtbl->Release(_win_cmdQueue);
+        _win_cmdQueue = NULL;
+    }
+    if (_win_device)
+    {
+        _win_device->lpVtbl->Release(_win_device);
+        _win_device = NULL;
+    }
+    if (_win_factory)
+    {
+        _win_factory->lpVtbl->Release(_win_factory);
+        _win_factory = NULL;
+    }
+
+    _canvas_init_gpu = 0;
+    return CANVAS_ERR_GET_GPU;
 }
+
 int _canvas_gpu_new_window(int window_id)
 {
     CANVAS_BOGUS(window_id);
