@@ -19,12 +19,13 @@ Cross-platform rendering backend & windowing with reasonable defaults.
 |----------|--------|--------|-----------|------------------------|
 | Windows  | \      | \      | DirectX12 | `-lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12` |
 | macOS    | \      | \      | Metal     | `-framework Cocoa` |
-| Linux    | \      | ~      | Vulkan    | `-lX11` |
+| Linux    | \      | ~      | Vulkan    | `-ldl -lm` |
 | iOS      | ~      | ~      | Metal     | |
 | Android  | ~      | ~      | Vulkan    | |
 | HTML5    | ~      | ~      | WebGPU    | |
 
 **Note for Windows:** Use `x86_64-w64-mingw32-gcc` for cross-compiling to Windows
+**Note for Linux:** Wayland is loaded first, falls back to x11
 
 ## Building the example
 
