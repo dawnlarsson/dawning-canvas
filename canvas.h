@@ -65,6 +65,7 @@ CANVAS_EXTERN_C_BEGIN
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 typedef void *canvas_library_handle;
 typedef void *canvas_window_handle;
@@ -461,14 +462,14 @@ canvas_data _canvas_data[MAX_CANVAS];
 #define CANVAS_DBG(...)
 #endif
 
-#define CANVAS_BOGUS(window_id)                      \
+#define CANVAS_BOUNDS(window_id)                     \
     if (window_id < 0 || window_id >= MAX_CANVAS)    \
     {                                                \
         CANVAS_ERR("bogus window: %d\n", window_id); \
         return CANVAS_INVALID;                       \
     }
 
-#define CANVAS_DISPLAY_BOGUS(display_id)               \
+#define CANVAS_DISPLAY_BOUNDS(display_id)              \
     if (display_id < 0 || display_id >= MAX_DISPLAYS)  \
     {                                                  \
         CANVAS_ERR("bogus display: %d\n", display_id); \
@@ -476,7 +477,7 @@ canvas_data _canvas_data[MAX_CANVAS];
     }
 
 #define CANVAS_VALID(window_id)                            \
-    CANVAS_BOGUS(window_id)                                \
+    CANVAS_BOUNDS(window_id)                               \
     if (!_canvas[window_id]._canvas_valid)                 \
     {                                                      \
         CANVAS_ERR("window %d is not valid\n", window_id); \
@@ -582,7 +583,7 @@ int canvas_restore(int window_id)
 
 int _canvas_close(int window_id)
 {
-    CANVAS_VALID(window_id);
+    CANVAS_BOUNDS(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -612,7 +613,7 @@ int _canvas_close(int window_id)
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    CANVAS_VALID(window_id);
+    CANVAS_BOUNDS(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -621,7 +622,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    CANVAS_DISPLAY_BOGUS(display);
+    CANVAS_DISPLAY_BOUNDS(display);
     y = _canvas_displays[display].height - (y + height);
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
@@ -643,7 +644,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
 int _canvas_get_window_display(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     objc_id window = _canvas[window_id].window;
     if (!window)
@@ -895,7 +896,7 @@ int _canvas_gpu_init()
 
 int _canvas_update_drawable_size(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     if (!_canvas_data[window_id].view || !_canvas_data[window_id].layer)
     {
@@ -919,7 +920,7 @@ int _canvas_update_drawable_size(int window_id)
 
 int _canvas_gpu_new_window(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     objc_id window = _canvas[window_id].window;
 
@@ -1221,7 +1222,7 @@ int canvas_restore(int window_id)
 
 int _canvas_close(int window_id)
 {
-    CANVAS_VALID(window_id);
+    CANVAS_BOUNDS(window_id);
 
     if (_canvas_data[window_id].swapChain)
     {
@@ -1244,7 +1245,7 @@ int _canvas_close(int window_id)
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    CANVAS_VALID(window_id);
+    CANVAS_BOUNDS(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
 
@@ -1257,7 +1258,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     if (display < 0 || display >= _canvas_display_count)
         display = 0;
 
-    CANVAS_DISPLAY_BOGUS(display);
+    CANVAS_DISPLAY_BOUNDS(display);
 
     int screen_x = _canvas_displays[display].x + x;
     int screen_y = _canvas_displays[display].y + y;
@@ -1274,7 +1275,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
 int _canvas_get_window_display(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     HWND window = (HWND)_canvas[window_id].window;
 
@@ -1429,7 +1430,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             enum DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_MAINWINDOW;
             DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
 
-            BOOL useRoundedCorners = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
         }
         return CANVAS_OK;
@@ -1847,7 +1847,7 @@ cleanup_gpu:
 
 int _canvas_gpu_new_window(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     _canvas_data[window_id] = (canvas_data){0};
 
@@ -1934,7 +1934,7 @@ int _canvas_gpu_new_window(int window_id)
 
 int _canvas_window_resize(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     canvas_data *window = &_canvas_data[window_id];
 
@@ -2183,7 +2183,7 @@ int canvas_restore(int window_id)
 
 int _canvas_close(int window_id)
 {
-    CANVAS_VALID(window_id);
+    CANVAS_BOUNDS(window_id);
 
     if (_canvas_using_wayland)
     {
@@ -2213,8 +2213,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    CANVAS_VALID(window_id);
-    CANVAS_DISPLAY_BOGUS(display);
+    CANVAS_BOUNDS(window_id);
+    CANVAS_DISPLAY_BOUNDS(display);
 
     if (_canvas_using_wayland)
     {
@@ -2277,7 +2277,7 @@ int _canvas_init_displays()
 
 int _canvas_get_window_display(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     if (_canvas_using_wayland)
     {
@@ -2625,7 +2625,7 @@ int _canvas_gpu_init()
 
 int _canvas_gpu_new_window(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     return CANVAS_OK;
 }
@@ -2805,7 +2805,7 @@ int canvas_run(canvas_update_callback default_callback)
 // title:       window title string
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     if (_canvas_display_count <= 0)
     {
@@ -2821,7 +2821,6 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     _canvas[window_id].display = display;
     _canvas[window_id].width = width;
     _canvas[window_id].height = height;
-    _canvas[window_id].title = title;
 
     _canvas[window_id].os_moved = false;
     _canvas[window_id].os_resized = false;
@@ -2832,13 +2831,30 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     int target_x = x;
     int target_y = y;
 
-    CANVAS_DISPLAY_BOGUS(display);
+    CANVAS_DISPLAY_BOUNDS(display);
 
     if (x == -1)
         target_x = _canvas_displays[display].width / 2 - width / 2;
 
     if (y == -1)
         target_y = _canvas_displays[display].height / 2 - height / 2;
+
+    if (title)
+    {
+        if (_canvas[window_id].title)
+        {
+            free((void *)_canvas[window_id].title);
+        }
+        _canvas[window_id].title = strdup(title);
+    }
+    else
+    {
+        if (_canvas[window_id].title)
+        {
+            free((void *)_canvas[window_id].title);
+        }
+        _canvas[window_id].title = NULL;
+    }
 
     return _canvas_set(window_id, display, target_x, target_y, width, height, title);
 }
@@ -2898,7 +2914,7 @@ int canvas(int x, int y, int width, int height, const char *title)
 
 int canvas_close(int window_id)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_BOUNDS(window_id);
 
     if (!_canvas[window_id]._canvas_valid)
         return CANVAS_OK;
@@ -2906,6 +2922,12 @@ int canvas_close(int window_id)
     _canvas[window_id]._canvas_valid = false;
 
     _canvas_close(window_id);
+
+    if (_canvas[window_id].title)
+    {
+        free((void *)_canvas[window_id].title);
+        _canvas[window_id].title = NULL;
+    }
 
     _canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
@@ -2915,7 +2937,7 @@ int canvas_close(int window_id)
 
 int canvas_set_update_callback(int window_id, canvas_update_callback callback)
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
 
     _canvas[window_id].update = callback;
     return CANVAS_OK;
@@ -2923,7 +2945,8 @@ int canvas_set_update_callback(int window_id, canvas_update_callback callback)
 
 int canvas_color(int window_id, const float color[4])
 {
-    CANVAS_BOGUS(window_id);
+    CANVAS_VALID(window_id);
+
     _canvas[window_id].clear[0] = color[0];
     _canvas[window_id].clear[1] = color[1];
     _canvas[window_id].clear[2] = color[2];
