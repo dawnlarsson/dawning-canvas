@@ -508,6 +508,146 @@ int _canvas_window_index(void *window)
     return CANVAS_INVALID;
 }
 
+void *canvas_library_load(const char *library_names[], int count)
+{
+    void *library_handle = NULL;
+
+    for (int i = 0; i < count; ++i)
+    {
+        const char *library_name = library_names[i];
+
+#if defined(_WIN32)
+        library_handle = LoadLibraryA(library_name);
+#elif defined(__linux__)
+        library_handle = dlopen(library_name, C_RTLD_NOW | C_RTLD_LOCAL);
+#elif defined(__APPLE__)
+        library_handle = dlopen(library_name, C_RTLD_NOW | C_RTLD_LOCAL);
+#endif
+        if (library_handle)
+            return library_handle;
+    }
+
+    CANVAS_ERR("failed to library_load");
+    return (void *)CANVAS_ERR_LOAD_LIBRARY;
+}
+
+void *canvas_library_symbol(void *lib, const char *symbol_name)
+{
+    void *symbol;
+#if defined(_WIN32)
+    symbol = GetProcAddress((HMODULE)lib, symbol_name);
+#else
+    symbol = dlsym(lib, symbol_name);
+#endif
+
+    if (symbol)
+        return symbol;
+
+    CANVAS_ERR("Failed to load %s", symbol_name);
+    return (void *)CANVAS_ERR_LOAD_SYMBOL;
+}
+
+void canvas_library_close(void *lib)
+{
+#if defined(_WIN32)
+    FreeLibrary((HMODULE)lib);
+#else
+    dlclose(lib);
+#endif
+}
+
+#if defined(CANVAS_VULKAN)
+
+#define MAX_EXTENSIONS 32
+
+canvas_library_handle canvas_lib_vulkan;
+
+#if defined(_WIN32)
+#define VK_ATTR
+#define VK_CALL __stdcall
+#define VK_PTR VK_CALL
+#elif defined(__ANDROID__) && defined(__ARM_ARCH) && __ARM_ARCH < 7
+#error "Vulkan is not supported for the 'armeabi' NDK ABI"
+#elif defined(__ANDROID__) && defined(__ARM_ARCH) && __ARM_ARCH >= 7 && defined(__ARM_32BIT_STATE)
+#define VK_ATTR __attribute__((pcs("aapcs-vfp")))
+#define VK_CALL
+#define VK_PTR VK_ATTR
+#else
+#define VK_ATTR
+#define VK_CALL
+#define VK_PTR
+#endif
+
+static struct
+{
+    void VK_PTR *(*vkGetInstanceProcAddr)(void);
+} vk;
+
+#if defined(_WIN32)
+#define canvas_vulkan_names 1
+#define canvas_vulkan_library_names {"vulkan-1.dll"}
+#elif defined(__linux__)
+#define canvas_vulkan_names 2
+#define canvas_vulkan_library_names {"libvulkan.so.1", "libvulkan.so"}
+#elif defined(__APPLE__)
+#define canvas_vulkan_names 6
+#define canvas_vulkan_library_names {"libvulkan.dylib", "libvulkan.1.dylib", "libMoltenVK.dylib", "vulkan.framework/vulkan", "MoltenVK.framework/MoltenVK", "/usr/local/lib/libvulkan.dylib"}
+#endif
+
+const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_names;
+
+int canvas_backend_vulkan_init()
+{
+    canvas_lib_vulkan = canvas_library_load(vulkan_library_names, canvas_vulkan_names);
+
+    if (canvas_lib_vulkan == NULL)
+        return CANVAS_ERR_LOAD_LIBRARY;
+
+    vk.vkGetInstanceProcAddr = canvas_library_symbol(canvas_lib_vulkan, "vkGetInstanceProcAddr");
+
+    if (vk.vkGetInstanceProcAddr == CANVAS_ERR_LOAD_SYMBOL)
+    {
+        canvas_library_close(canvas_lib_vulkan);
+        canvas_lib_vulkan = NULL;
+        return CANVAS_ERR_LOAD_SYMBOL;
+    }
+
+    // vk.vkGetInstanceProcAddr("vkCreateInstance");
+
+    const char *extensions[MAX_EXTENSIONS];
+    int extension_count = 0;
+
+    extensions[extension_count++] = "VK_KHR_surface";
+
+#ifdef _WIN32
+    extensions[extension_count++] = "VK_KHR_win32_surface";
+#endif
+
+#ifdef __ANDROID__
+    extensions[extension_count++] = "VK_KHR_android_surface";
+#endif
+
+#ifdef __linux__
+    extensions[extension_count++] = "VK_KHR_wayland_surface";
+#endif
+
+#if defined(__APPLE__) && defined(__IOS__)
+    extensions[extension_count++] = "VK_KHR_ios_surface";
+#endif
+
+#if defined(__APPLE__) && defined(__MACOSX__)
+    extensions[extension_count++] = "VK_KHR_macos_surface";
+#endif
+
+#if defined(__APPLE__) && defined(__METAL__)
+    extensions[extension_count++] = "VK_EXT_metal_surface";
+#endif
+
+    return 0;
+}
+
+#endif
+
 //
 //
 //
