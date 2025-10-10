@@ -4,11 +4,12 @@
 > This repo is early & experimental
 
 Extremely easy to use, cross-platform rendering backend & windowing with reasonable defaults.
+This aims to provide all the basics to kickstart engines, frameworks, or other tools or applications with the lowest possible barrier to entry without compromising on speed or bloat.
 
 **Goals:**
 - Single file pure C
-- Zero Build system, dependencies, complex setup or config
-- Multi-windowed rendering
+- Zero: build system, dependencies, complex setup or config
+- Multi-window rendering
 - Extremely lightweight & low overhead
 
 ## Platform Status
