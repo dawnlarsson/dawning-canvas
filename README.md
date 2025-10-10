@@ -3,11 +3,11 @@
 > [!CAUTION]
 > This repo is early & experimental
 
-Cross-platform rendering backend & windowing with reasonable defaults.
+Extremely easy to use, cross-platform rendering backend & windowing with reasonable defaults.
 
 **Goals:**
 - Single file pure C
-- Zero: Build system, dependencies, complex setup or config
+- Zero Build system, dependencies, complex setup or config
 - Multi-windowed rendering
 - Extremely lightweight & low overhead
 
@@ -25,6 +25,7 @@ Cross-platform rendering backend & windowing with reasonable defaults.
 | HTML5    | ~      | ~      | WebGPU    | |
 
 **Note for Windows:** Use `x86_64-w64-mingw32-gcc` for cross-compiling to Windows
+
 **Note for Linux:** Wayland is loaded first, falls back to x11
 
 ## Building the example
