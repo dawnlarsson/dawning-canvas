@@ -179,6 +179,7 @@ canvas_time_data canvas_main_time = {0};
 #include <mach/mach_time.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
+#include <dlfcn.h>
 
 static mach_timebase_info_data_t _canvas_timebase = {0};
 
