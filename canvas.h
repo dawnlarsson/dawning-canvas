@@ -305,6 +305,7 @@ static struct
     void (*wl_display_disconnect)(struct wl_display *);
     int (*wl_display_dispatch)(struct wl_display *);
     int (*wl_display_roundtrip)(struct wl_display *);
+    void *(*wl_display_get_registry)(struct wl_display *);
     void *(*wl_registry_bind)(struct wl_registry *, uint32_t, const struct wl_interface *, uint32_t);
     int (*wl_registry_add_listener)(struct wl_registry *, const void *, void *);
     void (*wl_registry_destroy)(struct wl_registry *);
@@ -312,7 +313,13 @@ static struct
     void (*wl_surface_destroy)(struct wl_surface *);
     void (*wl_compositor_destroy)(struct wl_compositor *);
     void (*wl_proxy_destroy)(struct wl_proxy *);
+
     const struct wl_interface *wl_compositor_interface;
+    struct wl_display *display;
+    struct wl_registry *registry;
+    struct wl_compositor *compositor;
+    struct wl_shm *shm;
+    struct xdg_wm_base *xdg_wm_base;
 } wl;
 
 static struct
@@ -342,15 +349,26 @@ static struct
     int (*XDefaultScreen)(Display *);
     int (*XChangeProperty)(Display *, Window, Atom, Atom, int, int, const unsigned char *, int);
     int (*XGetWindowAttributes)(Display *, Window, void *);
+
+    Display *display;
 } x11;
 
-#define LOAD_X11(name)                                         \
-    x11.name = dlsym(canvas_lib_x11, #name);                   \
-    if (!x11.name)                                             \
-    {                                                          \
-        CANVAS_ERR("Failed to load " #name ": %s", dlerror()); \
-        dlclose(canvas_lib_x11);                               \
-        return CANVAS_ERR_LOAD_SYMBOL;                         \
+#define LOAD_X11(name)                                  \
+    x11.name = dlsym(canvas_lib_x11, #name);            \
+    if (!x11.name)                                      \
+    {                                                   \
+        CANVAS_ERR("loading " #name ": %s", dlerror()); \
+        dlclose(canvas_lib_x11);                        \
+        return CANVAS_ERR_LOAD_SYMBOL;                  \
+    }
+
+#define LOAD_WL(name)                                   \
+    wl.name = dlsym(canvas_lib_wayland, #name);         \
+    if (!wl.name)                                       \
+    {                                                   \
+        CANVAS_ERR("loading " #name ": %s", dlerror()); \
+        dlclose(canvas_lib_wayland);                    \
+        return CANVAS_ERR_LOAD_SYMBOL;                  \
     }
 
 typedef struct
@@ -451,8 +469,6 @@ typedef struct
 #define X11_ClientMessage 33
 #define X11_MapNotify 19
 #define X11_UnmapNotify 18
-
-Display *_canvas_display = 0;
 
 bool _canvas_x11_flush = false;
 bool _canvas_using_wayland = false;
@@ -2218,7 +2234,7 @@ int canvas_minimize(int window_id)
     }
     else
     {
-        if (!_canvas_display)
+        if (!x11.display)
         {
             CANVAS_ERR("no display connection\n");
             return CANVAS_ERR_GET_DISPLAY;
@@ -2231,9 +2247,9 @@ int canvas_minimize(int window_id)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        int screen = x11.XDefaultScreen(_canvas_display);
-        x11.XIconifyWindow(_canvas_display, window, screen);
-        x11.XFlush(_canvas_display);
+        int screen = x11.XDefaultScreen(x11.display);
+        x11.XIconifyWindow(x11.display, window, screen);
+        x11.XFlush(x11.display);
     }
 
     _canvas[window_id].minimized = true;
@@ -2251,7 +2267,7 @@ int canvas_maximize(int window_id)
     }
     else
     {
-        if (!_canvas_display)
+        if (!x11.display)
         {
             CANVAS_ERR("no display connection\n");
             return CANVAS_ERR_GET_DISPLAY;
@@ -2264,11 +2280,11 @@ int canvas_maximize(int window_id)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        int screen = x11.XDefaultScreen(_canvas_display);
+        int screen = x11.XDefaultScreen(x11.display);
 
-        Atom wm_state = x11.XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
-        Atom max_horz = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
-        Atom max_vert = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+        Atom wm_state = x11.XInternAtom(x11.display, "_NET_WM_STATE", 0);
+        Atom max_horz = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+        Atom max_vert = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
 
         XClientMessageEvent ev = {0};
         ev.type = 33;
@@ -2280,9 +2296,9 @@ int canvas_maximize(int window_id)
         ev.data.l[2] = max_vert;
         ev.data.l[3] = 1;
 
-        x11.XSendEvent(_canvas_display, x11.XRootWindow(_canvas_display, screen),
+        x11.XSendEvent(x11.display, x11.XRootWindow(x11.display, screen),
                        0, (1L << 20) | (1L << 19), (XEvent *)&ev);
-        x11.XFlush(_canvas_display);
+        x11.XFlush(x11.display);
     }
 
     _canvas[window_id].maximized = true;
@@ -2300,7 +2316,7 @@ int canvas_restore(int window_id)
     }
     else
     {
-        if (!_canvas_display)
+        if (!x11.display)
         {
             CANVAS_ERR("no display connection\n");
             return CANVAS_ERR_GET_DISPLAY;
@@ -2313,17 +2329,17 @@ int canvas_restore(int window_id)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        int screen = x11.XDefaultScreen(_canvas_display);
+        int screen = x11.XDefaultScreen(x11.display);
 
         if (_canvas[window_id].minimized)
         {
-            x11.XMapWindow(_canvas_display, window);
+            x11.XMapWindow(x11.display, window);
         }
         else if (_canvas[window_id].maximized)
         {
-            Atom wm_state = x11.XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
-            Atom max_horz = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
-            Atom max_vert = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+            Atom wm_state = x11.XInternAtom(x11.display, "_NET_WM_STATE", 0);
+            Atom max_horz = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+            Atom max_vert = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
 
             XClientMessageEvent ev = {0};
             ev.type = 33;
@@ -2335,11 +2351,11 @@ int canvas_restore(int window_id)
             ev.data.l[2] = max_vert;
             ev.data.l[3] = 1;
 
-            x11.XSendEvent(_canvas_display, x11.XRootWindow(_canvas_display, screen),
+            x11.XSendEvent(x11.display, x11.XRootWindow(x11.display, screen),
                            0, (1L << 20) | (1L << 19), (XEvent *)&ev);
         }
 
-        x11.XFlush(_canvas_display);
+        x11.XFlush(x11.display);
     }
 
     _canvas[window_id].minimized = false;
@@ -2365,8 +2381,8 @@ int _canvas_close(int window_id)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        x11.XDestroyWindow(_canvas_display, window);
-        x11.XFlush(_canvas_display);
+        x11.XDestroyWindow(x11.display, window);
+        x11.XFlush(x11.display);
     }
 
     return CANVAS_OK;
@@ -2374,12 +2390,6 @@ int _canvas_close(int window_id)
 
 int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
-    if (!_canvas_display)
-    {
-        CANVAS_ERR("no display connection\n");
-        return CANVAS_ERR_GET_DISPLAY;
-    }
-
     CANVAS_VALID(window_id);
     CANVAS_DISPLAY_BOUNDS(display);
 
@@ -2392,10 +2402,10 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
         if (title)
         {
-            x11.XStoreName(_canvas_display, window, title);
-            Atom net_wm_name = x11.XInternAtom(_canvas_display, "_NET_WM_NAME", 0);
-            Atom utf8_string = x11.XInternAtom(_canvas_display, "UTF8_STRING", 0);
-            x11.XChangeProperty(_canvas_display, window, net_wm_name, utf8_string, 8, 0, (unsigned char *)title, strlen(title));
+            x11.XStoreName(x11.display, window, title);
+            Atom net_wm_name = x11.XInternAtom(x11.display, "_NET_WM_NAME", 0);
+            Atom utf8_string = x11.XInternAtom(x11.display, "UTF8_STRING", 0);
+            x11.XChangeProperty(x11.display, window, net_wm_name, utf8_string, 8, 0, (unsigned char *)title, strlen(title));
         }
 
         _canvas_data[window_id].x11_move_x = x;
@@ -2403,7 +2413,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         _canvas_data[window_id].x11_size_x = width;
         _canvas_data[window_id].x11_size_y = height;
 
-        x11.XMoveResizeWindow(_canvas_display, window, x, y, width, height);
+        x11.XMoveResizeWindow(x11.display, window, x, y, width, height);
     }
 
     _canvas[window_id].os_moved = false;
@@ -2417,25 +2427,19 @@ int _canvas_init_displays()
     _canvas_display_count = 0;
     _canvas_highest_refresh_rate = 60;
 
-    if (!_canvas_display)
-    {
-        CANVAS_ERR("no display connection for init\n");
-        return CANVAS_ERR_GET_DISPLAY;
-    }
-
     if (_canvas_using_wayland)
     {
     }
     else
     {
         // TODO: Use Xinerama or XRandR for proper multi-monitor support
-        int screen = x11.XDefaultScreen(_canvas_display);
+        int screen = x11.XDefaultScreen(x11.display);
 
         _canvas_displays[0].primary = true;
         _canvas_displays[0].x = 0;
         _canvas_displays[0].y = 0;
-        _canvas_displays[0].width = x11.XDisplayWidth(_canvas_display, screen);
-        _canvas_displays[0].height = x11.XDisplayHeight(_canvas_display, screen);
+        _canvas_displays[0].width = x11.XDisplayWidth(x11.display, screen);
+        _canvas_displays[0].height = x11.XDisplayHeight(x11.display, screen);
         _canvas_displays[0].refresh_rate = 60;
 
         _canvas_display_count = 1;
@@ -2476,18 +2480,18 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     }
     else
     {
-        if (!_canvas_display)
+        if (!x11.display)
         {
             CANVAS_ERR("no display connection for window creation\n");
             return CANVAS_ERR_GET_DISPLAY;
         }
 
         window = (canvas_window_handle)x11.XCreateSimpleWindow(
-            _canvas_display,
-            x11.XDefaultRootWindow(_canvas_display),
+            x11.display,
+            x11.XDefaultRootWindow(x11.display),
             x, y, width, height, 0,
-            x11.XBlackPixel(_canvas_display, 0),
-            x11.XWhitePixel(_canvas_display, 0));
+            x11.XBlackPixel(x11.display, 0),
+            x11.XWhitePixel(x11.display, 0));
 
         if (!window)
         {
@@ -2500,7 +2504,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         _canvas_data[window_id].x11_size_x = width;
         _canvas_data[window_id].x11_size_y = height;
 
-        x11.XMapWindow(_canvas_display, (Window)window);
+        x11.XMapWindow(x11.display, (Window)window);
 
         long event_mask = (1L << 0) |  // KeyPressMask
                           (1L << 1) |  // KeyReleaseMask
@@ -2511,7 +2515,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
                           (1L << 17) | // StructureNotifyMask
                           (1L << 19);  // FocusChangeMask
 
-        x11.XSelectInput(_canvas_display, (Window)window, event_mask);
+        x11.XSelectInput(x11.display, (Window)window, event_mask);
     }
 
     _canvas[window_id].window = (canvas_window_handle)window;
@@ -2521,14 +2525,14 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     if (!_canvas_using_wayland)
     {
-        _canvas_data[window_id].x11_wm_protocols = x11.XInternAtom(_canvas_display, "WM_PROTOCOLS", 0);
-        _canvas_data[window_id].x11_wm_delete_window = x11.XInternAtom(_canvas_display, "WM_DELETE_WINDOW", 0);
-        _canvas_data[window_id].x11_wm_state = x11.XInternAtom(_canvas_display, "WM_STATE", 0);
-        _canvas_data[window_id].x11_net_wm_state = x11.XInternAtom(_canvas_display, "_NET_WM_STATE", 0);
-        _canvas_data[window_id].x11_net_wm_state_maximized_horz = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
-        _canvas_data[window_id].x11_net_wm_state_maximized_vert = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
-        _canvas_data[window_id].x11_net_wm_state_fullscreen = x11.XInternAtom(_canvas_display, "_NET_WM_STATE_FULLSCREEN", 0);
-        x11.XSetWMProtocols(_canvas_display, (Window)_canvas[window_id].window, &_canvas_data[window_id].x11_wm_delete_window, 1);
+        _canvas_data[window_id].x11_wm_protocols = x11.XInternAtom(x11.display, "WM_PROTOCOLS", 0);
+        _canvas_data[window_id].x11_wm_delete_window = x11.XInternAtom(x11.display, "WM_DELETE_WINDOW", 0);
+        _canvas_data[window_id].x11_wm_state = x11.XInternAtom(x11.display, "WM_STATE", 0);
+        _canvas_data[window_id].x11_net_wm_state = x11.XInternAtom(x11.display, "_NET_WM_STATE", 0);
+        _canvas_data[window_id].x11_net_wm_state_maximized_horz = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
+        _canvas_data[window_id].x11_net_wm_state_maximized_vert = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
+        _canvas_data[window_id].x11_net_wm_state_fullscreen = x11.XInternAtom(x11.display, "_NET_WM_STATE_FULLSCREEN", 0);
+        x11.XSetWMProtocols(x11.display, (Window)_canvas[window_id].window, &_canvas_data[window_id].x11_wm_delete_window, 1);
 
         _canvas_data[window_id].x11_atoms_initialized = true;
     }
@@ -2551,6 +2555,45 @@ int _canvas_init_wayland()
         return CANVAS_ERR_LOAD_LIBRARY;
     }
 
+    LOAD_WL(wl_display_connect);
+    wl.display = wl.wl_display_connect(NULL);
+
+    if (!wl.display)
+    {
+        CANVAS_ERR("open wayland display\n");
+        dlclose(canvas_lib_wayland);
+        return CANVAS_ERR_GET_DISPLAY;
+    }
+
+    LOAD_WL(wl_display_get_registry);
+    wl.registry = wl.wl_display_get_registry(wl.display);
+
+    if (!wl.registry)
+    {
+        CANVAS_ERR("load wayland registry\n");
+        dlclose(canvas_lib_wayland);
+        return CANVAS_ERR_GET_DISPLAY;
+    }
+
+    LOAD_WL(wl_registry_add_listener);
+    int result = wl.wl_registry_add_listener(wl.registry, NULL, &wl);
+
+    if (!result)
+    {
+        CANVAS_ERR("add wayland registry\n");
+        dlclose(canvas_lib_wayland);
+        return CANVAS_ERR_GET_DISPLAY;
+    }
+
+    LOAD_WL(wl_display_disconnect);
+    LOAD_WL(wl_display_dispatch);
+    LOAD_WL(wl_display_roundtrip);
+    LOAD_WL(wl_registry_bind);
+    LOAD_WL(wl_compositor_create_surface);
+    LOAD_WL(wl_surface_destroy);
+    LOAD_WL(wl_compositor_destroy);
+    LOAD_WL(wl_proxy_destroy);
+
     _canvas_using_wayland = true;
 
     return CANVAS_OK;
@@ -2572,6 +2615,16 @@ int _canvas_init_x11()
     }
 
     LOAD_X11(XOpenDisplay);
+
+    x11.display = x11.XOpenDisplay(NULL);
+
+    if (!x11.display)
+    {
+        CANVAS_ERR("open x11 display\n");
+        dlclose(canvas_lib_x11);
+        return CANVAS_ERR_GET_DISPLAY;
+    }
+
     LOAD_X11(XCloseDisplay);
     LOAD_X11(XCreateSimpleWindow);
     LOAD_X11(XDestroyWindow);
@@ -2595,14 +2648,6 @@ int _canvas_init_x11()
     LOAD_X11(XDefaultScreen);
     LOAD_X11(XChangeProperty);
     LOAD_X11(XGetWindowAttributes);
-
-    _canvas_display = x11.XOpenDisplay(NULL);
-
-    if (!_canvas_display)
-    {
-        CANVAS_ERR("open x11 display\n");
-        return CANVAS_ERR_GET_DISPLAY;
-    }
 
     // Try to load XRandR for proper multi-monitor support
     canvas_lib_xrandr = dlopen("libXrandr.so.2", RTLD_LAZY);
@@ -2634,7 +2679,7 @@ int _canvas_init_x11()
         return CANVAS_OK;
     }
 
-    Window root = x11.XDefaultRootWindow(_canvas_display);
+    Window root = x11.XDefaultRootWindow(x11.display);
 
     typedef struct
     {
@@ -2653,7 +2698,7 @@ int _canvas_init_x11()
         // ...
     } XRRCrtcInfo;
 
-    XRRScreenResources *sr = XRRGetScreenResourcesCurrent(_canvas_display, root);
+    XRRScreenResources *sr = XRRGetScreenResourcesCurrent(x11.display, root);
 
     if (!sr)
     {
@@ -2664,7 +2709,7 @@ int _canvas_init_x11()
 
     for (int i = 0; i < sr->ncrtc && i < MAX_DISPLAYS; i++)
     {
-        XRRCrtcInfo *ci = XRRGetCrtcInfo(_canvas_display, sr, sr->crtcs[i]);
+        XRRCrtcInfo *ci = XRRGetCrtcInfo(x11.display, sr, sr->crtcs[i]);
 
         if (ci && ci->width > 0 && ci->height > 0)
         {
@@ -2701,7 +2746,7 @@ int _canvas_update()
     }
     else
     {
-        if (!_canvas_display)
+        if (!x11.display)
         {
             CANVAS_VERBOSE("no display connection for update\n");
             return CANVAS_ERR_GET_DISPLAY;
@@ -2709,9 +2754,9 @@ int _canvas_update()
 
         XEvent event;
 
-        while (x11.XPending(_canvas_display))
+        while (x11.XPending(x11.display))
         {
-            x11.XNextEvent(_canvas_display, &event);
+            x11.XNextEvent(x11.display, &event);
 
             int window_id = -1;
             if (event.type >= 2 && event.type <= 35)
@@ -2801,13 +2846,7 @@ int _canvas_post_update()
     }
     else
     {
-        if (!_canvas_display)
-        {
-            CANVAS_ERR("no display connection for post update\n");
-            return CANVAS_ERR_GET_DISPLAY;
-        }
-
-        x11.XFlush(_canvas_display);
+        x11.XFlush(x11.display);
     }
 
     return CANVAS_OK;
@@ -2815,8 +2854,9 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    if (_canvas_display)
-        x11.XCloseDisplay(_canvas_display);
+
+    if (x11.display)
+        x11.XCloseDisplay(x11.display);
 
     if (canvas_lib_x11)
         dlclose(canvas_lib_x11);
