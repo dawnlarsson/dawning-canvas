@@ -104,6 +104,12 @@ void canvas_sleep(double seconds);
 
 int canvas_quit();
 
+void canvas_time_init(canvas_time_data *time);
+void canvas_time_update(canvas_time_data *time);
+double canvas_get_time(canvas_time_data *time);
+int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps);
+void canvas_limit_fps(canvas_time_data *time, double target_fps);
+
 // internal api
 void canvas_main_loop();
 int _canvas_platform();
@@ -112,9 +118,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title);
 int _canvas_gpu_init();
 int _canvas_gpu_new_window(int window_id);
 int _canvas_window_resize(int window_id);
-void _canvas_time_init(canvas_time_data *time);
-void _canvas_time_update(canvas_time_data *time);
-double _canvas_get_time(canvas_time_data *time);
 int _canvas_primary_display_index();
 
 typedef struct
@@ -135,6 +138,23 @@ typedef struct
     int x, y, width, height;
     int refresh_rate;
 } canvas_display;
+
+typedef enum
+{
+    ARROW,
+    TEXT,
+    CROSSHAIR,
+    HAND,
+    SIZE_NS,
+    SIZE_EW,
+    SIZE_NESW,
+    SIZE_NWSE,
+    SIZE_ALL,
+    NOT_ALLOWED,
+    WAIT,
+} canvas_cursor_type;
+
+int canvas_cursor(int window_id, canvas_cursor_type cursor);
 
 #define CANVAS_OK 0
 #define CANVAS_FAIL -1
@@ -1396,7 +1416,7 @@ int _canvas_exit()
     return CANVAS_OK;
 }
 
-double _canvas_get_time(canvas_time_data *time)
+double canvas_get_time(canvas_time_data *time)
 {
     uint64_t elapsed = mach_absolute_time() - time->start;
     return (double)elapsed * (double)_canvas_timebase.numer /
@@ -1411,10 +1431,10 @@ void canvas_sleep(double seconds)
     nanosleep(&ts, NULL);
 }
 
-void _canvas_time_init(canvas_time_data *time)
+void canvas_time_init(canvas_time_data *time)
 {
     time->start = mach_absolute_time();
-    time->current = _canvas_get_time(time);
+    time->current = canvas_get_time(time);
     time->last = time->current;
     time->frame = 0;
 
@@ -1636,7 +1656,7 @@ int _canvas_init_displays()
     return _canvas_refresh_displays();
 }
 
-double _canvas_get_time(canvas_time_data *time)
+double canvas_get_time(canvas_time_data *time)
 {
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
@@ -1657,7 +1677,7 @@ void canvas_sleep(double seconds)
     }
 }
 
-void _canvas_time_init(canvas_time_data *time)
+void canvas_time_init(canvas_time_data *time)
 {
     QueryPerformanceFrequency(&_canvas_qpc_frequency);
 
@@ -1665,7 +1685,7 @@ void _canvas_time_init(canvas_time_data *time)
     QueryPerformanceCounter(&counter);
 
     time->start = (uint64_t)counter.QuadPart;
-    time->current = _canvas_get_time(time);
+    time->current = canvas_get_time(time);
     time->last = time->current;
     time->frame = 0;
     time->frame_index = 0;
@@ -3074,7 +3094,7 @@ int _canvas_exit()
     return CANVAS_OK;
 }
 
-double _canvas_get_time(canvas_time_data *time)
+double canvas_get_time(canvas_time_data *time)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -3090,12 +3110,12 @@ void canvas_sleep(double seconds)
     clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
 }
 
-void _canvas_time_init(canvas_time_data *time)
+void canvas_time_init(canvas_time_data *time)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    time->current = _canvas_get_time(time);
+    time->current = canvas_get_time(time);
     time->last = time->current;
     time->frame = 0;
 
@@ -3120,7 +3140,7 @@ int canvas_startup()
 
     _canvas_init_platform = true;
 
-    _canvas_time_init(&canvas_main_time);
+    canvas_time_init(&canvas_main_time);
 
     for (int i = 0; i < MAX_DISPLAYS; ++i)
     {
@@ -3153,7 +3173,7 @@ int canvas_startup()
 
 void canvas_main_loop()
 {
-    _canvas_time_update(&canvas_main_time);
+    canvas_time_update(&canvas_main_time);
 
     _canvas_update();
 
@@ -3287,7 +3307,7 @@ int canvas_window(int x, int y, int width, int height, const char *title)
         return set_result;
     }
 
-    _canvas_time_init(&_canvas[result].time);
+    canvas_time_init(&_canvas[result].time);
 
     _canvas_get_window_display(result);
 
@@ -3369,9 +3389,9 @@ int canvas_color(int window_id, const float color[4])
 //
 // Time
 
-void _canvas_time_update(canvas_time_data *time)
+void canvas_time_update(canvas_time_data *time)
 {
-    time->current = _canvas_get_time(time);
+    time->current = canvas_get_time(time);
     time->raw_delta = time->current - time->last;
 
     if (time->raw_delta > 0.1)
@@ -3405,7 +3425,7 @@ void _canvas_time_update(canvas_time_data *time)
     time->frame++;
 }
 
-int _canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps)
+int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps)
 {
     time->accumulator += time->delta;
 
@@ -3427,7 +3447,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
         return;
 
     double target_frame_time = 1.0 / target_fps;
-    double elapsed = _canvas_get_time(time) - (time->current - time->delta);
+    double elapsed = canvas_get_time(time) - (time->current - time->delta);
     double remaining = target_frame_time - elapsed;
 
     if (remaining > 0.0)
@@ -3437,7 +3457,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
             canvas_sleep(remaining - 0.002);
         }
 
-        while (_canvas_get_time(time) - (time->current - time->delta) < target_frame_time)
+        while (canvas_get_time(time) - (time->current - time->delta) < target_frame_time)
         {
             // Busy-wait for accuracy
         }
