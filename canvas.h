@@ -350,8 +350,14 @@ static struct
     int (*XChangeProperty)(Display *, Window, Atom, Atom, int, int, const unsigned char *, int);
     int (*XGetWindowAttributes)(Display *, Window, void *);
 
+    int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
+
+    Atom internal_atom;
     Display *display;
 } x11;
+
+#define XA_CARDINAL ((Atom)6)
+#define PropModeReplace 0
 
 #define LOAD_X11(name)                                  \
     x11.name = dlsym(canvas_lib_x11, #name);            \
@@ -409,10 +415,7 @@ typedef struct
     Atom x11_net_wm_state_fullscreen;
     bool x11_atoms_initialized;
 
-    int x11_size_x;
-    int x11_size_y;
-    int x11_move_x;
-    int x11_move_y;
+    bool client_set;
 } canvas_data;
 
 typedef struct
@@ -2408,10 +2411,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
             x11.XChangeProperty(x11.display, window, net_wm_name, utf8_string, 8, 0, (unsigned char *)title, strlen(title));
         }
 
-        _canvas_data[window_id].x11_move_x = x;
-        _canvas_data[window_id].x11_move_y = y;
-        _canvas_data[window_id].x11_size_x = width;
-        _canvas_data[window_id].x11_size_y = height;
+        _canvas_data[window_id].client_set = true;
 
         x11.XMoveResizeWindow(x11.display, window, x, y, width, height);
     }
@@ -2499,10 +2499,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
             return CANVAS_ERR_GET_WINDOW;
         }
 
-        _canvas_data[window_id].x11_move_x = x;
-        _canvas_data[window_id].x11_move_y = y;
-        _canvas_data[window_id].x11_size_x = width;
-        _canvas_data[window_id].x11_size_y = height;
+        _canvas_data[window_id].client_set = true;
 
         x11.XMapWindow(x11.display, (Window)window);
 
@@ -2648,6 +2645,9 @@ int _canvas_init_x11()
     LOAD_X11(XDefaultScreen);
     LOAD_X11(XChangeProperty);
     LOAD_X11(XGetWindowAttributes);
+    LOAD_X11(XGetWindowProperty);
+
+    x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
     // Try to load XRandR for proper multi-monitor support
     canvas_lib_xrandr = dlopen("libXrandr.so.2", RTLD_LAZY);
@@ -2774,15 +2774,27 @@ int _canvas_update()
             {
                 XConfigureEvent *xce = (XConfigureEvent *)&event;
 
+                if (_canvas_data[window_id].client_set)
+                {
+                    _canvas_data[window_id].client_set = false;
+                    break;
+                }
+
+                if (xce->send_event)
+                    break;
+
+                // this needs working out...
+                // if (_canvas[window_id].x != xce->x || _canvas[window_id].y != xce->y)
+                //    _canvas[window_id].os_moved = true;
+
                 _canvas[window_id].x = xce->x;
                 _canvas[window_id].y = xce->y;
+
+                if (_canvas[window_id].width != xce->width || _canvas[window_id].height != xce->height)
+                    _canvas[window_id].os_resized = true;
+
                 _canvas[window_id].width = xce->width;
                 _canvas[window_id].height = xce->height;
-
-                _canvas_data[window_id].x11_move_x = xce->x;
-                _canvas_data[window_id].x11_move_y = xce->y;
-                _canvas_data[window_id].x11_size_x = xce->width;
-                _canvas_data[window_id].x11_size_y = xce->height;
 
                 break;
             }
