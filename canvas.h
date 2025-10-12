@@ -349,6 +349,9 @@ static struct
     int (*XDefaultScreen)(Display *);
     int (*XChangeProperty)(Display *, Window, Atom, Atom, int, int, const unsigned char *, int);
     int (*XGetWindowAttributes)(Display *, Window, void *);
+    int (*XGrabPointer)(Display *, Window, bool, unsigned int, int, int, Window, int, unsigned long);
+    int (*XUngrabPointer)(Display *, unsigned long);
+    int (*XMoveWindow)(Display *, Window, int, int);
 
     int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
 
@@ -405,7 +408,50 @@ typedef struct
 
 typedef struct
 {
+    unsigned long flags;
+    unsigned long functions;
+    unsigned long decorations;
+    long input_mode;
+    unsigned long status;
+} MotifWmHints;
 
+typedef struct
+{
+    int type;
+    unsigned long serial;
+    int send_event;
+    Display *display;
+    Window window;
+    Window root;
+    Window subwindow;
+    unsigned long time;
+    int x, y;
+    int x_root, y_root;
+    unsigned int state;
+    char is_hint;
+    int same_screen;
+} XMotionEvent;
+
+typedef struct
+{
+    int type;
+    unsigned long serial;
+    int send_event;
+    Display *display;
+    Window window;
+    Window root;
+    Window subwindow;
+    unsigned long time;
+    int x, y;
+    int x_root, y_root;
+    unsigned int state;
+    unsigned int button;
+    int same_screen;
+} XButtonEvent;
+
+typedef struct
+{
+    bool x11_atoms_initialized;
     Atom x11_wm_delete_window;
     Atom x11_wm_protocols;
     Atom x11_wm_state;
@@ -413,7 +459,12 @@ typedef struct
     Atom x11_net_wm_state_maximized_horz;
     Atom x11_net_wm_state_maximized_vert;
     Atom x11_net_wm_state_fullscreen;
-    bool x11_atoms_initialized;
+    Atom x11_net_wm_moveresize;
+    Atom x11_motif_wm_hints;
+
+    int last_button_press_time;
+    int last_button_press_x;
+    int last_button_press_y;
 
     bool client_set;
 } canvas_data;
@@ -472,6 +523,32 @@ typedef struct
 #define X11_ClientMessage 33
 #define X11_MapNotify 19
 #define X11_UnmapNotify 18
+#define X11_ButtonPress 4
+#define X11_ButtonRelease 5
+#define X11_GrabModeAsync 1
+#define X11_CurrentTime 0L
+
+#define RESIZE_EDGE_NONE 0
+#define RESIZE_EDGE_TOP 1
+#define RESIZE_EDGE_BOTTOM 2
+#define RESIZE_EDGE_LEFT 4
+#define RESIZE_EDGE_RIGHT 8
+#define RESIZE_BORDER 8
+
+#define _NET_WM_MOVERESIZE_SIZE_TOPLEFT 0
+#define _NET_WM_MOVERESIZE_SIZE_TOP 1
+#define _NET_WM_MOVERESIZE_SIZE_TOPRIGHT 2
+#define _NET_WM_MOVERESIZE_SIZE_RIGHT 3
+#define _NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT 4
+#define _NET_WM_MOVERESIZE_SIZE_BOTTOM 5
+#define _NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT 6
+#define _NET_WM_MOVERESIZE_SIZE_LEFT 7
+#define _NET_WM_MOVERESIZE_MOVE 8
+
+#define XA_ATOM ((Atom)4)
+#define MWM_HINTS_DECORATIONS (1L << 1)
+#define MWM_DECOR_BORDER (1L << 1)
+#define MWM_DECOR_RESIZEH (1L << 2)
 
 bool _canvas_x11_flush = false;
 bool _canvas_using_wayland = false;
@@ -2462,6 +2539,56 @@ int _canvas_get_window_display(int window_id)
     return CANVAS_OK;
 }
 
+int _canvas_get_resize_edge_action(int window_id, int x, int y)
+{
+    int width = _canvas[window_id].width;
+    int height = _canvas[window_id].height;
+    int border = 8;
+
+    bool at_left = x < border;
+    bool at_right = x > width - border;
+    bool at_top = y < border;
+    bool at_bottom = y > height - border;
+
+    if (at_top && at_left)
+        return _NET_WM_MOVERESIZE_SIZE_TOPLEFT;
+    if (at_top && at_right)
+        return _NET_WM_MOVERESIZE_SIZE_TOPRIGHT;
+    if (at_bottom && at_left)
+        return _NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT;
+    if (at_bottom && at_right)
+        return _NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT;
+
+    if (at_top)
+        return _NET_WM_MOVERESIZE_SIZE_TOP;
+    if (at_bottom)
+        return _NET_WM_MOVERESIZE_SIZE_BOTTOM;
+    if (at_left)
+        return _NET_WM_MOVERESIZE_SIZE_LEFT;
+    if (at_right)
+        return _NET_WM_MOVERESIZE_SIZE_RIGHT;
+
+    return -1;
+}
+
+void _canvas_start_wm_move_resize(int window_id, int x_root, int y_root, int action)
+{
+    XClientMessageEvent ev = {0};
+    ev.type = X11_ClientMessage;
+    ev.window = (Window)_canvas[window_id].window;
+    ev.message_type = _canvas_data[window_id].x11_net_wm_moveresize;
+    ev.format = 32;
+    ev.data.l[0] = x_root;
+    ev.data.l[1] = y_root;
+    ev.data.l[2] = action;
+    ev.data.l[3] = 1;
+    ev.data.l[4] = 1;
+
+    x11.XUngrabPointer(x11.display, X11_CurrentTime);
+    x11.XSendEvent(x11.display, x11.XDefaultRootWindow(x11.display), false, (1L << 20) | (1L << 19), (XEvent *)&ev);
+    x11.XFlush(x11.display);
+}
+
 int _canvas_window(int x, int y, int width, int height, const char *title)
 {
     canvas_startup();
@@ -2501,27 +2628,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
         _canvas_data[window_id].client_set = true;
 
-        x11.XMapWindow(x11.display, (Window)window);
-
-        long event_mask = (1L << 0) |  // KeyPressMask
-                          (1L << 1) |  // KeyReleaseMask
-                          (1L << 2) |  // ButtonPressMask
-                          (1L << 3) |  // ButtonReleaseMask
-                          (1L << 5) |  // PointerMotionMask
-                          (1L << 15) | // ExposureMask
-                          (1L << 17) | // StructureNotifyMask
-                          (1L << 19);  // FocusChangeMask
-
-        x11.XSelectInput(x11.display, (Window)window, event_mask);
-    }
-
-    _canvas[window_id].window = (canvas_window_handle)window;
-    _canvas[window_id].resize = false;
-    _canvas[window_id].index = window_id;
-    _canvas[window_id]._canvas_valid = true;
-
-    if (!_canvas_using_wayland)
-    {
         _canvas_data[window_id].x11_wm_protocols = x11.XInternAtom(x11.display, "WM_PROTOCOLS", 0);
         _canvas_data[window_id].x11_wm_delete_window = x11.XInternAtom(x11.display, "WM_DELETE_WINDOW", 0);
         _canvas_data[window_id].x11_wm_state = x11.XInternAtom(x11.display, "WM_STATE", 0);
@@ -2529,10 +2635,46 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         _canvas_data[window_id].x11_net_wm_state_maximized_horz = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
         _canvas_data[window_id].x11_net_wm_state_maximized_vert = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_VERT", 0);
         _canvas_data[window_id].x11_net_wm_state_fullscreen = x11.XInternAtom(x11.display, "_NET_WM_STATE_FULLSCREEN", 0);
-        x11.XSetWMProtocols(x11.display, (Window)_canvas[window_id].window, &_canvas_data[window_id].x11_wm_delete_window, 1);
-
+        _canvas_data[window_id].x11_motif_wm_hints = x11.XInternAtom(x11.display, "_MOTIF_WM_HINTS", 0);
+        _canvas_data[window_id].x11_net_wm_moveresize = x11.XInternAtom(x11.display, "_NET_WM_MOVERESIZE", 0);
         _canvas_data[window_id].x11_atoms_initialized = true;
+
+        MotifWmHints hints = {0};
+        hints.flags = MWM_HINTS_DECORATIONS;
+        hints.decorations = 0;
+
+        x11.XChangeProperty(x11.display, (Window)window,
+                            _canvas_data[window_id].x11_motif_wm_hints,
+                            _canvas_data[window_id].x11_motif_wm_hints,
+                            32, PropModeReplace,
+                            (unsigned char *)&hints, 5);
+
+        Atom window_type = x11.XInternAtom(x11.display, "_NET_WM_WINDOW_TYPE", 0);
+        Atom window_type_normal = x11.XInternAtom(x11.display, "_NET_WM_WINDOW_TYPE_NORMAL", 0);
+        x11.XChangeProperty(x11.display, (Window)window, window_type, XA_ATOM, 32, PropModeReplace, (unsigned char *)&window_type_normal, 1);
+
+        x11.XSetWMProtocols(x11.display, (Window)window, &_canvas_data[window_id].x11_wm_delete_window, 1);
+
+        long event_mask = (1L << 0) |  // KeyPressMask
+                          (1L << 1) |  // KeyReleaseMask
+                          (1L << 2) |  // ButtonPressMask
+                          (1L << 3) |  // ButtonReleaseMask
+                          (1L << 5) |  // PointerMotionMask
+                          (1L << 6) |  // PointerMotionHintMask
+                          (1L << 15) | // ExposureMask
+                          (1L << 17) | // StructureNotifyMask
+                          (1L << 19);  // FocusChangeMask
+
+        x11.XSelectInput(x11.display, (Window)window, event_mask);
+
+        x11.XMapWindow(x11.display, (Window)window);
     }
+
+    _canvas[window_id].window = (canvas_window_handle)window;
+    _canvas[window_id].resize = false;
+    _canvas[window_id].index = window_id;
+    _canvas[window_id].titlebar = false;
+    _canvas[window_id]._canvas_valid = true;
 
     return window_id;
 }
@@ -2646,6 +2788,9 @@ int _canvas_init_x11()
     LOAD_X11(XChangeProperty);
     LOAD_X11(XGetWindowAttributes);
     LOAD_X11(XGetWindowProperty);
+    LOAD_X11(XGrabPointer);
+    LOAD_X11(XUngrabPointer);
+    LOAD_X11(XMoveWindow);
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
@@ -2783,7 +2928,8 @@ int _canvas_update()
                 if (xce->send_event)
                     break;
 
-                // this needs working out...
+                // windows with titlebars on x11:
+                // x11 dosn't have a way to propperly detect this edge case
                 // if (_canvas[window_id].x != xce->x || _canvas[window_id].y != xce->y)
                 //    _canvas[window_id].os_moved = true;
 
@@ -2795,6 +2941,55 @@ int _canvas_update()
 
                 _canvas[window_id].width = xce->width;
                 _canvas[window_id].height = xce->height;
+
+                break;
+            }
+
+            case X11_ButtonPress:
+            {
+                XButtonEvent *xbe = (XButtonEvent *)&event;
+
+                if (xbe->button == 1)
+                {
+                    int time_diff = xbe->time - _canvas_data[window_id].last_button_press_time;
+                    int dx = xbe->x - _canvas_data[window_id].last_button_press_x;
+                    int dy = xbe->y - _canvas_data[window_id].last_button_press_y;
+
+                    if (time_diff < 400 && dx * dx + dy * dy < 25 && xbe->y < 30)
+                    {
+                        if (_canvas[window_id].maximized)
+                            canvas_restore(window_id);
+                        else
+                            canvas_maximize(window_id);
+                    }
+                    else
+                    {
+                        int action = _canvas_get_resize_edge_action(window_id, xbe->x, xbe->y);
+
+                        if (action >= 0)
+                        {
+                            _canvas[window_id].os_resized = true;
+                            _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, action);
+                        }
+                        else if (xbe->y < 30)
+                        {
+                            _canvas[window_id].os_moved = true;
+                            _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, _NET_WM_MOVERESIZE_MOVE);
+                        }
+                    }
+
+                    _canvas_data[window_id].last_button_press_time = xbe->time;
+                    _canvas_data[window_id].last_button_press_x = xbe->x;
+                    _canvas_data[window_id].last_button_press_y = xbe->y;
+                }
+                break;
+            }
+
+            case X11_MotionNotify:
+            {
+                XMotionEvent *xme = (XMotionEvent *)&event;
+
+                int action = _canvas_get_resize_edge_action(window_id, xme->x, xme->y);
 
                 break;
             }
