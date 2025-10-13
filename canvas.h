@@ -1246,7 +1246,7 @@ int _canvas_gpu_new_window(int window_id)
     _canvas_data[window_id].layer = layer;
     _canvas_data[window_id].scale = scale;
 
-    return window_id;
+    return CANVAS_OK;
 }
 
 void _canvas_gpu_draw_all()
@@ -1293,6 +1293,8 @@ void _canvas_gpu_draw_all()
         ((MSG_void_id_id)objc_msgSend)(cmd, sel_c("presentDrawable:"), drawable);
         ((MSG_void_id)objc_msgSend)(cmd, sel_c("commit"));
     }
+
+    return CANVAS_OK;
 }
 
 int _canvas_update()
