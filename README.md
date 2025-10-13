@@ -1,4 +1,4 @@
-<img width="1280" height="225" alt="Slide 16_9 - 25-min" src="https://github.com/user-attachments/assets/c0d2c6c7-fa59-4e5b-a403-7be41280621b" />
+<img width="1280" height="225" alt="Slide 16_9 - 25 (1)-min" src="https://github.com/user-attachments/assets/415053c3-17b1-4de2-8083-b78bdc06adcc" />
 
 <div align="center">
   <a href="https://github.com/sponsors/dawnlarsson"><img src="https://github.com/user-attachments/assets/356d35b2-63b1-4b76-a588-5b9264381189"></a>
