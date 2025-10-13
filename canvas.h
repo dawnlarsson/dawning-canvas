@@ -2919,37 +2919,6 @@ static unsigned int _canvas_get_x11_cursor_id(canvas_cursor_type cursor)
     }
 }
 
-static unsigned int _canvas_get_x11_cursor_id(canvas_cursor_type cursor)
-{
-    switch (cursor)
-    {
-    case ARROW:
-        return 2; // XC_arrow
-    case TEXT:
-        return 152; // XC_xterm
-    case CROSSHAIR:
-        return 34; // XC_crosshair
-    case HAND:
-        return 58; // XC_hand2
-    case SIZE_NS:
-        return 116; // XC_sb_v_double_arrow
-    case SIZE_EW:
-        return 108; // XC_sb_h_double_arrow
-    case SIZE_NESW:
-        return 12; // XC_bottom_left_corner
-    case SIZE_NWSE:
-        return 14; // XC_bottom_right_corner
-    case SIZE_ALL:
-        return 52; // XC_fleur
-    case NOT_ALLOWED:
-        return 0; // XC_X_cursor
-    case WAIT:
-        return 150; // XC_watch
-    default:
-        return 2; // XC_arrow
-    }
-}
-
 int canvas_cursor(int window_id, canvas_cursor_type cursor)
 {
     CANVAS_VALID(window_id);
