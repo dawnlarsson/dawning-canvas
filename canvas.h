@@ -294,6 +294,8 @@ canvas_data _canvas_data[MAX_CANVAS];
 
 #if defined(__linux__)
 
+#define CANVAS_VULKAN
+
 #include <time.h>
 #include <dlfcn.h>
 
@@ -688,29 +690,16 @@ void canvas_library_close(void *lib)
 
 #if defined(CANVAS_VULKAN)
 
+#include <vulkan/vulkan.h>
 #define MAX_EXTENSIONS 32
 
 canvas_library_handle canvas_lib_vulkan;
-
-#if defined(_WIN32)
-#define VK_ATTR
-#define VK_CALL __stdcall
-#define VK_PTR VK_CALL
-#elif defined(__ANDROID__) && defined(__ARM_ARCH) && __ARM_ARCH < 7
-#error "Vulkan is not supported for the 'armeabi' NDK ABI"
-#elif defined(__ANDROID__) && defined(__ARM_ARCH) && __ARM_ARCH >= 7 && defined(__ARM_32BIT_STATE)
-#define VK_ATTR __attribute__((pcs("aapcs-vfp")))
-#define VK_CALL
-#define VK_PTR VK_ATTR
-#else
-#define VK_ATTR
-#define VK_CALL
-#define VK_PTR
-#endif
+VkInstance vulkan_instance;
 
 static struct
 {
-    void VK_PTR *(*vkGetInstanceProcAddr)(void);
+    PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+    PFN_vkCreateInstance vkCreateInstance;
 } vk;
 
 #if defined(_WIN32)
@@ -728,6 +717,8 @@ const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_na
 
 int canvas_backend_vulkan_init()
 {
+    CANVAS_INFO("loading vulkan\n");
+
     canvas_lib_vulkan = canvas_library_load(vulkan_library_names, canvas_vulkan_names);
 
     if (!canvas_lib_vulkan)
@@ -741,8 +732,6 @@ int canvas_backend_vulkan_init()
         canvas_lib_vulkan = NULL;
         return CANVAS_ERR_LOAD_SYMBOL;
     }
-
-    // vk.vkGetInstanceProcAddr("vkCreateInstance");
 
     const char *extensions[MAX_EXTENSIONS];
     int extension_count = 0;
@@ -772,6 +761,29 @@ int canvas_backend_vulkan_init()
 #if defined(__APPLE__) && defined(__METAL__)
     extensions[extension_count++] = "VK_EXT_metal_surface";
 #endif
+
+    VkApplicationInfo appInfo = {};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "";
+    appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
+    appInfo.pEngineName = "DAWNING_CANVAS";
+    appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_1;
+
+    VkInstanceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+    createInfo.enabledExtensionCount = extension_count;
+    createInfo.ppEnabledExtensionNames = extensions;
+    createInfo.pNext = NULL;
+
+    vk.vkCreateInstance = (PFN_vkCreateInstance)vk.vkGetInstanceProcAddr(NULL, "vkCreateInstance");
+
+    if (vk.vkCreateInstance(&createInfo, NULL, &vulkan_instance))
+    {
+        CANVAS_ERR("failed to load vulkan");
+        return CANVAS_ERR_GET_GPU;
+    }
 
     return 0;
 }
@@ -1135,7 +1147,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     canvas_startup();
 
     unsigned long style =
-        (1UL << 0) /*Titled*/ | (1UL << 1) /*Closable*/ |
+        (1UL << 0) /*Titled*/
+        | (1UL << 1) /*Closable*/ |
         (1UL << 2) /*Mini*/ | (1UL << 3) /*Resizable*/;
 
     MSG_id_id m = (MSG_id_id)objc_msgSend;
@@ -3084,9 +3097,18 @@ int _canvas_init_x11()
 
 int _canvas_platform()
 {
+    if (_canvas_init_platform)
+        return CANVAS_OK;
+
     //     int load_result = _canvas_init_wayland();
 
-    return _canvas_init_x11();
+    if (!_canvas_using_wayland && _canvas_init_x11() < 0)
+        return CANVAS_ERR_GET_DISPLAY;
+
+    if (canvas_backend_vulkan_init() < 0)
+        return CANVAS_ERR_GET_GPU;
+
+    return CANVAS_OK;
 }
 
 int _canvas_update()
