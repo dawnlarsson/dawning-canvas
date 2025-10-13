@@ -372,6 +372,8 @@ static struct
     int (*XGrabPointer)(Display *, Window, bool, unsigned int, int, int, Window, int, unsigned long);
     int (*XUngrabPointer)(Display *, unsigned long);
     int (*XMoveWindow)(Display *, Window, int, int);
+    void *(*XCreateFontCursor)(Display *, unsigned int);
+    int (*XDefineCursor)(Display *, Window, unsigned long);
 
     int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
 
@@ -2930,6 +2932,12 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
         return CANVAS_OK;
     }
 
+    // unsigned int cursor_id = _canvas_get_x11_cursor_id(cursor);
+    // unsigned long x_cursor = (unsigned long)x11.XCreateFontCursor(x11.display, cursor_id);
+
+    // x11.XDefineCursor(x11.display, (Window)_canvas[window_id].window, x_cursor);
+    // x11.XFlush(x11.display);
+
     return CANVAS_OK;
 }
 
@@ -2986,6 +2994,8 @@ int _canvas_init_x11()
     LOAD_X11(XGrabPointer);
     LOAD_X11(XUngrabPointer);
     LOAD_X11(XMoveWindow);
+    LOAD_X11(XCreateFontCursor);
+    LOAD_X11(XDefineCursor);
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
