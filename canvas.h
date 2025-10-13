@@ -103,6 +103,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps);
 void canvas_sleep(double seconds);
 
 int canvas_quit();
+int canvas_exit();
 
 void canvas_time_init(canvas_time_data *time);
 void canvas_time_update(canvas_time_data *time);
@@ -1396,8 +1397,15 @@ int _canvas_exit()
     return CANVAS_OK;
 }
 
+static inline void _canvas_ensure_timebase()
+{
+    if (_canvas_timebase.denom == 0)
+        mach_timebase_info(&_canvas_timebase);
+}
+
 double canvas_get_time(canvas_time_data *time)
 {
+    _canvas_ensure_timebase();
     uint64_t elapsed = mach_absolute_time() - time->start;
     return (double)elapsed * (double)_canvas_timebase.numer /
            (double)_canvas_timebase.denom / 1e9;
@@ -1413,6 +1421,8 @@ void canvas_sleep(double seconds)
 
 void canvas_time_init(canvas_time_data *time)
 {
+    _canvas_ensure_timebase();
+
     time->frame = 0;
     time->frame_index = 0;
     time->accumulator = 0;
