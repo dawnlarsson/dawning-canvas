@@ -123,7 +123,7 @@ typedef struct
 {
     int index, x, y, width, height, display;
     bool resize, close, titlebar, os_moved, os_resized;
-    bool minimized, maximized, _canvas_valid;
+    bool minimized, maximized, vsync, _canvas_valid;
     float clear[4];
     const char *title;
     canvas_window_handle window;
@@ -732,7 +732,7 @@ int canvas_backend_vulkan_init()
 
     vk.vkGetInstanceProcAddr = canvas_library_symbol(canvas_lib_vulkan, "vkGetInstanceProcAddr");
 
-    if (vk.vkGetInstanceProcAddr == CANVAS_ERR_LOAD_SYMBOL)
+    if (!vk.vkGetInstanceProcAddr)
     {
         canvas_library_close(canvas_lib_vulkan);
         canvas_lib_vulkan = NULL;
@@ -1993,7 +1993,14 @@ int _canvas_update()
         {
             if (_canvas_data[i].swapChain != NULL)
             {
-                _canvas_data[i].swapChain->lpVtbl->Present(_canvas_data[i].swapChain, 1, 0);
+                if (_canvas[i].vsync)
+                {
+                    _canvas_data[i].swapChain->lpVtbl->Present(_canvas_data[i].swapChain, 1, 0);
+                }
+                else
+                {
+                    _canvas_data[i].swapChain->lpVtbl->Present(_canvas_data[i].swapChain, 0, DXGI_PRESENT_ALLOW_TEARING);
+                }
             }
         }
 
@@ -3233,7 +3240,7 @@ int canvas_run(canvas_update_callback default_callback)
 
     canvas_default_update_callback = default_callback;
 
-    while (_canvas_quit == 0)
+    while (!_canvas_quit)
     {
         _canvas_os_timed = false;
         canvas_main_loop();
