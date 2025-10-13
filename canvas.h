@@ -102,7 +102,6 @@ int canvas_set_update_callback(int window, canvas_update_callback callback);
 void canvas_limit_fps(canvas_time_data *time, double target_fps);
 void canvas_sleep(double seconds);
 
-int canvas_quit();
 int canvas_exit();
 
 void canvas_time_init(canvas_time_data *time);
@@ -174,6 +173,8 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor);
 canvas_update_callback canvas_default_update_callback;
 
 double canvas_limit_mainloop_fps = 240.0;
+bool canvas_exit_after_no_alive = true;
+
 int _canvas_display_count = 0;
 double _canvas_highest_refresh_rate;
 
@@ -3183,10 +3184,19 @@ void canvas_main_loop()
 
     _canvas_update();
 
+    bool any_alive = false;
     for (int i = 0; i < MAX_CANVAS; ++i)
     {
-        if (_canvas[i].window == 0)
+        if (!_canvas[i]._canvas_valid)
             continue;
+
+        any_alive = true;
+
+        if (_canvas[i].close)
+        {
+            canvas_close(_canvas[i].index);
+            continue;
+        }
 
         if (_canvas[i].update)
         {
@@ -3200,19 +3210,17 @@ void canvas_main_loop()
 
     _canvas_post_update();
 
+    if (canvas_exit_after_no_alive && !any_alive)
+        _canvas_quit = 1;
+
     canvas_limit_fps(&canvas_main_time, canvas_limit_mainloop_fps);
 }
 
 int canvas_exit()
 {
-    return _canvas_exit();
-}
-
-int canvas_quit()
-{
     CANVAS_INFO("quitting canvas");
     _canvas_quit = 1;
-    return CANVAS_OK;
+    return _canvas_exit();
 }
 
 int canvas_run(canvas_update_callback default_callback)
@@ -3231,7 +3239,7 @@ int canvas_run(canvas_update_callback default_callback)
         canvas_main_loop();
     }
 
-    return CANVAS_OK;
+    return canvas_exit();
 }
 
 // display:     -1 = primary display

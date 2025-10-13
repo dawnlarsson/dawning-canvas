@@ -151,9 +151,9 @@ int canvas_set_update_callback(int window, canvas_update_callback callback)
 ```
 Sets a per-window override callback function. If not set, the default callback passed to `canvas_run()` is used.
 
-#### canvas_quit
+#### canvas_exit
 ```c
-int canvas_quit()
+int canvas_exit()
 ```
 Signals the main loop to exit. Call this to cleanly shut down the application.
 
@@ -337,11 +337,6 @@ Define `CANVAS_LOG_DEBUG` to disable verbose/warning/error/debug logs but keep i
 void update(int window) {
     // Set clear color to dark blue
     canvas_color(window, (float[]){0.1f, 0.2f, 0.3f, 1.0f});
-    
-    // Check if window should close
-    if (_canvas[window].close) {
-        canvas_quit();
-    }
 }
 
 int main() {
@@ -354,10 +349,6 @@ int main() {
     
     // Run main loop with update callback
     canvas_run(update);
-    
-    // Cleanup
-    canvas_close(window);
-    canvas_exit();
     
     return 0;
 }
