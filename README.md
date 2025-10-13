@@ -1,4 +1,10 @@
-![Dawning Micro Header (1)](https://github.com/user-attachments/assets/e39801c7-7969-4de8-ae9f-236a492b57ac)
+<img width="1280" height="225" alt="Slide 16_9 - 25-min" src="https://github.com/user-attachments/assets/c0d2c6c7-fa59-4e5b-a403-7be41280621b" />
+
+<div align="center">
+  <a href="https://github.com/sponsors/dawnlarsson"><img src="https://github.com/user-attachments/assets/356d35b2-63b1-4b76-a588-5b9264381189"></a>
+  <a href="https://discord.gg/cxRvzUyzG8"><img src="https://github.com/user-attachments/assets/38bedda1-7578-4483-aa5b-f58b2422405e"></a>
+</div>
+<br>
 
 > [!CAUTION]
 > This repo is early & experimental
