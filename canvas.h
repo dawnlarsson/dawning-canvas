@@ -119,25 +119,6 @@ int _canvas_gpu_new_window(int window_id);
 int _canvas_window_resize(int window_id);
 int _canvas_primary_display_index();
 
-typedef struct
-{
-    int index, x, y, width, height, display;
-    bool resize, close, titlebar, os_moved, os_resized;
-    bool minimized, maximized, vsync, _canvas_valid;
-    float clear[4];
-    const char *title;
-    canvas_window_handle window;
-    canvas_update_callback update;
-    canvas_time_data time;
-} canvas_type;
-
-typedef struct
-{
-    bool primary;
-    int x, y, width, height;
-    int refresh_rate;
-} canvas_display;
-
 typedef enum
 {
     ARROW,
@@ -152,6 +133,26 @@ typedef enum
     NOT_ALLOWED,
     WAIT,
 } canvas_cursor_type;
+
+typedef struct
+{
+    int index, x, y, width, height, display;
+    bool resize, close, titlebar, os_moved, os_resized;
+    bool minimized, maximized, vsync, _canvas_valid;
+    float clear[4];
+    const char *title;
+    canvas_window_handle window;
+    canvas_update_callback update;
+    canvas_time_data time;
+    canvas_cursor_type cursor;
+} canvas_type;
+
+typedef struct
+{
+    bool primary;
+    int x, y, width, height;
+    int refresh_rate;
+} canvas_display;
 
 int canvas_cursor(int window_id, canvas_cursor_type cursor);
 
@@ -848,6 +849,52 @@ int canvas_restore(int window_id)
     return CANVAS_OK;
 }
 
+objc_id _canvas_get_ns_cursor(canvas_cursor_type cursor)
+{
+    MSG_id_id m = (MSG_id_id)objc_msgSend;
+
+    switch (cursor)
+    {
+    case ARROW:
+        return m(cls("NSCursor"), sel_c("arrowCursor"));
+    case TEXT:
+        return m(cls("NSCursor"), sel_c("IBeamCursor"));
+    case CROSSHAIR:
+        return m(cls("NSCursor"), sel_c("crosshairCursor"));
+    case HAND:
+        return m(cls("NSCursor"), sel_c("pointingHandCursor"));
+    case SIZE_NS:
+        return m(cls("NSCursor"), sel_c("resizeUpDownCursor"));
+    case SIZE_EW:
+        return m(cls("NSCursor"), sel_c("resizeLeftRightCursor"));
+    case SIZE_NESW:
+        return m(cls("NSCursor"), sel_c("closedHandCursor"));
+    case SIZE_NWSE:
+        return m(cls("NSCursor"), sel_c("closedHandCursor"));
+    case SIZE_ALL:
+        return m(cls("NSCursor"), sel_c("closedHandCursor"));
+    case NOT_ALLOWED:
+        return m(cls("NSCursor"), sel_c("operationNotAllowedCursor"));
+    case WAIT:
+        return m(cls("NSCursor"), sel_c("arrowCursor"));
+    default:
+        return m(cls("NSCursor"), sel_c("arrowCursor"));
+    }
+}
+
+int canvas_cursor(int window_id, canvas_cursor_type cursor)
+{
+    CANVAS_VALID(window_id);
+
+    _canvas[window_id].cursor = cursor;
+
+    objc_id ns_cursor = _canvas_get_ns_cursor(cursor);
+    if (ns_cursor)
+        ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
+
+    return CANVAS_OK;
+}
+
 int _canvas_close(int window_id)
 {
     CANVAS_BOUNDS(window_id);
@@ -1319,8 +1366,16 @@ int _canvas_update()
                 // NSEventTypeOtherMouseDragged = 27
                 // NSEventTypeRightMouseDragged = 7
 
+                if (eventType == 5) // NSEventTypeMouseMoved
+                {
+                    objc_id ns_cursor = _canvas_get_ns_cursor(_canvas[window_idx].cursor);
+                    if (ns_cursor)
+                        ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
+                }
+
                 switch (eventType)
                 {
+
                 case 6:  // NSEventTypeLeftMouseDragged
                 case 27: // NSEventTypeOtherMouseDragged
                 case 7:  // NSEventTypeRightMouseDragged
@@ -1696,6 +1751,63 @@ void canvas_time_init(canvas_time_data *time)
     time->last = time->current;
 }
 
+HCURSOR _canvas_get_win32_cursor(canvas_cursor_type cursor)
+{
+    LPCTSTR cursor_name;
+
+    switch (cursor)
+    {
+    case ARROW:
+        cursor_name = IDC_ARROW;
+        break;
+    case TEXT:
+        cursor_name = IDC_IBEAM;
+        break;
+    case CROSSHAIR:
+        cursor_name = IDC_CROSS;
+        break;
+    case HAND:
+        cursor_name = IDC_HAND;
+        break;
+    case SIZE_NS:
+        cursor_name = IDC_SIZENS;
+        break;
+    case SIZE_EW:
+        cursor_name = IDC_SIZEWE;
+        break;
+    case SIZE_NESW:
+        cursor_name = IDC_SIZENESW;
+        break;
+    case SIZE_NWSE:
+        cursor_name = IDC_SIZENWSE;
+        break;
+    case SIZE_ALL:
+        cursor_name = IDC_SIZEALL;
+        break;
+    case NOT_ALLOWED:
+        cursor_name = IDC_NO;
+        break;
+    case WAIT:
+        cursor_name = IDC_WAIT;
+        break;
+    default:
+        cursor_name = IDC_ARROW;
+        break;
+    }
+
+    return LoadCursor(NULL, cursor_name);
+}
+
+int canvas_cursor(int window_id, canvas_cursor_type cursor)
+{
+    CANVAS_VALID(window_id);
+
+    _canvas[window_id].cursor = cursor;
+    SetCursor(_canvas_get_win32_cursor(cursor));
+
+    return CANVAS_OK;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     int window_index = _canvas_window_index(hwnd);
@@ -1705,6 +1817,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
+    case WM_SETCURSOR:
+    {
+        if (LOWORD(lParam) == HTCLIENT)
+        {
+            SetCursor(_canvas_get_win32_cursor(_canvas[window_index].cursor));
+            return TRUE;
+        }
+        break;
+    }
+
     case WM_CREATE:
     {
         if (!_canvas[window_index].titlebar)
@@ -2766,6 +2888,82 @@ int _canvas_init_wayland()
     return CANVAS_OK;
 }
 
+static unsigned int _canvas_get_x11_cursor_id(canvas_cursor_type cursor)
+{
+    switch (cursor)
+    {
+    case ARROW:
+        return 2; // XC_arrow
+    case TEXT:
+        return 152; // XC_xterm
+    case CROSSHAIR:
+        return 34; // XC_crosshair
+    case HAND:
+        return 58; // XC_hand2
+    case SIZE_NS:
+        return 116; // XC_sb_v_double_arrow
+    case SIZE_EW:
+        return 108; // XC_sb_h_double_arrow
+    case SIZE_NESW:
+        return 12; // XC_bottom_left_corner
+    case SIZE_NWSE:
+        return 14; // XC_bottom_right_corner
+    case SIZE_ALL:
+        return 52; // XC_fleur
+    case NOT_ALLOWED:
+        return 0; // XC_X_cursor
+    case WAIT:
+        return 150; // XC_watch
+    default:
+        return 2; // XC_arrow
+    }
+}
+
+static unsigned int _canvas_get_x11_cursor_id(canvas_cursor_type cursor)
+{
+    switch (cursor)
+    {
+    case ARROW:
+        return 2; // XC_arrow
+    case TEXT:
+        return 152; // XC_xterm
+    case CROSSHAIR:
+        return 34; // XC_crosshair
+    case HAND:
+        return 58; // XC_hand2
+    case SIZE_NS:
+        return 116; // XC_sb_v_double_arrow
+    case SIZE_EW:
+        return 108; // XC_sb_h_double_arrow
+    case SIZE_NESW:
+        return 12; // XC_bottom_left_corner
+    case SIZE_NWSE:
+        return 14; // XC_bottom_right_corner
+    case SIZE_ALL:
+        return 52; // XC_fleur
+    case NOT_ALLOWED:
+        return 0; // XC_X_cursor
+    case WAIT:
+        return 150; // XC_watch
+    default:
+        return 2; // XC_arrow
+    }
+}
+
+int canvas_cursor(int window_id, canvas_cursor_type cursor)
+{
+    CANVAS_VALID(window_id);
+
+    _canvas[window_id].cursor = cursor;
+
+    if (_canvas_using_wayland)
+    {
+        return CANVAS_OK;
+    }
+
+    return CANVAS_OK;
+}
+
 int _canvas_init_x11()
 {
     canvas_lib_x11 = dlopen("libX11.so.6", RTLD_LAZY);
@@ -3325,6 +3523,8 @@ int canvas_window(int x, int y, int width, int height, const char *title)
     canvas_time_init(&_canvas[result].time);
 
     _canvas_get_window_display(result);
+
+    _canvas[result].cursor = ARROW;
 
     return result;
 }
