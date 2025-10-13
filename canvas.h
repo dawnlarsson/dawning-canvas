@@ -295,7 +295,7 @@ canvas_data _canvas_data[MAX_CANVAS];
 #if defined(__linux__)
 
 #include <time.h>
-#include "dlfcn.h"
+#include <dlfcn.h>
 
 canvas_library_handle canvas_lib_wayland;
 canvas_library_handle canvas_lib_x11;
@@ -651,43 +651,28 @@ int _canvas_window_index(void *window)
     return CANVAS_INVALID;
 }
 
-void *canvas_library_load(const char *library_names[], int count)
+void *canvas_library_load(const char **names, int count)
 {
-    void *library_handle = NULL;
-
     for (int i = 0; i < count; ++i)
     {
-        const char *library_name = library_names[i];
-
 #if defined(_WIN32)
-        library_handle = LoadLibraryA(library_name);
-#elif defined(__linux__)
-        library_handle = dlopen(library_name, C_RTLD_NOW | C_RTLD_LOCAL);
-#elif defined(__APPLE__)
-        library_handle = dlopen(library_name, C_RTLD_NOW | C_RTLD_LOCAL);
+        HMODULE h = LoadLibraryA(names[i]);
+#else
+        void *h = dlopen(names[i], RTLD_NOW | RTLD_LOCAL);
 #endif
-        if (library_handle)
-            return library_handle;
+        if (h)
+            return h;
     }
-
-    CANVAS_ERR("failed to library_load");
-    return (void *)CANVAS_ERR_LOAD_LIBRARY;
+    return NULL;
 }
 
-void *canvas_library_symbol(void *lib, const char *symbol_name)
+void *canvas_library_symbol(void *lib, const char *sym)
 {
-    void *symbol;
 #if defined(_WIN32)
-    symbol = GetProcAddress((HMODULE)lib, symbol_name);
+    return (void *)GetProcAddress((HMODULE)lib, sym);
 #else
-    symbol = dlsym(lib, symbol_name);
+    return dlsym(lib, sym);
 #endif
-
-    if (symbol)
-        return symbol;
-
-    CANVAS_ERR("Failed to load %s", symbol_name);
-    return (void *)CANVAS_ERR_LOAD_SYMBOL;
 }
 
 void canvas_library_close(void *lib)
@@ -743,7 +728,7 @@ int canvas_backend_vulkan_init()
 {
     canvas_lib_vulkan = canvas_library_load(vulkan_library_names, canvas_vulkan_names);
 
-    if (canvas_lib_vulkan == NULL)
+    if (!canvas_lib_vulkan)
         return CANVAS_ERR_LOAD_LIBRARY;
 
     vk.vkGetInstanceProcAddr = canvas_library_symbol(canvas_lib_vulkan, "vkGetInstanceProcAddr");
@@ -1433,13 +1418,20 @@ void canvas_sleep(double seconds)
 
 void canvas_time_init(canvas_time_data *time)
 {
-    time->start = mach_absolute_time();
-    time->current = canvas_get_time(time);
-    time->last = time->current;
     time->frame = 0;
+    time->frame_index = 0;
+    time->accumulator = 0;
+    time->alpha = 0;
+    time->delta = 0;
+    time->fps = 0;
+    time->raw_delta = 0;
 
     for (int i = 0; i < 60; i++)
         time->times[i] = 0.0;
+
+    time->start = mach_absolute_time();
+    time->current = canvas_get_time(time);
+    time->last = time->current;
 }
 
 #endif /* __APPLE__ */
@@ -1679,6 +1671,17 @@ void canvas_sleep(double seconds)
 
 void canvas_time_init(canvas_time_data *time)
 {
+    time->frame = 0;
+    time->frame_index = 0;
+    time->accumulator = 0;
+    time->alpha = 0;
+    time->delta = 0;
+    time->fps = 0;
+    time->raw_delta = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
+
     QueryPerformanceFrequency(&_canvas_qpc_frequency);
 
     LARGE_INTEGER counter;
@@ -1687,11 +1690,6 @@ void canvas_time_init(canvas_time_data *time)
     time->start = (uint64_t)counter.QuadPart;
     time->current = canvas_get_time(time);
     time->last = time->current;
-    time->frame = 0;
-    time->frame_index = 0;
-
-    for (int i = 0; i < 60; i++)
-        time->times[i] = 0.0;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -3112,15 +3110,22 @@ void canvas_sleep(double seconds)
 
 void canvas_time_init(canvas_time_data *time)
 {
+    time->frame = 0;
+    time->frame_index = 0;
+    time->accumulator = 0;
+    time->alpha = 0;
+    time->delta = 0;
+    time->fps = 0;
+    time->raw_delta = 0;
+
+    for (int i = 0; i < 60; i++)
+        time->times[i] = 0.0;
+
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     time->start = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
     time->current = canvas_get_time(time);
     time->last = time->current;
-    time->frame = 0;
-
-    for (int i = 0; i < 60; i++)
-        time->times[i] = 0.0;
 }
 
 #endif // _linux_
@@ -3259,16 +3264,10 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     _canvas[window_id].x = x;
     _canvas[window_id].y = y;
 
-    int target_x = x;
-    int target_y = y;
-
     CANVAS_DISPLAY_BOUNDS(display);
 
-    if (x == -1)
-        target_x = _canvas_displays[display].width / 2 - width / 2;
-
-    if (y == -1)
-        target_y = _canvas_displays[display].height / 2 - height / 2;
+    int target_x = (x == -1) ? _canvas_displays[display].width / 2 - width / 2 : x;
+    int target_y = (y == -1) ? _canvas_displays[display].height / 2 - height / 2 : y;
 
     if (title)
     {
