@@ -323,11 +323,6 @@ extern int _canvas_highest_refresh_rate;
 #define CANVAS_ERR_GET_PLATFORM -36
 ```
 
-Check the global status:
-```c
-extern int CANVAS_STATUS;
-```
-
 ## Logging
 
 Define `CANVAS_NO_LOG` to disable all logging.

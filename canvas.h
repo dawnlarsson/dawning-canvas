@@ -108,7 +108,6 @@ void canvas_time_init(canvas_time_data *time);
 void canvas_time_update(canvas_time_data *time);
 double canvas_get_time(canvas_time_data *time);
 int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps);
-void canvas_limit_fps(canvas_time_data *time, double target_fps);
 
 // internal api
 void canvas_main_loop();
@@ -169,15 +168,13 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor);
 #define CANVAS_ERR_GET_GPU -35
 #define CANVAS_ERR_GET_PLATFORM -36
 
-int CANVAS_STATUS = CANVAS_OK;
-
 #ifndef CANVAS_HEADER_ONLY
 
 canvas_update_callback canvas_default_update_callback;
 
 double canvas_limit_mainloop_fps = 240.0;
 int _canvas_display_count = 0;
-int _canvas_highest_refresh_rate = 60;
+double _canvas_highest_refresh_rate;
 
 bool _canvas_init_platform = false;
 bool _canvas_init_gpu = false;
@@ -946,7 +943,7 @@ int _canvas_get_window_display(int window_id)
         screen_number_key);
 
     if (!display_id_obj)
-        return CANVAS_OK;
+        return CANVAS_ERR_GET_DISPLAY;
 
     unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
 
@@ -971,7 +968,6 @@ int _canvas_get_window_display(int window_id)
 int _canvas_refresh_displays()
 {
     _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
     _canvas_displays_changed = false;
 
     uint32_t max_displays = MAX_DISPLAYS;
@@ -1045,7 +1041,6 @@ bool _canvas_check_display_changes()
 int _canvas_init_displays()
 {
     _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
     CGDisplayRegisterReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
 
     return _canvas_refresh_displays();
@@ -1598,7 +1593,6 @@ int _canvas_get_window_display(int window_id)
 int _canvas_refresh_displays()
 {
     _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
     _canvas_displays_changed = false;
 
     for (int i = 0; i < MAX_DISPLAYS; i++)
@@ -1643,7 +1637,6 @@ int _canvas_refresh_displays()
 int _canvas_init_displays()
 {
     _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
 
     return _canvas_refresh_displays();
 }
@@ -2520,7 +2513,6 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 int _canvas_init_displays()
 {
     _canvas_display_count = 0;
-    _canvas_highest_refresh_rate = 60;
 
     if (_canvas_using_wayland)
     {
@@ -3143,8 +3135,6 @@ int canvas_startup()
     if (_canvas_init_platform)
         return CANVAS_OK;
 
-    _canvas_init_platform = true;
-
     canvas_time_init(&canvas_main_time);
 
     for (int i = 0; i < MAX_DISPLAYS; ++i)
@@ -3161,7 +3151,6 @@ int canvas_startup()
     int result = _canvas_platform();
     if (result != CANVAS_OK)
     {
-        CANVAS_STATUS = CANVAS_FAIL;
         CANVAS_ERR("platform initialization failed\n");
         return result;
     }
@@ -3172,6 +3161,8 @@ int canvas_startup()
         CANVAS_ERR("display initialization failed\n");
         return result;
     }
+
+    _canvas_init_platform = true;
 
     return CANVAS_OK;
 }
@@ -3216,10 +3207,10 @@ int canvas_quit()
 
 int canvas_run(canvas_update_callback default_callback)
 {
-    if (CANVAS_STATUS != CANVAS_OK)
+    if (!_canvas_init_platform)
     {
         CANVAS_ERR("refusing run, initialization failed.");
-        return CANVAS_STATUS;
+        return CANVAS_FAIL;
     }
 
     canvas_default_update_callback = default_callback;
