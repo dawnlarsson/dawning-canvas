@@ -1098,11 +1098,13 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     }
 
     CANVAS_DISPLAY_BOUNDS(display);
-    y = canvas_info.display[display].height - (y + height);
+
+    int global_x = canvas_info.display[display].x + x;
+    int global_y = canvas_info.display[display].y + (canvas_info.display[display].height - (y + height));
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
-        _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
+        _CGRect rect = {(double)global_x, (double)global_y, (double)width, (double)height};
         typedef void (*MSG_void_id_rect_bool)(objc_id, objc_sel, _CGRect, int);
         ((MSG_void_id_rect_bool)objc_msgSend)(window, sel_c("setFrame:display:"), rect, 1);
     }
