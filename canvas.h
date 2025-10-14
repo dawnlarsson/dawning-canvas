@@ -341,6 +341,9 @@ static struct
 {
     canvas_library_handle library;
 
+    bool cursors_loaded;
+    unsigned long cursors[11];
+
     Display *(*XOpenDisplay)(const char *);
     int (*XCloseDisplay)(Display *);
     Window (*XCreateSimpleWindow)(Display *, Window, int, int, unsigned int, unsigned int,
@@ -3254,19 +3257,23 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 {
     CANVAS_VALID(window_id);
 
-    canvas_info.canvas[window_id].cursor = cursor;
-
     if (_canvas_using_wayland)
-    {
         return CANVAS_OK;
+
+    if (!x11.cursors_loaded)
+    {
+        for (int i = 0; i < 11; i++)
+        {
+            unsigned int id = _canvas_get_x11_cursor_id((canvas_cursor_type)i);
+            x11.cursors[i] = (unsigned long)x11.XCreateFontCursor(x11.display, id);
+        }
+        x11.cursors_loaded = true;
     }
 
-    // unsigned int cursor_id = _canvas_get_x11_cursor_id(cursor);
-    // unsigned long x_cursor = (unsigned long)x11.XCreateFontCursor(x11.display, cursor_id);
+    x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x11.cursors[cursor]);
+    x11.XFlush(x11.display);
 
-    // x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x_cursor);
-    // x11.XFlush(x11.display);
-
+    canvas_info.canvas[window_id].cursor = cursor;
     return CANVAS_OK;
 }
 
