@@ -294,10 +294,6 @@ canvas_data _canvas_data[MAX_CANVAS];
 #include <time.h>
 #include <dlfcn.h>
 
-canvas_library_handle canvas_lib_wayland;
-canvas_library_handle canvas_lib_x11;
-canvas_library_handle canvas_lib_xrandr;
-
 struct wl_display;
 struct wl_registry;
 struct wl_compositor;
@@ -318,6 +314,8 @@ typedef struct
 
 static struct
 {
+    canvas_library_handle library;
+
     struct wl_display *(*wl_display_connect)(const char *);
     void (*wl_display_disconnect)(struct wl_display *);
     int (*wl_display_dispatch)(struct wl_display *);
@@ -341,6 +339,8 @@ static struct
 
 static struct
 {
+    canvas_library_handle library;
+
     Display *(*XOpenDisplay)(const char *);
     int (*XCloseDisplay)(Display *);
     Window (*XCreateSimpleWindow)(Display *, Window, int, int, unsigned int, unsigned int,
@@ -378,26 +378,41 @@ static struct
     Display *display;
 } x11;
 
+static struct
+{
+    canvas_library_handle library;
+
+    void *(*XRRGetScreenResourcesCurrent)(Display *, Window);
+    void (*XRRFreeScreenResources)(void *);
+    void *(*XRRGetCrtcInfo)(Display *, void *, unsigned long);
+    void (*XRRFreeCrtcInfo)(void *);
+
+} xrandr;
+
 #define XA_CARDINAL ((Atom)6)
 #define PropModeReplace 0
 
 #define LOAD_X11(name)                                  \
-    x11.name = dlsym(canvas_lib_x11, #name);            \
+    x11.name = dlsym(x11.library, #name);               \
     if (!x11.name)                                      \
     {                                                   \
         CANVAS_ERR("loading " #name ": %s", dlerror()); \
-        dlclose(canvas_lib_x11);                        \
+        dlclose(x11.library);                           \
         return CANVAS_ERR_LOAD_SYMBOL;                  \
     }
 
 #define LOAD_WL(name)                                   \
-    wl.name = dlsym(canvas_lib_wayland, #name);         \
+    wl.name = dlsym(wl.library, #name);                 \
     if (!wl.name)                                       \
     {                                                   \
         CANVAS_ERR("loading " #name ": %s", dlerror()); \
-        dlclose(canvas_lib_wayland);                    \
+        dlclose(wl.library);                            \
         return CANVAS_ERR_LOAD_SYMBOL;                  \
     }
+
+const char *canvas_wayland_library_names[2] = {"libwayland-client.so.0", "libwayland-client.so"};
+const char *canvas_x11_library_names[2] = {"libX11.so", "libX11.so"};
+const char *canvas_xrandr_library_names[2] = {"libXrandr.so.2", "libXrandr.so"};
 
 typedef struct
 {
@@ -2998,14 +3013,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
 int _canvas_init_wayland()
 {
-    canvas_lib_wayland = dlopen("libwayland-client.so.0", RTLD_LAZY | RTLD_NOW | RTLD_GLOBAL);
+    wl.library = canvas_library_load(canvas_wayland_library_names, 2);
 
-    if (!canvas_lib_wayland)
-    {
-        canvas_lib_wayland = dlopen("libwayland-client.so", RTLD_LAZY | RTLD_NOW | RTLD_GLOBAL);
-    }
-
-    if (!canvas_lib_wayland)
+    if (!wl.library)
     {
         CANVAS_ERR("libwayland-client.so.0 or libwayland-client.so not found");
         return CANVAS_ERR_LOAD_LIBRARY;
@@ -3017,7 +3027,7 @@ int _canvas_init_wayland()
     if (!wl.display)
     {
         CANVAS_ERR("open wayland display\n");
-        dlclose(canvas_lib_wayland);
+        dlclose(wl.library);
         return CANVAS_ERR_GET_DISPLAY;
     }
 
@@ -3027,7 +3037,7 @@ int _canvas_init_wayland()
     if (!wl.registry)
     {
         CANVAS_ERR("load wayland registry\n");
-        dlclose(canvas_lib_wayland);
+        dlclose(wl.library);
         return CANVAS_ERR_GET_DISPLAY;
     }
 
@@ -3037,7 +3047,7 @@ int _canvas_init_wayland()
     if (!result)
     {
         CANVAS_ERR("add wayland registry\n");
-        dlclose(canvas_lib_wayland);
+        dlclose(wl.library);
         return CANVAS_ERR_GET_DISPLAY;
     }
 
@@ -3108,14 +3118,10 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 
 int _canvas_init_x11()
 {
-    canvas_lib_x11 = dlopen("libX11.so.6", RTLD_LAZY);
 
-    if (!canvas_lib_x11)
-    {
-        canvas_lib_x11 = dlopen("libX11.so", RTLD_LAZY);
-    }
+    x11.library = canvas_library_load(canvas_x11_library_names, 2);
 
-    if (!canvas_lib_x11)
+    if (!x11.library)
     {
         CANVAS_ERR("libX11.so.6 or libX11.so not found");
         return CANVAS_ERR_LOAD_LIBRARY;
@@ -3127,8 +3133,8 @@ int _canvas_init_x11()
 
     if (!x11.display)
     {
+        dlclose(x11.library);
         CANVAS_ERR("open x11 display\n");
-        dlclose(canvas_lib_x11);
         return CANVAS_ERR_GET_DISPLAY;
     }
 
@@ -3164,32 +3170,23 @@ int _canvas_init_x11()
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
-    // Try to load XRandR for proper multi-monitor support
-    canvas_lib_xrandr = dlopen("libXrandr.so.2", RTLD_LAZY);
+    xrandr.library = canvas_library_load(canvas_xrandr_library_names, 2);
 
-    if (!canvas_lib_xrandr)
-        canvas_lib_xrandr = dlopen("libXrandr.so", RTLD_LAZY);
-
-    if (!canvas_lib_xrandr)
+    if (!xrandr.library)
     {
-        dlclose(canvas_lib_xrandr);
+        dlclose(xrandr.library);
         CANVAS_WARN("libXrandr.so.2 or libXrandr.so not found");
         return CANVAS_OK;
     }
 
-    typedef void *(*XRRGetScreenResourcesCurrentFunc)(Display *, Window);
-    typedef void (*XRRFreeScreenResourcesFunc)(void *);
-    typedef void *(*XRRGetCrtcInfoFunc)(Display *, void *, unsigned long);
-    typedef void (*XRRFreeCrtcInfoFunc)(void *);
+    xrandr.XRRGetScreenResourcesCurrent = canvas_library_symbol(xrandr.library, "XRRGetScreenResourcesCurrent");
+    xrandr.XRRFreeScreenResources = canvas_library_symbol(xrandr.library, "XRRFreeScreenResources");
+    xrandr.XRRGetCrtcInfo = canvas_library_symbol(xrandr.library, "XRRGetCrtcInfo");
+    xrandr.XRRFreeCrtcInfo = canvas_library_symbol(xrandr.library, "XRRFreeCrtcInfo");
 
-    XRRGetScreenResourcesCurrentFunc XRRGetScreenResourcesCurrent = dlsym(canvas_lib_xrandr, "XRRGetScreenResourcesCurrent");
-    XRRFreeScreenResourcesFunc XRRFreeScreenResources = dlsym(canvas_lib_xrandr, "XRRFreeScreenResources");
-    XRRGetCrtcInfoFunc XRRGetCrtcInfo = dlsym(canvas_lib_xrandr, "XRRGetCrtcInfo");
-    XRRFreeCrtcInfoFunc XRRFreeCrtcInfo = dlsym(canvas_lib_xrandr, "XRRFreeCrtcInfo");
-
-    if (!XRRGetScreenResourcesCurrent || !XRRFreeScreenResources || !XRRGetCrtcInfo || !XRRFreeCrtcInfo)
+    if (!xrandr.XRRGetScreenResourcesCurrent || !xrandr.XRRFreeScreenResources || !xrandr.XRRGetCrtcInfo || !xrandr.XRRFreeCrtcInfo)
     {
-        dlclose(canvas_lib_xrandr);
+        dlclose(xrandr.library);
         CANVAS_WARN("failed to load Xrandr symbols");
         return CANVAS_OK;
     }
@@ -3213,18 +3210,18 @@ int _canvas_init_x11()
         // ...
     } XRRCrtcInfo;
 
-    XRRScreenResources *sr = XRRGetScreenResourcesCurrent(x11.display, root);
+    XRRScreenResources *sr = xrandr.XRRGetScreenResourcesCurrent(x11.display, root);
 
     if (!sr)
     {
-        dlclose(canvas_lib_xrandr);
+        dlclose(xrandr.library);
         CANVAS_WARN("failed call XRRGetScreenResourcesCurrent");
         return CANVAS_OK;
     }
 
     for (int i = 0; i < sr->ncrtc && i < MAX_DISPLAYS; i++)
     {
-        XRRCrtcInfo *ci = XRRGetCrtcInfo(x11.display, sr, sr->crtcs[i]);
+        XRRCrtcInfo *ci = xrandr.XRRGetCrtcInfo(x11.display, sr, sr->crtcs[i]);
 
         if (ci && ci->width > 0 && ci->height > 0)
         {
@@ -3239,10 +3236,10 @@ int _canvas_init_x11()
         }
 
         if (ci)
-            XRRFreeCrtcInfo(ci);
+            xrandr.XRRFreeCrtcInfo(ci);
     }
 
-    XRRFreeScreenResources(sr);
+    xrandr.XRRFreeScreenResources(sr);
 
     return CANVAS_OK;
 }
@@ -3444,11 +3441,11 @@ int _canvas_exit()
     if (x11.display)
         x11.XCloseDisplay(x11.display);
 
-    if (canvas_lib_x11)
-        dlclose(canvas_lib_x11);
+    if (x11.library)
+        dlclose(x11.library);
 
-    if (canvas_lib_xrandr)
-        dlclose(canvas_lib_xrandr);
+    if (xrandr.library)
+        dlclose(xrandr.library);
 
     return CANVAS_OK;
 }
