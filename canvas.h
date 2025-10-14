@@ -62,6 +62,10 @@ CANVAS_EXTERN_C_BEGIN
 #define MAX_DISPLAYS 8
 #endif
 
+#ifndef MAX_CANVAS_TITLE
+#define MAX_CANVAS_TITLE 256
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -141,7 +145,7 @@ typedef struct
     bool resize, close, titlebar, os_moved, os_resized;
     bool minimized, maximized, vsync, _valid;
     float clear[4];
-    const char *title;
+    char title[MAX_CANVAS_TITLE];
     canvas_window_handle window;
     canvas_update_callback update;
     canvas_time_data time;
@@ -3752,19 +3756,12 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 
     if (title)
     {
-        if (canvas_info.canvas[window_id].title)
-        {
-            free((void *)canvas_info.canvas[window_id].title);
-        }
-        canvas_info.canvas[window_id].title = strdup(title);
+        strncpy(canvas_info.canvas[window_id].title, title, MAX_CANVAS_TITLE - 1);
+        canvas_info.canvas[window_id].title[MAX_CANVAS_TITLE - 1] = '\0';
     }
     else
     {
-        if (canvas_info.canvas[window_id].title)
-        {
-            free((void *)canvas_info.canvas[window_id].title);
-        }
-        canvas_info.canvas[window_id].title = NULL;
+        canvas_info.canvas[window_id].title[0] = '\0';
     }
 
     return _canvas_set(window_id, display, target_x, target_y, width, height, title);
@@ -3835,12 +3832,6 @@ int canvas_close(int window_id)
     canvas_info.canvas[window_id]._valid = false;
 
     _canvas_close(window_id);
-
-    if (canvas_info.canvas[window_id].title)
-    {
-        free((void *)canvas_info.canvas[window_id].title);
-        canvas_info.canvas[window_id].title = NULL;
-    }
 
     canvas_info.canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
