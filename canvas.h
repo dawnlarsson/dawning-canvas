@@ -172,7 +172,7 @@ typedef struct
 
 typedef struct
 {
-    bool init, init_gpu, init_post, os_timed, auto_exit, quit, displays_changed;
+    bool init, init_gpu, init_post, os_timed, auto_exit, quit, display_changed;
     int display_count, limit_fps, highest_refresh_rate;
 
     canvas_type canvas[MAX_CANVAS];
@@ -1158,14 +1158,14 @@ int _canvas_get_window_display(int window_id)
     unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
 
     uint32_t max_displays = MAX_DISPLAYS;
-    CGDirectDisplayID canvas_info.display[MAX_DISPLAYS];
+    CGDirectDisplayID display[MAX_DISPLAYS];
     uint32_t display_count = 0;
 
-    CGGetActiveDisplayList(max_displays, displays, &display_count);
+    CGGetActiveDisplayList(max_displays, display, &display_count);
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        if (canvas_info.display[i] != (CGDirectDisplayID)display_id)
+        if (display[i] != (CGDirectDisplayID)display_id)
             continue;
 
         canvas_info.canvas[window_id].display = i;
@@ -1181,10 +1181,10 @@ int _canvas_refresh_displays()
     canvas_info.display_changed = false;
 
     uint32_t max_displays = MAX_DISPLAYS;
-    CGDirectDisplayID canvas_info.display[MAX_DISPLAYS];
+    CGDirectDisplayID display[MAX_DISPLAYS];
     uint32_t display_count = 0;
 
-    CGError err = CGGetActiveDisplayList(max_displays, displays, &display_count);
+    CGError err = CGGetActiveDisplayList(max_displays, display, &display_count);
     if (err != kCGErrorSuccess)
     {
         CANVAS_ERR("get display list: %d\n", err);
@@ -1195,7 +1195,7 @@ int _canvas_refresh_displays()
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        CGDirectDisplayID display_id = canvas_info.display[i];
+        CGDirectDisplayID display_id = display[i];
         CGRect bounds = CGDisplayBounds(display_id);
         CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display_id);
         double refresh_rate = 60.0;
