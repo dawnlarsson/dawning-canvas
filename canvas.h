@@ -695,11 +695,17 @@ void canvas_library_close(void *lib)
 
 canvas_library_handle canvas_lib_vulkan;
 VkInstance vulkan_instance;
+VkPhysicalDevice physical_device;
+int graphics_family;
 
 static struct
 {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
     PFN_vkCreateInstance vkCreateInstance;
+    PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
+
+    PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
 } vk;
 
 #if defined(_WIN32)
@@ -715,8 +721,97 @@ static struct
 
 const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_names;
 
+static bool canvas_is_device_suitable_core(VkPhysicalDevice device)
+{
+    // Check for graphics queue family
+    uint32_t queue_family_count = 0;
+    vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
+
+    VkQueueFamilyProperties *queue_families = malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
+    vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families);
+
+    bool has_graphics = false;
+    for (uint32_t i = 0; i < queue_family_count; i++)
+    {
+        if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            has_graphics = true;
+            break;
+        }
+    }
+
+    free(queue_families);
+
+    uint32_t extension_count;
+    vk.vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
+
+    VkExtensionProperties *available_extensions = malloc(extension_count * sizeof(VkExtensionProperties));
+    vk.vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, available_extensions);
+
+    bool has_swapchain = false;
+    for (uint32_t i = 0; i < extension_count; i++)
+    {
+        if (strcmp(available_extensions[i].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0)
+        {
+            has_swapchain = true;
+            break;
+        }
+    }
+
+    free(available_extensions);
+
+    return has_graphics && has_swapchain;
+}
+
+static VkResult canvas_select_physical_device()
+{
+    uint32_t device_count = 0;
+    vk.vkEnumeratePhysicalDevices(vulkan_instance, &device_count, NULL);
+
+    if (device_count == 0)
+        return VK_ERROR_INITIALIZATION_FAILED;
+
+    VkPhysicalDevice *devices = malloc(device_count * sizeof(VkPhysicalDevice));
+    vk.vkEnumeratePhysicalDevices(vulkan_instance, &device_count, devices);
+
+    for (uint32_t i = 0; i < device_count; i++)
+    {
+        if (!canvas_is_device_suitable_core(devices[i]))
+            continue;
+
+        physical_device = devices[i];
+
+        uint32_t queue_family_count = 0;
+        vk.vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &queue_family_count, NULL);
+
+        VkQueueFamilyProperties *queue_families = malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
+        vk.vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &queue_family_count, queue_families);
+
+        for (uint32_t j = 0; j < queue_family_count; j++)
+        {
+            if (queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                graphics_family = j;
+
+            /*
+            if (queue_families[j].queueFlags & VK_QUEUE_COMPUTE_BIT)
+                compute_family = j;
+            */
+        }
+
+        free(queue_families);
+        break;
+    }
+
+    free(devices);
+
+    return physical_device != VK_NULL_HANDLE ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+}
+
 int canvas_backend_vulkan_init()
 {
+    if (vulkan_instance)
+        return CANVAS_OK;
+
     CANVAS_INFO("loading vulkan\n");
 
     canvas_lib_vulkan = canvas_library_load(vulkan_library_names, canvas_vulkan_names);
@@ -728,9 +823,7 @@ int canvas_backend_vulkan_init()
 
     if (!vk.vkGetInstanceProcAddr)
     {
-        canvas_library_close(canvas_lib_vulkan);
-        canvas_lib_vulkan = NULL;
-        return CANVAS_ERR_LOAD_SYMBOL;
+        goto fail;
     }
 
     const char *extensions[MAX_EXTENSIONS];
@@ -785,7 +878,20 @@ int canvas_backend_vulkan_init()
         return CANVAS_ERR_GET_GPU;
     }
 
-    return 0;
+    vk.vkEnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)vk.vkGetInstanceProcAddr(vulkan_instance, "vkEnumeratePhysicalDevices");
+    vk.vkEnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)vk.vkGetInstanceProcAddr(vulkan_instance, "vkEnumerateDeviceExtensionProperties");
+    vk.vkGetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)vk.vkGetInstanceProcAddr(vulkan_instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+
+    if (canvas_select_physical_device() != VK_SUCCESS)
+        goto fail;
+
+    return CANVAS_OK;
+
+fail:
+    canvas_library_close(canvas_lib_vulkan);
+    canvas_lib_vulkan = NULL;
+    vulkan_instance = NULL;
+    return CANVAS_FAIL;
 }
 
 #endif
