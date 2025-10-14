@@ -2805,7 +2805,10 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
         _canvas_data[window_id].client_set = true;
 
-        x11.XMoveResizeWindow(x11.display, window, x, y, width, height);
+        int global_x = canvas_info.display[display].x + x;
+        int global_y = canvas_info.display[display].y + y;
+
+        x11.XMoveResizeWindow(x11.display, window, global_x, global_y, width, height);
     }
 
     canvas_info.canvas[window_id].os_moved = false;
