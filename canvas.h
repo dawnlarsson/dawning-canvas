@@ -151,7 +151,7 @@ typedef struct
 typedef struct
 {
     bool primary;
-    int x, y, width, height;
+    int x, y, width, height, scale;
     int refresh_rate;
 } canvas_display;
 
@@ -378,6 +378,69 @@ static struct
     Display *display;
 } x11;
 
+typedef struct
+{
+    void *timestamp;
+    void *configTimestamp;
+    int ncrtc;
+    unsigned long *crtcs;
+    int noutput;
+    unsigned long *outputs;
+    int nmode;
+    void *modes;
+} XRRScreenResources;
+
+typedef struct
+{
+    long timestamp;
+    int x, y;
+    unsigned int width, height;
+    unsigned long mode;
+    unsigned short rotation;
+    int noutput;
+    unsigned long *outputs;
+    unsigned short rotations;
+    int npossible;
+    unsigned long *possible;
+} XRRCrtcInfo;
+
+typedef struct
+{
+    long timestamp;
+    unsigned long crtc;
+    char *name;
+    int nameLen;
+    unsigned long mm_width;
+    unsigned long mm_height;
+    unsigned short connection;
+    unsigned short subpixel_order;
+    int ncrtc;
+    unsigned long *crtcs;
+    int nclone;
+    unsigned long *clones;
+    int nmode;
+    unsigned long *modes;
+    int npreferred;
+} XRROutputInfo;
+
+typedef struct
+{
+    unsigned long id;
+    unsigned short width;
+    unsigned short height;
+    unsigned long dotClock;
+    unsigned short hSyncStart;
+    unsigned short hSyncEnd;
+    unsigned short hTotal;
+    unsigned short hSkew;
+    unsigned short vSyncStart;
+    unsigned short vSyncEnd;
+    unsigned short vTotal;
+    char *name;
+    unsigned int nameLength;
+    unsigned long modeFlags;
+} XRRModeInfo;
+
 static struct
 {
     canvas_library_handle library;
@@ -386,7 +449,9 @@ static struct
     void (*XRRFreeScreenResources)(void *);
     void *(*XRRGetCrtcInfo)(Display *, void *, unsigned long);
     void (*XRRFreeCrtcInfo)(void *);
-
+    void *(*XRRGetOutputInfo)(Display *, void *, unsigned long);
+    void (*XRRFreeOutputInfo)(void *);
+    unsigned long (*XRRGetOutputPrimary)(Display *, Window);
 } xrandr;
 
 #define XA_CARDINAL ((Atom)6)
@@ -2834,25 +2899,114 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
 int _canvas_init_displays()
 {
-    canvas_info.display_count = 0;
+    canvas_info.display_count = 1;
 
     if (_canvas_using_wayland)
     {
+        return canvas_info.display_count;
     }
-    else
+
+    if (xrandr.library)
     {
-        // TODO: Use Xinerama or XRandR for proper multi-monitor support
-        int screen = x11.XDefaultScreen(x11.display);
+        Window root = x11.XDefaultRootWindow(x11.display);
+        XRRScreenResources *sr = xrandr.XRRGetScreenResourcesCurrent(x11.display, root);
 
-        canvas_info.display[0].primary = true;
-        canvas_info.display[0].x = 0;
-        canvas_info.display[0].y = 0;
-        canvas_info.display[0].width = x11.XDisplayWidth(x11.display, screen);
-        canvas_info.display[0].height = x11.XDisplayHeight(x11.display, screen);
-        canvas_info.display[0].refresh_rate = 60;
+        if (!sr)
+        {
+            CANVAS_WARN("XRRGetScreenResourcesCurrent failed\n");
+            dlclose(xrandr.library);
+            goto fallback;
+        }
 
-        canvas_info.display_count = 1;
+        unsigned long primary_output = xrandr.XRRGetOutputPrimary(x11.display, root);
+
+        for (int i = 0; i < sr->ncrtc && canvas_info.display_count < MAX_DISPLAYS; i++)
+        {
+            XRRCrtcInfo *ci = xrandr.XRRGetCrtcInfo(x11.display, sr, sr->crtcs[i]);
+
+            if (!ci || ci->width == 0 || ci->height == 0 || ci->noutput == 0)
+            {
+                if (ci)
+                    xrandr.XRRFreeCrtcInfo(ci);
+                continue;
+            }
+
+            XRROutputInfo *oi = xrandr.XRRGetOutputInfo(x11.display, sr, ci->outputs[0]);
+
+            if (!oi)
+            {
+                xrandr.XRRFreeCrtcInfo(ci);
+                continue;
+            }
+
+            double scale = 1.0;
+            if (oi->mm_width > 0 && oi->mm_height > 0)
+            {
+                double dpi_x = (double)ci->width / (oi->mm_width / 25.4);
+                double dpi_y = (double)ci->height / (oi->mm_height / 25.4);
+                double dpi = (dpi_x + dpi_y) / 2.0;
+
+                if (dpi > 140.0)
+                {
+                    scale = dpi / 96.0;
+                }
+            }
+
+            int refresh_rate = 60;
+            if (ci->mode != 0)
+            {
+                XRRModeInfo *modes = (XRRModeInfo *)sr->modes;
+                for (int j = 0; j < sr->nmode; j++)
+                {
+                    if (modes[j].id == ci->mode)
+                    {
+                        if (modes[j].hTotal > 0 && modes[j].vTotal > 0)
+                        {
+                            double rate = (double)modes[j].dotClock /
+                                          ((double)modes[j].hTotal * (double)modes[j].vTotal);
+                            refresh_rate = (int)(rate + 0.5);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            canvas_info.display[canvas_info.display_count].x = ci->x;
+            canvas_info.display[canvas_info.display_count].y = ci->y;
+            canvas_info.display[canvas_info.display_count].width = ci->width;
+            canvas_info.display[canvas_info.display_count].height = ci->height;
+            canvas_info.display[canvas_info.display_count].refresh_rate = refresh_rate;
+            canvas_info.display[canvas_info.display_count].scale = scale;
+            canvas_info.display[canvas_info.display_count].primary = (ci->outputs[0] == primary_output);
+
+            if (refresh_rate > canvas_info.highest_refresh_rate)
+                canvas_info.highest_refresh_rate = refresh_rate;
+
+            canvas_info.display_count++;
+
+            xrandr.XRRFreeOutputInfo(oi);
+            xrandr.XRRFreeCrtcInfo(ci);
+        }
+
+        xrandr.XRRFreeScreenResources(sr);
+        dlclose(xrandr.library);
+
+        return canvas_info.display_count;
     }
+
+fallback:
+
+    CANVAS_WARN("using basic X11 (single display, limited info)\n");
+    int screen = x11.XDefaultScreen(x11.display);
+
+    canvas_info.display[0].primary = true;
+    canvas_info.display[0].x = 0;
+    canvas_info.display[0].y = 0;
+    canvas_info.display[0].width = x11.XDisplayWidth(x11.display, screen);
+    canvas_info.display[0].height = x11.XDisplayHeight(x11.display, screen);
+    canvas_info.display[0].refresh_rate = 60;
+    canvas_info.display[0].scale = 1.0;
+    canvas_info.display_count = 1;
 
     return canvas_info.display_count;
 }
@@ -3183,63 +3337,16 @@ int _canvas_init_x11()
     xrandr.XRRFreeScreenResources = canvas_library_symbol(xrandr.library, "XRRFreeScreenResources");
     xrandr.XRRGetCrtcInfo = canvas_library_symbol(xrandr.library, "XRRGetCrtcInfo");
     xrandr.XRRFreeCrtcInfo = canvas_library_symbol(xrandr.library, "XRRFreeCrtcInfo");
+    xrandr.XRRGetOutputInfo = canvas_library_symbol(xrandr.library, "XRRGetOutputInfo");
+    xrandr.XRRFreeOutputInfo = canvas_library_symbol(xrandr.library, "XRRFreeOutputInfo");
+    xrandr.XRRGetOutputPrimary = canvas_library_symbol(xrandr.library, "XRRGetOutputPrimary");
 
-    if (!xrandr.XRRGetScreenResourcesCurrent || !xrandr.XRRFreeScreenResources || !xrandr.XRRGetCrtcInfo || !xrandr.XRRFreeCrtcInfo)
+    if (!xrandr.XRRGetScreenResourcesCurrent || !xrandr.XRRFreeScreenResources || !xrandr.XRRGetCrtcInfo || !xrandr.XRRFreeCrtcInfo || !xrandr.XRRGetOutputInfo || !xrandr.XRRFreeOutputInfo || !xrandr.XRRGetOutputPrimary)
     {
         dlclose(xrandr.library);
         CANVAS_WARN("failed to load Xrandr symbols");
         return CANVAS_OK;
     }
-
-    Window root = x11.XDefaultRootWindow(x11.display);
-
-    typedef struct
-    {
-        void *timestamp;
-        void *configTimestamp;
-        int ncrtc;
-        unsigned long *crtcs;
-        // ...
-    } XRRScreenResources;
-
-    typedef struct
-    {
-        long timestamp;
-        int x, y;
-        unsigned int width, height;
-        // ...
-    } XRRCrtcInfo;
-
-    XRRScreenResources *sr = xrandr.XRRGetScreenResourcesCurrent(x11.display, root);
-
-    if (!sr)
-    {
-        dlclose(xrandr.library);
-        CANVAS_WARN("failed call XRRGetScreenResourcesCurrent");
-        return CANVAS_OK;
-    }
-
-    for (int i = 0; i < sr->ncrtc && i < MAX_DISPLAYS; i++)
-    {
-        XRRCrtcInfo *ci = xrandr.XRRGetCrtcInfo(x11.display, sr, sr->crtcs[i]);
-
-        if (ci && ci->width > 0 && ci->height > 0)
-        {
-            canvas_info.display[canvas_info.display_count].x = ci->x;
-            canvas_info.display[canvas_info.display_count].y = ci->y;
-            canvas_info.display[canvas_info.display_count].width = ci->width;
-            canvas_info.display[canvas_info.display_count].height = ci->height;
-            canvas_info.display[canvas_info.display_count].refresh_rate = 60;
-            canvas_info.display[canvas_info.display_count].primary = (i == 0);
-
-            canvas_info.display_count++;
-        }
-
-        if (ci)
-            xrandr.XRRFreeCrtcInfo(ci);
-    }
-
-    xrandr.XRRFreeScreenResources(sr);
 
     return CANVAS_OK;
 }
