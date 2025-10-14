@@ -1216,8 +1216,8 @@ int _canvas_refresh_displays()
         canvas_info.displays[i].height = (int)bounds.size.height;
         canvas_info.displays[i].refresh_rate = (int)refresh_rate;
 
-        if ((int)refresh_rate > _canvas_highest_refresh_rate)
-            _canvas_highest_refresh_rate = (int)refresh_rate;
+        if ((int)refresh_rate > canvas_info.highest_refresh_rate)
+            canvas_info.highest_refresh_rate = (int)refresh_rate;
 
         canvas_info.display_count++;
     }
@@ -1846,8 +1846,8 @@ int _canvas_refresh_displays()
         canvas_info.displays[i].height = dm.dmPelsHeight;
         canvas_info.displays[i].refresh_rate = dm.dmDisplayFrequency;
 
-        if (dm.dmDisplayFrequency > _canvas_highest_refresh_rate)
-            _canvas_highest_refresh_rate = dm.dmDisplayFrequency;
+        if (dm.dmDisplayFrequency > canvas_info.highest_refresh_rate)
+            canvas_info.highest_refresh_rate = dm.dmDisplayFrequency;
 
         canvas_info.display_count++;
     }
