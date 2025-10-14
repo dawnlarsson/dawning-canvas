@@ -85,6 +85,21 @@ typedef struct
     int frame_index;    // Index for frame times
 } canvas_time_data;
 
+typedef enum
+{
+    ARROW,
+    TEXT,
+    CROSSHAIR,
+    HAND,
+    SIZE_NS,
+    SIZE_EW,
+    SIZE_NESW,
+    SIZE_NWSE,
+    SIZE_ALL,
+    NOT_ALLOWED,
+    WAIT,
+} canvas_cursor_type;
+
 int canvas(int x, int y, int width, int height, const char *title);
 int canvas_window(int x, int y, int width, int height, const char *title);
 
@@ -108,6 +123,7 @@ void canvas_time_init(canvas_time_data *time);
 void canvas_time_update(canvas_time_data *time);
 double canvas_get_time(canvas_time_data *time);
 int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps);
+int canvas_cursor(int window_id, canvas_cursor_type cursor);
 
 // internal api
 void canvas_main_loop();
@@ -119,26 +135,11 @@ int _canvas_gpu_new_window(int window_id);
 int _canvas_window_resize(int window_id);
 int _canvas_primary_display_index();
 
-typedef enum
-{
-    ARROW,
-    TEXT,
-    CROSSHAIR,
-    HAND,
-    SIZE_NS,
-    SIZE_EW,
-    SIZE_NESW,
-    SIZE_NWSE,
-    SIZE_ALL,
-    NOT_ALLOWED,
-    WAIT,
-} canvas_cursor_type;
-
 typedef struct
 {
     int index, x, y, width, height, display;
     bool resize, close, titlebar, os_moved, os_resized;
-    bool minimized, maximized, vsync, _canvas_valid;
+    bool minimized, maximized, vsync, _valid;
     float clear[4];
     const char *title;
     canvas_window_handle window;
@@ -153,8 +154,6 @@ typedef struct
     int x, y, width, height;
     int refresh_rate;
 } canvas_display;
-
-int canvas_cursor(int window_id, canvas_cursor_type cursor);
 
 #define CANVAS_OK 0
 #define CANVAS_FAIL -1
@@ -171,24 +170,20 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor);
 
 #ifndef CANVAS_HEADER_ONLY
 
-canvas_update_callback canvas_default_update_callback;
+typedef struct
+{
+    bool init, init_gpu, init_post, os_timed, auto_exit, quit, displays_changed;
+    int display_count, limit_fps, highest_refresh_rate;
 
-double canvas_limit_mainloop_fps = 240.0;
-bool canvas_exit_after_no_alive = true;
+    canvas_type canvas[MAX_CANVAS];
+    canvas_display displays[MAX_DISPLAYS];
 
-int _canvas_display_count = 0;
-double _canvas_highest_refresh_rate;
+    canvas_update_callback update_callback;
+    canvas_time_data time;
 
-bool _canvas_init_platform = false;
-bool _canvas_init_gpu = false;
-bool _canvas_post_init_ran = false;
-bool _canvas_os_timed = false;
-bool _canvas_displays_changed = false;
-bool _canvas_quit = false;
+} canvas_context_type;
 
-canvas_type _canvas[MAX_CANVAS];
-canvas_display _canvas_displays[MAX_DISPLAYS];
-canvas_time_data canvas_main_time = {0};
+canvas_context_type canvas_info = (canvas_context_type){0};
 
 #if defined(__APPLE__)
 
@@ -625,7 +620,7 @@ canvas_data _canvas_data[MAX_CANVAS];
 
 #define CANVAS_VALID(window_id)                            \
     CANVAS_BOUNDS(window_id)                               \
-    if (!_canvas[window_id]._canvas_valid)                 \
+    if (!canvas_info.canvas[window_id]._valid)             \
     {                                                      \
         CANVAS_ERR("window %d is not valid\n", window_id); \
         return CANVAS_INVALID;                             \
@@ -635,7 +630,7 @@ int _canvas_get_free()
 {
     for (int i = 0; i < MAX_CANVAS; i++)
     {
-        if (!_canvas[i]._canvas_valid)
+        if (!canvas_info.canvas[i]._valid)
             return i;
     }
 
@@ -647,7 +642,7 @@ int _canvas_window_index(void *window)
 {
     for (int i = 0; i < MAX_CANVAS; i++)
     {
-        if (_canvas[i].window == window)
+        if (canvas_info.canvas[i].window == window)
             return i;
     }
 
@@ -950,7 +945,7 @@ int canvas_minimize(int window_id)
 {
     CANVAS_VALID(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to minimize: %d\n", window_id);
@@ -958,8 +953,8 @@ int canvas_minimize(int window_id)
     }
 
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("miniaturize:"), (objc_id)0);
-    _canvas[window_id].minimized = true;
-    _canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].minimized = true;
+    canvas_info.canvas[window_id].maximized = false;
 
     return CANVAS_OK;
 }
@@ -968,7 +963,7 @@ int canvas_maximize(int window_id)
 {
     CANVAS_VALID(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to maximize: %d\n", window_id);
@@ -980,10 +975,10 @@ int canvas_maximize(int window_id)
     if (!is_zoomed)
     {
         ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
-        _canvas[window_id].maximized = true;
+        canvas_info.canvas[window_id].maximized = true;
     }
 
-    _canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].minimized = false;
 
     return CANVAS_OK;
 }
@@ -992,24 +987,24 @@ int canvas_restore(int window_id)
 {
     CANVAS_VALID(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to restore: %d\n", window_id);
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    if (_canvas[window_id].minimized)
+    if (canvas_info.canvas[window_id].minimized)
     {
         ((MSG_void_id_id)objc_msgSend)(window, sel_c("deminiaturize:"), (objc_id)0);
     }
-    else if (_canvas[window_id].maximized)
+    else if (canvas_info.canvas[window_id].maximized)
     {
         ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
     }
 
-    _canvas[window_id].minimized = false;
-    _canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
 
     return CANVAS_OK;
 }
@@ -1051,7 +1046,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 {
     CANVAS_VALID(window_id);
 
-    _canvas[window_id].cursor = cursor;
+    canvas_info.canvas[window_id].cursor = cursor;
 
     objc_id ns_cursor = _canvas_get_ns_cursor(cursor);
     if (ns_cursor)
@@ -1064,7 +1059,7 @@ int _canvas_close(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to close: %d\n", window_id);
@@ -1094,7 +1089,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 {
     CANVAS_BOUNDS(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to set: %d\n", window_id);
@@ -1102,7 +1097,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     }
 
     CANVAS_DISPLAY_BOUNDS(display);
-    y = _canvas_displays[display].height - (y + height);
+    y = canvas_info.displays[display].height - (y + height);
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
@@ -1125,7 +1120,7 @@ int _canvas_get_window_display(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to get display: %d\n", window_id);
@@ -1172,7 +1167,7 @@ int _canvas_get_window_display(int window_id)
         if (displays[i] != (CGDirectDisplayID)display_id)
             continue;
 
-        _canvas[window_id].display = i;
+        canvas_info.canvas[window_id].display = i;
         return i;
     }
 
@@ -1181,8 +1176,8 @@ int _canvas_get_window_display(int window_id)
 
 int _canvas_refresh_displays()
 {
-    _canvas_display_count = 0;
-    _canvas_displays_changed = false;
+    canvas_info.display_count = 0;
+    canvas_info.displays_changed = false;
 
     uint32_t max_displays = MAX_DISPLAYS;
     CGDirectDisplayID displays[MAX_DISPLAYS];
@@ -1214,37 +1209,37 @@ int _canvas_refresh_displays()
             CGDisplayModeRelease(mode);
         }
 
-        _canvas_displays[i].primary = (display_id == main_display);
-        _canvas_displays[i].x = (int)bounds.origin.x;
-        _canvas_displays[i].y = (int)bounds.origin.y;
-        _canvas_displays[i].width = (int)bounds.size.width;
-        _canvas_displays[i].height = (int)bounds.size.height;
-        _canvas_displays[i].refresh_rate = (int)refresh_rate;
+        canvas_info.displays[i].primary = (display_id == main_display);
+        canvas_info.displays[i].x = (int)bounds.origin.x;
+        canvas_info.displays[i].y = (int)bounds.origin.y;
+        canvas_info.displays[i].width = (int)bounds.size.width;
+        canvas_info.displays[i].height = (int)bounds.size.height;
+        canvas_info.displays[i].refresh_rate = (int)refresh_rate;
 
         if ((int)refresh_rate > _canvas_highest_refresh_rate)
             _canvas_highest_refresh_rate = (int)refresh_rate;
 
-        _canvas_display_count++;
+        canvas_info.display_count++;
     }
 
     for (int i = 0; i < MAX_CANVAS; i++)
     {
-        if (_canvas[i].window)
+        if (canvas_info.canvas[i].window)
             _canvas_get_window_display(i);
     }
 
-    return _canvas_display_count;
+    return canvas_info.display_count;
 }
 
 void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo)
 {
     if (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplaySetModeFlag | kCGDisplayDesktopShapeChangedFlag))
-        _canvas_displays_changed = true;
+        canvas_info.displays_changed = true;
 }
 
 bool _canvas_check_display_changes()
 {
-    if (_canvas_displays_changed)
+    if (canvas_info.displays_changed)
     {
         _canvas_refresh_displays();
         return true;
@@ -1254,7 +1249,7 @@ bool _canvas_check_display_changes()
 
 int _canvas_init_displays()
 {
-    _canvas_display_count = 0;
+    canvas_info.display_count = 0;
     CGDisplayRegisterReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
 
     return _canvas_refresh_displays();
@@ -1262,9 +1257,9 @@ int _canvas_init_displays()
 
 void _post_init()
 {
-    if (_canvas_post_init_ran)
+    if (canvas_info.init_post)
         return;
-    _canvas_post_init_ran = 1;
+    canvas_info.init_post = 1;
     objc_id poolClass = cls("NSAutoreleasePool");
     if (!poolClass)
         return;
@@ -1326,7 +1321,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     if (!window)
     {
-        _canvas[window_id]._canvas_valid = false;
+        canvas_info.canvas[window_id]._valid = false;
         CANVAS_ERR("create NSWindow\n");
         return CANVAS_ERR_GET_WINDOW;
     }
@@ -1347,19 +1342,19 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
 
-    _canvas[window_id].window = window;
-    _canvas[window_id].resize = false;
-    _canvas[window_id].index = window_id;
-    _canvas[window_id]._canvas_valid = true;
+    canvas_info.canvas[window_id].window = window;
+    canvas_info.canvas[window_id].resize = false;
+    canvas_info.canvas[window_id].index = window_id;
+    canvas_info.canvas[window_id]._valid = true;
 
     return window_id;
 }
 
 int _canvas_gpu_init()
 {
-    if (_canvas_init_gpu)
+    if (canvas_info.init_gpu)
         return CANVAS_OK;
-    _canvas_init_gpu = 1;
+    canvas_info.init_gpu = 1;
 
     _mac_device = MTLCreateSystemDefaultDevice();
     if (!_mac_device)
@@ -1400,7 +1395,7 @@ int _canvas_gpu_new_window(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
-    objc_id window = _canvas[window_id].window;
+    objc_id window = canvas_info.canvas[window_id].window;
 
     MSG_id_id m = (MSG_id_id)objc_msgSend;
 
@@ -1454,7 +1449,7 @@ void _canvas_gpu_draw_all()
 
     for (int i = 0; i < MAX_CANVAS; ++i)
     {
-        if (!_canvas[i].window || !_canvas_data[i].layer)
+        if (!canvas_info.canvas[i].window || !_canvas_data[i].layer)
             continue;
 
         _canvas_update_drawable_size(i);
@@ -1478,7 +1473,7 @@ void _canvas_gpu_draw_all()
         ((MSG_void_id_ulong)objc_msgSend)(att0, sel_c("setLoadAction:"), 2UL);  /* Clear */
         ((MSG_void_id_ulong)objc_msgSend)(att0, sel_c("setStoreAction:"), 1UL); /* Store */
 
-        _MTLClearColor cc = {_canvas[i].clear[0], _canvas[i].clear[1], _canvas[i].clear[2], _canvas[i].clear[3]};
+        _MTLClearColor cc = {canvas_info.canvas[i].clear[0], canvas_info.canvas[i].clear[1], canvas_info.canvas[i].clear[2], canvas_info.canvas[i].clear[3]};
         ((MSG_void_id_clear)objc_msgSend)(att0, sel_c("setClearColor:"), cc);
 
         objc_id cmd = ((MSG_id_id)objc_msgSend)(_metal_queue, sel_c("commandBuffer"));
@@ -1534,7 +1529,7 @@ int _canvas_update()
 
                 if (eventType == 5) // NSEventTypeMouseMoved
                 {
-                    objc_id ns_cursor = _canvas_get_ns_cursor(_canvas[window_idx].cursor);
+                    objc_id ns_cursor = _canvas_get_ns_cursor(canvas_info.canvas[window_idx].cursor);
                     if (ns_cursor)
                         ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
                 }
@@ -1548,21 +1543,21 @@ int _canvas_update()
                 {
                     _CGRect frame = ((MSG_rect_id)objc_msgSend)(eventWindow, sel_c("frame"));
 
-                    if ((int)frame.x != _canvas[window_idx].x ||
-                        (int)frame.y != _canvas[window_idx].y)
+                    if ((int)frame.x != canvas_info.canvas[window_idx].x ||
+                        (int)frame.y != canvas_info.canvas[window_idx].y)
                     {
-                        _canvas[window_idx].os_moved = true;
-                        _canvas[window_idx].x = (int)frame.x;
-                        _canvas[window_idx].y = (int)frame.y;
+                        canvas_info.canvas[window_idx].os_moved = true;
+                        canvas_info.canvas[window_idx].x = (int)frame.x;
+                        canvas_info.canvas[window_idx].y = (int)frame.y;
                     }
 
-                    if ((int)frame.w != _canvas[window_idx].width ||
-                        (int)frame.h != _canvas[window_idx].height)
+                    if ((int)frame.w != canvas_info.canvas[window_idx].width ||
+                        (int)frame.h != canvas_info.canvas[window_idx].height)
                     {
-                        _canvas[window_idx].resize = true;
-                        _canvas[window_idx].os_resized = true;
-                        _canvas[window_idx].width = (int)frame.w;
-                        _canvas[window_idx].height = (int)frame.h;
+                        canvas_info.canvas[window_idx].resize = true;
+                        canvas_info.canvas[window_idx].os_resized = true;
+                        canvas_info.canvas[window_idx].width = (int)frame.w;
+                        canvas_info.canvas[window_idx].height = (int)frame.h;
                     }
                     break;
                 }
@@ -1672,7 +1667,7 @@ int canvas_minimize(int window_id)
 {
     CANVAS_VALID(window_id);
 
-    HWND window = (HWND)_canvas[window_id].window;
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to minimize: %d\n", window_id);
@@ -1680,8 +1675,8 @@ int canvas_minimize(int window_id)
     }
 
     ShowWindow(window, SW_MINIMIZE);
-    _canvas[window_id].minimized = true;
-    _canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].minimized = true;
+    canvas_info.canvas[window_id].maximized = false;
 
     return CANVAS_OK;
 }
@@ -1690,7 +1685,7 @@ int canvas_maximize(int window_id)
 {
     CANVAS_VALID(window_id);
 
-    HWND window = (HWND)_canvas[window_id].window;
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to maximize: %d\n", window_id);
@@ -1698,8 +1693,8 @@ int canvas_maximize(int window_id)
     }
 
     ShowWindow(window, SW_MAXIMIZE);
-    _canvas[window_id].maximized = true;
-    _canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = true;
+    canvas_info.canvas[window_id].minimized = false;
 
     return CANVAS_OK;
 }
@@ -1708,7 +1703,7 @@ int canvas_restore(int window_id)
 {
     CANVAS_VALID(window_id);
 
-    HWND window = (HWND)_canvas[window_id].window;
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
     if (!window)
     {
         CANVAS_ERR("no window to restore: %d\n", window_id);
@@ -1716,8 +1711,8 @@ int canvas_restore(int window_id)
     }
 
     ShowWindow(window, SW_RESTORE);
-    _canvas[window_id].minimized = false;
-    _canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
 
     return CANVAS_OK;
 }
@@ -1741,7 +1736,7 @@ int _canvas_close(int window_id)
         }
     }
 
-    DestroyWindow((HWND)_canvas[window_id].window);
+    DestroyWindow((HWND)canvas_info.canvas[window_id].window);
     return CANVAS_OK;
 }
 
@@ -1749,7 +1744,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 {
     CANVAS_BOUNDS(window_id);
 
-    HWND window = (HWND)_canvas[window_id].window;
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
 
     if (!window)
     {
@@ -1757,20 +1752,20 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    if (display < 0 || display >= _canvas_display_count)
+    if (display < 0 || display >= canvas_info.display_count)
         display = 0;
 
     CANVAS_DISPLAY_BOUNDS(display);
 
-    int screen_x = _canvas_displays[display].x + x;
-    int screen_y = _canvas_displays[display].y + y;
+    int screen_x = canvas_info.displays[display].x + x;
+    int screen_y = canvas_info.displays[display].y + y;
 
     SetWindowPos(window, NULL, screen_x, screen_y, width, height, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
 
     if (title)
         SetWindowTextA(window, title);
 
-    _canvas[window_id].display = display;
+    canvas_info.canvas[window_id].display = display;
 
     return CANVAS_OK;
 }
@@ -1779,7 +1774,7 @@ int _canvas_get_window_display(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
-    HWND window = (HWND)_canvas[window_id].window;
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
 
     if (!window)
     {
@@ -1789,7 +1784,7 @@ int _canvas_get_window_display(int window_id)
 
     HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY);
 
-    for (int i = 0; i < _canvas_display_count; i++)
+    for (int i = 0; i < canvas_info.display_count; i++)
     {
         DISPLAY_DEVICEA dd = {0};
         dd.cb = sizeof(dd);
@@ -1815,7 +1810,7 @@ int _canvas_get_window_display(int window_id)
         if (strcmp(mi.szDevice, dd.DeviceName) != 0)
             continue;
 
-        _canvas[window_id].display = i;
+        canvas_info.canvas[window_id].display = i;
         return i;
     }
 
@@ -1824,8 +1819,8 @@ int _canvas_get_window_display(int window_id)
 
 int _canvas_refresh_displays()
 {
-    _canvas_display_count = 0;
-    _canvas_displays_changed = false;
+    canvas_info.display_count = 0;
+    canvas_info.displays_changed = false;
 
     for (int i = 0; i < MAX_DISPLAYS; i++)
     {
@@ -1844,31 +1839,31 @@ int _canvas_refresh_displays()
         if (!EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm))
             continue;
 
-        _canvas_displays[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
-        _canvas_displays[i].x = dm.dmPosition.x;
-        _canvas_displays[i].y = dm.dmPosition.y;
-        _canvas_displays[i].width = dm.dmPelsWidth;
-        _canvas_displays[i].height = dm.dmPelsHeight;
-        _canvas_displays[i].refresh_rate = dm.dmDisplayFrequency;
+        canvas_info.displays[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+        canvas_info.displays[i].x = dm.dmPosition.x;
+        canvas_info.displays[i].y = dm.dmPosition.y;
+        canvas_info.displays[i].width = dm.dmPelsWidth;
+        canvas_info.displays[i].height = dm.dmPelsHeight;
+        canvas_info.displays[i].refresh_rate = dm.dmDisplayFrequency;
 
         if (dm.dmDisplayFrequency > _canvas_highest_refresh_rate)
             _canvas_highest_refresh_rate = dm.dmDisplayFrequency;
 
-        _canvas_display_count++;
+        canvas_info.display_count++;
     }
 
     for (int i = 0; i < MAX_CANVAS; i++)
     {
-        if (_canvas[i].window)
+        if (canvas_info.canvas[i].window)
             _canvas_get_window_display(i);
     }
 
-    return _canvas_display_count;
+    return canvas_info.display_count;
 }
 
 int _canvas_init_displays()
 {
-    _canvas_display_count = 0;
+    canvas_info.display_count = 0;
 
     return _canvas_refresh_displays();
 }
@@ -1968,7 +1963,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 {
     CANVAS_VALID(window_id);
 
-    _canvas[window_id].cursor = cursor;
+    canvas_info.canvas[window_id].cursor = cursor;
     SetCursor(_canvas_get_win32_cursor(cursor));
 
     return CANVAS_OK;
@@ -1987,7 +1982,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         if (LOWORD(lParam) == HTCLIENT)
         {
-            SetCursor(_canvas_get_win32_cursor(_canvas[window_index].cursor));
+            SetCursor(_canvas_get_win32_cursor(canvas_info.canvas[window_index].cursor));
             return TRUE;
         }
         break;
@@ -1995,7 +1990,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_CREATE:
     {
-        if (!_canvas[window_index].titlebar)
+        if (!canvas_info.canvas[window_index].titlebar)
         {
             DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
             DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
@@ -2010,7 +2005,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCCALCSIZE:
     {
-        if (wParam == true && !_canvas[window_index].titlebar)
+        if (wParam == true && !canvas_info.canvas[window_index].titlebar)
         {
             NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
 
@@ -2025,7 +2020,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCHITTEST:
     {
-        if (!_canvas[window_index].titlebar)
+        if (!canvas_info.canvas[window_index].titlebar)
         {
             LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
 
@@ -2049,8 +2044,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_DISPLAYCHANGE:
     {
-        _canvas[window_index].os_moved = true;
-        _canvas_displays_changed = true;
+        canvas_info.canvas[window_index].os_moved = true;
+        canvas_info.displays_changed = true;
         return CANVAS_OK;
     }
 
@@ -2063,7 +2058,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOVING:
     {
-        _canvas[window_index].os_moved = true;
+        canvas_info.canvas[window_index].os_moved = true;
 
         return CANVAS_OK;
     }
@@ -2073,9 +2068,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (wParam != SIZE_MINIMIZED)
         {
-            _canvas[window_index].resize = true;
+            canvas_info.canvas[window_index].resize = true;
 
-            if (!_canvas_os_timed)
+            if (!canvas_info.os_timed)
             {
                 InvalidateRect(hwnd, NULL, FALSE);
             }
@@ -2086,7 +2081,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SIZING:
     {
 
-        _canvas[window_index].os_resized = true;
+        canvas_info.canvas[window_index].os_resized = true;
 
         /* TODO
             RECT *rect = (RECT *)lParam;
@@ -2100,7 +2095,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             if (width > 0 && height > 0)
             {
-                _canvas[window_index].resize = true;
+                canvas_info.canvas[window_index].resize = true;
                 _canvas_window_resize(window_index);
                 _canvas_update();
             }
@@ -2111,20 +2106,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_ENTERSIZEMOVE:
     {
-        if (_canvas_os_timed)
+        if (canvas_info.os_timed)
             break;
 
-        _canvas_os_timed = true;
+        canvas_info.os_timed = true;
         SetTimer(hwnd, 1, 0, NULL); // 60 fps hard cap due to Windows...
         return CANVAS_OK;
     }
 
     case WM_EXITSIZEMOVE:
     {
-        if (!_canvas_os_timed)
+        if (!canvas_info.os_timed)
             break;
 
-        _canvas_os_timed = false;
+        canvas_info.os_timed = false;
         KillTimer(hwnd, 1);
         return CANVAS_OK;
     }
@@ -2142,20 +2137,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SYSCOMMAND:
     {
         if (wParam == SC_MINIMIZE)
-            _canvas[window_index].minimized = true;
+            canvas_info.canvas[window_index].minimized = true;
         else if (wParam == SC_MAXIMIZE)
-            _canvas[window_index].maximized = true;
+            canvas_info.canvas[window_index].maximized = true;
         else if (wParam == SC_RESTORE)
         {
-            _canvas[window_index].minimized = false;
-            _canvas[window_index].maximized = false;
+            canvas_info.canvas[window_index].minimized = false;
+            canvas_info.canvas[window_index].maximized = false;
         }
         break;
     }
 
     case WM_CLOSE:
     {
-        _canvas[window_index].close = true;
+        canvas_info.canvas[window_index].close = true;
         return 0;
     }
 
@@ -2195,7 +2190,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     DWORD style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
-    _canvas[window_id].index = window_id;
+    canvas_info.canvas[window_id].index = window_id;
 
     HWND window = CreateWindowA(
         "CanvasWindowClass",
@@ -2210,10 +2205,10 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    _canvas[window_id].window = window;
-    _canvas[window_id].resize = false;
-    _canvas[window_id].titlebar = false;
-    _canvas[window_id]._canvas_valid = true;
+    canvas_info.canvas[window_id].window = window;
+    canvas_info.canvas[window_id].resize = false;
+    canvas_info.canvas[window_id].titlebar = false;
+    canvas_info.canvas[window_id]._valid = true;
 
     return window_id;
 }
@@ -2238,7 +2233,7 @@ int _canvas_update()
     {
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
-            if (_canvas[i].resize)
+            if (canvas_info.canvas[i].resize)
             {
                 _canvas_window_resize(i);
             }
@@ -2249,7 +2244,7 @@ int _canvas_update()
 
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
-            if (_canvas[i].window == NULL ||
+            if (canvas_info.canvas[i].window == NULL ||
                 _canvas_data[i].swapChain == NULL ||
                 _canvas_data[i].backBuffers[0] == NULL)
                 continue;
@@ -2266,7 +2261,7 @@ int _canvas_update()
 
             _win_cmdList->lpVtbl->ClearRenderTargetView(_win_cmdList,
                                                         _canvas_data[i].rtvHandles[backBufferIndex],
-                                                        _canvas[i].clear, 0, NULL);
+                                                        canvas_info.canvas[i].clear, 0, NULL);
 
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
@@ -2281,7 +2276,7 @@ int _canvas_update()
         {
             if (_canvas_data[i].swapChain != NULL)
             {
-                if (_canvas[i].vsync)
+                if (canvas_info.canvas[i].vsync)
                 {
                     _canvas_data[i].swapChain->lpVtbl->Present(_canvas_data[i].swapChain, 1, 0);
                 }
@@ -2306,10 +2301,10 @@ int _canvas_update()
 
 int _canvas_gpu_init()
 {
-    if (_canvas_init_gpu)
+    if (canvas_info.init_gpu)
         return CANVAS_OK;
 
-    _canvas_init_gpu = 1;
+    canvas_info.init_gpu = 1;
 
     HRESULT result;
 
@@ -2421,7 +2416,7 @@ cleanup_gpu:
         _win_factory = NULL;
     }
 
-    _canvas_init_gpu = 0;
+    canvas_info.init_gpu = 0;
     return CANVAS_ERR_GET_GPU;
 }
 
@@ -2431,7 +2426,7 @@ int _canvas_gpu_new_window(int window_id)
 
     _canvas_data[window_id] = (canvas_data){0};
 
-    HWND window = (HWND)_canvas[window_id].window;
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
 
     RECT rect;
     GetClientRect(window, &rect);
@@ -2518,13 +2513,13 @@ int _canvas_window_resize(int window_id)
 
     canvas_data *window = &_canvas_data[window_id];
 
-    if (!window->swapChain || !_canvas[window_id].resize)
+    if (!window->swapChain || !canvas_info.canvas[window_id].resize)
     {
-        _canvas[window_id].resize = false;
+        canvas_info.canvas[window_id].resize = false;
         return CANVAS_OK;
     }
 
-    _canvas[window_id].resize = false;
+    canvas_info.canvas[window_id].resize = false;
 
     _win_fence_value++;
     _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
@@ -2535,7 +2530,7 @@ int _canvas_window_resize(int window_id)
     }
 
     RECT rect;
-    GetClientRect((HWND)_canvas[window_id].window, &rect);
+    GetClientRect((HWND)canvas_info.canvas[window_id].window, &rect);
     UINT width = rect.right - rect.left;
     UINT height = rect.bottom - rect.top;
 
@@ -2637,7 +2632,7 @@ int canvas_minimize(int window_id)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        Window window = (Window)_canvas[window_id].window;
+        Window window = (Window)canvas_info.canvas[window_id].window;
         if (!window)
         {
             CANVAS_ERR("no window to minimize: %d\n", window_id);
@@ -2649,8 +2644,8 @@ int canvas_minimize(int window_id)
         x11.XFlush(x11.display);
     }
 
-    _canvas[window_id].minimized = true;
-    _canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].minimized = true;
+    canvas_info.canvas[window_id].maximized = false;
 
     return CANVAS_OK;
 }
@@ -2670,7 +2665,7 @@ int canvas_maximize(int window_id)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        Window window = (Window)_canvas[window_id].window;
+        Window window = (Window)canvas_info.canvas[window_id].window;
         if (!window)
         {
             CANVAS_ERR("no window to maximize: %d\n", window_id);
@@ -2698,8 +2693,8 @@ int canvas_maximize(int window_id)
         x11.XFlush(x11.display);
     }
 
-    _canvas[window_id].maximized = true;
-    _canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = true;
+    canvas_info.canvas[window_id].minimized = false;
 
     return CANVAS_OK;
 }
@@ -2719,7 +2714,7 @@ int canvas_restore(int window_id)
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        Window window = (Window)_canvas[window_id].window;
+        Window window = (Window)canvas_info.canvas[window_id].window;
         if (!window)
         {
             CANVAS_ERR("no window to restore: %d\n", window_id);
@@ -2728,11 +2723,11 @@ int canvas_restore(int window_id)
 
         int screen = x11.XDefaultScreen(x11.display);
 
-        if (_canvas[window_id].minimized)
+        if (canvas_info.canvas[window_id].minimized)
         {
             x11.XMapWindow(x11.display, window);
         }
-        else if (_canvas[window_id].maximized)
+        else if (canvas_info.canvas[window_id].maximized)
         {
             Atom wm_state = x11.XInternAtom(x11.display, "_NET_WM_STATE", 0);
             Atom max_horz = x11.XInternAtom(x11.display, "_NET_WM_STATE_MAXIMIZED_HORZ", 0);
@@ -2755,8 +2750,8 @@ int canvas_restore(int window_id)
         x11.XFlush(x11.display);
     }
 
-    _canvas[window_id].minimized = false;
-    _canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
 
     return CANVAS_OK;
 }
@@ -2770,7 +2765,7 @@ int _canvas_close(int window_id)
     }
     else
     {
-        Window window = (Window)_canvas[window_id].window;
+        Window window = (Window)canvas_info.canvas[window_id].window;
 
         if (!window)
         {
@@ -2795,7 +2790,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     }
     else
     {
-        Window window = (Window)_canvas[window_id].window;
+        Window window = (Window)canvas_info.canvas[window_id].window;
 
         if (title)
         {
@@ -2810,15 +2805,15 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         x11.XMoveResizeWindow(x11.display, window, x, y, width, height);
     }
 
-    _canvas[window_id].os_moved = false;
-    _canvas[window_id].os_resized = false;
+    canvas_info.canvas[window_id].os_moved = false;
+    canvas_info.canvas[window_id].os_resized = false;
 
     return CANVAS_OK;
 }
 
 int _canvas_init_displays()
 {
-    _canvas_display_count = 0;
+    canvas_info.display_count = 0;
 
     if (_canvas_using_wayland)
     {
@@ -2828,17 +2823,17 @@ int _canvas_init_displays()
         // TODO: Use Xinerama or XRandR for proper multi-monitor support
         int screen = x11.XDefaultScreen(x11.display);
 
-        _canvas_displays[0].primary = true;
-        _canvas_displays[0].x = 0;
-        _canvas_displays[0].y = 0;
-        _canvas_displays[0].width = x11.XDisplayWidth(x11.display, screen);
-        _canvas_displays[0].height = x11.XDisplayHeight(x11.display, screen);
-        _canvas_displays[0].refresh_rate = 60;
+        canvas_info.displays[0].primary = true;
+        canvas_info.displays[0].x = 0;
+        canvas_info.displays[0].y = 0;
+        canvas_info.displays[0].width = x11.XDisplayWidth(x11.display, screen);
+        canvas_info.displays[0].height = x11.XDisplayHeight(x11.display, screen);
+        canvas_info.displays[0].refresh_rate = 60;
 
-        _canvas_display_count = 1;
+        canvas_info.display_count = 1;
     }
 
-    return _canvas_display_count;
+    return canvas_info.display_count;
 }
 
 int _canvas_get_window_display(int window_id)
@@ -2857,8 +2852,8 @@ int _canvas_get_window_display(int window_id)
 
 int _canvas_get_resize_edge_action(int window_id, int x, int y)
 {
-    int width = _canvas[window_id].width;
-    int height = _canvas[window_id].height;
+    int width = canvas_info.canvas[window_id].width;
+    int height = canvas_info.canvas[window_id].height;
     int border = 8;
 
     bool at_left = x < border;
@@ -2891,7 +2886,7 @@ void _canvas_start_wm_move_resize(int window_id, int x_root, int y_root, int act
 {
     XClientMessageEvent ev = {0};
     ev.type = X11_ClientMessage;
-    ev.window = (Window)_canvas[window_id].window;
+    ev.window = (Window)canvas_info.canvas[window_id].window;
     ev.message_type = _canvas_data[window_id].x11_net_wm_moveresize;
     ev.format = 32;
     ev.data.l[0] = x_root;
@@ -2915,7 +2910,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     if (window_id < 0)
         return window_id;
 
-    _canvas[window_id] = (canvas_type){0};
+    canvas_info.canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
 
     if (_canvas_using_wayland)
@@ -2986,11 +2981,11 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         x11.XMapWindow(x11.display, (Window)window);
     }
 
-    _canvas[window_id].window = (canvas_window_handle)window;
-    _canvas[window_id].resize = false;
-    _canvas[window_id].index = window_id;
-    _canvas[window_id].titlebar = false;
-    _canvas[window_id]._canvas_valid = true;
+    canvas_info.canvas[window_id].window = (canvas_window_handle)window;
+    canvas_info.canvas[window_id].resize = false;
+    canvas_info.canvas[window_id].index = window_id;
+    canvas_info.canvas[window_id].titlebar = false;
+    canvas_info.canvas[window_id]._valid = true;
 
     return window_id;
 }
@@ -3089,7 +3084,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 {
     CANVAS_VALID(window_id);
 
-    _canvas[window_id].cursor = cursor;
+    canvas_info.canvas[window_id].cursor = cursor;
 
     if (_canvas_using_wayland)
     {
@@ -3099,7 +3094,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
     // unsigned int cursor_id = _canvas_get_x11_cursor_id(cursor);
     // unsigned long x_cursor = (unsigned long)x11.XCreateFontCursor(x11.display, cursor_id);
 
-    // x11.XDefineCursor(x11.display, (Window)_canvas[window_id].window, x_cursor);
+    // x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x_cursor);
     // x11.XFlush(x11.display);
 
     return CANVAS_OK;
@@ -3227,14 +3222,14 @@ int _canvas_init_x11()
 
         if (ci && ci->width > 0 && ci->height > 0)
         {
-            _canvas_displays[_canvas_display_count].x = ci->x;
-            _canvas_displays[_canvas_display_count].y = ci->y;
-            _canvas_displays[_canvas_display_count].width = ci->width;
-            _canvas_displays[_canvas_display_count].height = ci->height;
-            _canvas_displays[_canvas_display_count].refresh_rate = 60;
-            _canvas_displays[_canvas_display_count].primary = (i == 0);
+            canvas_info.displays[canvas_info.display_count].x = ci->x;
+            canvas_info.displays[canvas_info.display_count].y = ci->y;
+            canvas_info.displays[canvas_info.display_count].width = ci->width;
+            canvas_info.displays[canvas_info.display_count].height = ci->height;
+            canvas_info.displays[canvas_info.display_count].refresh_rate = 60;
+            canvas_info.displays[canvas_info.display_count].primary = (i == 0);
 
-            _canvas_display_count++;
+            canvas_info.display_count++;
         }
 
         if (ci)
@@ -3248,7 +3243,7 @@ int _canvas_init_x11()
 
 int _canvas_platform()
 {
-    if (_canvas_init_platform)
+    if (canvas_info.init)
         return CANVAS_OK;
 
     //     int load_result = _canvas_init_wayland();
@@ -3308,17 +3303,17 @@ int _canvas_update()
 
                 // windows with titlebars on x11:
                 // x11 dosn't have a way to propperly detect this edge case
-                // if (_canvas[window_id].x != xce->x || _canvas[window_id].y != xce->y)
-                //    _canvas[window_id].os_moved = true;
+                // if (canvas_info.canvas[window_id].x != xce->x || canvas_info.canvas[window_id].y != xce->y)
+                //    canvas_info.canvas[window_id].os_moved = true;
 
-                _canvas[window_id].x = xce->x;
-                _canvas[window_id].y = xce->y;
+                canvas_info.canvas[window_id].x = xce->x;
+                canvas_info.canvas[window_id].y = xce->y;
 
-                if (_canvas[window_id].width != xce->width || _canvas[window_id].height != xce->height)
-                    _canvas[window_id].os_resized = true;
+                if (canvas_info.canvas[window_id].width != xce->width || canvas_info.canvas[window_id].height != xce->height)
+                    canvas_info.canvas[window_id].os_resized = true;
 
-                _canvas[window_id].width = xce->width;
-                _canvas[window_id].height = xce->height;
+                canvas_info.canvas[window_id].width = xce->width;
+                canvas_info.canvas[window_id].height = xce->height;
 
                 break;
             }
@@ -3335,7 +3330,7 @@ int _canvas_update()
 
                     if (time_diff < 400 && dx * dx + dy * dy < 25 && xbe->y < 30)
                     {
-                        if (_canvas[window_id].maximized)
+                        if (canvas_info.canvas[window_id].maximized)
                             canvas_restore(window_id);
                         else
                             canvas_maximize(window_id);
@@ -3346,12 +3341,12 @@ int _canvas_update()
 
                         if (action >= 0)
                         {
-                            _canvas[window_id].os_resized = true;
+                            canvas_info.canvas[window_id].os_resized = true;
                             _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, action);
                         }
                         else if (xbe->y < 30)
                         {
-                            _canvas[window_id].os_moved = true;
+                            canvas_info.canvas[window_id].os_moved = true;
                             _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, _NET_WM_MOVERESIZE_MOVE);
                         }
                     }
@@ -3377,21 +3372,21 @@ int _canvas_update()
                 XClientMessageEvent *cm = (XClientMessageEvent *)&event;
 
                 if ((Atom)cm->data.l[0] == _canvas_data[window_id].x11_wm_delete_window)
-                    _canvas[window_id].close = true;
+                    canvas_info.canvas[window_id].close = true;
 
                 break;
             }
 
             case X11_UnmapNotify:
             {
-                _canvas[window_id].minimized = true;
-                _canvas[window_id].maximized = false;
+                canvas_info.canvas[window_id].minimized = true;
+                canvas_info.canvas[window_id].maximized = false;
                 break;
             }
 
             case X11_MapNotify:
             {
-                _canvas[window_id].minimized = false;
+                canvas_info.canvas[window_id].minimized = false;
                 break;
             }
 
@@ -3408,9 +3403,9 @@ int _canvas_update()
 
 int _canvas_gpu_init()
 {
-    if (_canvas_init_gpu)
+    if (canvas_info.init_gpu)
         return CANVAS_OK;
-    _canvas_init_gpu = 1;
+    canvas_info.init_gpu = 1;
 
     // Select & init backend OpenGL / Vulkan
 
@@ -3492,27 +3487,30 @@ void canvas_time_init(canvas_time_data *time)
 
 int _canvas_primary_display_index(void)
 {
-    for (int i = 0; i < _canvas_display_count; ++i)
-        if (_canvas_displays[i].primary)
+    for (int i = 0; i < canvas_info.display_count; ++i)
+        if (canvas_info.displays[i].primary)
             return i;
     return 0;
 }
 
 int canvas_startup()
 {
-    if (_canvas_init_platform)
+    if (canvas_info.init)
         return CANVAS_OK;
 
-    canvas_time_init(&canvas_main_time);
+    canvas_info.auto_exit = true;
+    canvas_info.limit_fps = 240;
+
+    canvas_time_init(&canvas_info.time);
 
     for (int i = 0; i < MAX_DISPLAYS; ++i)
     {
-        _canvas_displays[i] = (canvas_display){0};
+        canvas_info.displays[i] = (canvas_display){0};
     }
 
     for (int i = 0; i < MAX_CANVAS; ++i)
     {
-        _canvas[i] = (canvas_type){0};
+        canvas_info.canvas[i] = (canvas_type){0};
         _canvas_data[i] = (canvas_data){0};
     }
 
@@ -3530,69 +3528,69 @@ int canvas_startup()
         return result;
     }
 
-    _canvas_init_platform = true;
+    canvas_info.init = true;
 
     return CANVAS_OK;
 }
 
 void canvas_main_loop()
 {
-    canvas_time_update(&canvas_main_time);
+    canvas_time_update(&canvas_info.time);
 
     _canvas_update();
 
     bool any_alive = false;
     for (int i = 0; i < MAX_CANVAS; ++i)
     {
-        if (!_canvas[i]._canvas_valid)
+        if (!canvas_info.canvas[i]._valid)
             continue;
 
         any_alive = true;
 
-        if (_canvas[i].close)
+        if (canvas_info.canvas[i].close)
         {
-            canvas_close(_canvas[i].index);
+            canvas_close(canvas_info.canvas[i].index);
             continue;
         }
 
-        if (_canvas[i].update)
+        if (canvas_info.canvas[i].update)
         {
-            _canvas[i].update(i);
+            canvas_info.canvas[i].update(i);
         }
-        else if (canvas_default_update_callback)
+        else if (canvas_info.update_callback)
         {
-            canvas_default_update_callback(i);
+            canvas_info.update_callback(i);
         }
     }
 
     _canvas_post_update();
 
-    if (canvas_exit_after_no_alive && !any_alive)
-        _canvas_quit = 1;
+    if (canvas_info.auto_exit && !any_alive)
+        canvas_info.quit = 1;
 
-    canvas_limit_fps(&canvas_main_time, canvas_limit_mainloop_fps);
+    canvas_limit_fps(&canvas_info.time, canvas_info.limit_fps);
 }
 
 int canvas_exit()
 {
     CANVAS_INFO("quitting canvas");
-    _canvas_quit = 1;
+    canvas_info.quit = 1;
     return _canvas_exit();
 }
 
 int canvas_run(canvas_update_callback default_callback)
 {
-    if (!_canvas_init_platform)
+    if (!canvas_info.init)
     {
         CANVAS_ERR("refusing run, initialization failed.");
         return CANVAS_FAIL;
     }
 
-    canvas_default_update_callback = default_callback;
+    canvas_info.update_callback = default_callback;
 
-    while (!_canvas_quit)
+    while (!canvas_info.quit)
     {
-        _canvas_os_timed = false;
+        canvas_info.os_timed = false;
         canvas_main_loop();
     }
 
@@ -3609,47 +3607,47 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 {
     CANVAS_VALID(window_id);
 
-    if (_canvas_display_count <= 0)
+    if (canvas_info.display_count <= 0)
     {
         CANVAS_ERR("no displays available\n");
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    if (display < 0 || display >= _canvas_display_count)
+    if (display < 0 || display >= canvas_info.display_count)
     {
         display = _canvas_primary_display_index();
     }
 
-    _canvas[window_id].display = display;
-    _canvas[window_id].width = width;
-    _canvas[window_id].height = height;
+    canvas_info.canvas[window_id].display = display;
+    canvas_info.canvas[window_id].width = width;
+    canvas_info.canvas[window_id].height = height;
 
-    _canvas[window_id].os_moved = false;
-    _canvas[window_id].os_resized = false;
+    canvas_info.canvas[window_id].os_moved = false;
+    canvas_info.canvas[window_id].os_resized = false;
 
-    _canvas[window_id].x = x;
-    _canvas[window_id].y = y;
+    canvas_info.canvas[window_id].x = x;
+    canvas_info.canvas[window_id].y = y;
 
     CANVAS_DISPLAY_BOUNDS(display);
 
-    int target_x = (x == -1) ? _canvas_displays[display].width / 2 - width / 2 : x;
-    int target_y = (y == -1) ? _canvas_displays[display].height / 2 - height / 2 : y;
+    int target_x = (x == -1) ? canvas_info.displays[display].width / 2 - width / 2 : x;
+    int target_y = (y == -1) ? canvas_info.displays[display].height / 2 - height / 2 : y;
 
     if (title)
     {
-        if (_canvas[window_id].title)
+        if (canvas_info.canvas[window_id].title)
         {
-            free((void *)_canvas[window_id].title);
+            free((void *)canvas_info.canvas[window_id].title);
         }
-        _canvas[window_id].title = strdup(title);
+        canvas_info.canvas[window_id].title = strdup(title);
     }
     else
     {
-        if (_canvas[window_id].title)
+        if (canvas_info.canvas[window_id].title)
         {
-            free((void *)_canvas[window_id].title);
+            free((void *)canvas_info.canvas[window_id].title);
         }
-        _canvas[window_id].title = NULL;
+        canvas_info.canvas[window_id].title = NULL;
     }
 
     return _canvas_set(window_id, display, target_x, target_y, width, height, title);
@@ -3672,11 +3670,11 @@ int canvas_window(int x, int y, int width, int height, const char *title)
         return set_result;
     }
 
-    canvas_time_init(&_canvas[result].time);
+    canvas_time_init(&canvas_info.canvas[result].time);
 
     _canvas_get_window_display(result);
 
-    _canvas[result].cursor = ARROW;
+    canvas_info.canvas[result].cursor = ARROW;
 
     return result;
 }
@@ -3714,20 +3712,20 @@ int canvas_close(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
-    if (!_canvas[window_id]._canvas_valid)
+    if (!canvas_info.canvas[window_id]._valid)
         return CANVAS_OK;
 
-    _canvas[window_id]._canvas_valid = false;
+    canvas_info.canvas[window_id]._valid = false;
 
     _canvas_close(window_id);
 
-    if (_canvas[window_id].title)
+    if (canvas_info.canvas[window_id].title)
     {
-        free((void *)_canvas[window_id].title);
-        _canvas[window_id].title = NULL;
+        free((void *)canvas_info.canvas[window_id].title);
+        canvas_info.canvas[window_id].title = NULL;
     }
 
-    _canvas[window_id] = (canvas_type){0};
+    canvas_info.canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
 
     return CANVAS_OK;
@@ -3737,7 +3735,7 @@ int canvas_set_update_callback(int window_id, canvas_update_callback callback)
 {
     CANVAS_VALID(window_id);
 
-    _canvas[window_id].update = callback;
+    canvas_info.canvas[window_id].update = callback;
     return CANVAS_OK;
 }
 
@@ -3745,10 +3743,10 @@ int canvas_color(int window_id, const float color[4])
 {
     CANVAS_VALID(window_id);
 
-    _canvas[window_id].clear[0] = color[0];
-    _canvas[window_id].clear[1] = color[1];
-    _canvas[window_id].clear[2] = color[2];
-    _canvas[window_id].clear[3] = color[3];
+    canvas_info.canvas[window_id].clear[0] = color[0];
+    canvas_info.canvas[window_id].clear[1] = color[1];
+    canvas_info.canvas[window_id].clear[2] = color[2];
+    canvas_info.canvas[window_id].clear[3] = color[3];
     return CANVAS_OK;
 }
 

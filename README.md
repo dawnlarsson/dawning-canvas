@@ -242,7 +242,7 @@ The main loop maintains a global timer accessible via:
 extern canvas_time_data canvas_main_time;
 ```
 
-Each window also has its own timer in `_canvas[window_id].time`.
+Each window also has its own timer in `canvas_info.canvas[window_id].time`.
 
 ## Configuration
 
@@ -289,7 +289,7 @@ typedef struct {
 
 Access via:
 ```c
-extern canvas_type _canvas[MAX_CANVAS];
+extern canvas_type canvas_info.canvas[MAX_CANVAS];
 ```
 
 ## Display Information

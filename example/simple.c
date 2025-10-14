@@ -3,7 +3,7 @@
 
 void update(int window)
 {
-        float t = canvas_main_time.current + window;
+        float t = canvas_info.time.current + window;
 
         float r = (sinf(t * 0.5f) + 1.0f) * 0.5f;
         float g = (sinf(t * 0.7f + 2.0f) + 1.0f) * 0.5f;
@@ -12,7 +12,7 @@ void update(int window)
         canvas_color(window, (float[]){r, g, b, 1.0f});
 
         // don't move if the user has moved / resized the window
-        if (_canvas[window].os_moved || _canvas[window].os_resized)
+        if (canvas_info.canvas[window].os_moved || canvas_info.canvas[window].os_resized)
                 return;
 
         canvas_set(window, 0,
