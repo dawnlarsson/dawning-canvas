@@ -149,7 +149,7 @@ typedef struct
     canvas_window_handle window;
     canvas_update_callback update;
     canvas_time_data time;
-    canvas_cursor_type cursor;
+    canvas_cursor_type cursor, active_cursor;
 } canvas_type;
 
 typedef struct
@@ -350,8 +350,7 @@ static struct
 
     Display *(*XOpenDisplay)(const char *);
     int (*XCloseDisplay)(Display *);
-    Window (*XCreateSimpleWindow)(Display *, Window, int, int, unsigned int, unsigned int,
-                                  unsigned int, unsigned long, unsigned long);
+    Window (*XCreateSimpleWindow)(Display *, Window, int, int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long);
     int (*XDestroyWindow)(Display *, Window);
     int (*XMapWindow)(Display *, Window);
     int (*XStoreName)(Display *, Window, const char *);
@@ -378,6 +377,7 @@ static struct
     int (*XMoveWindow)(Display *, Window, int, int);
     void *(*XCreateFontCursor)(Display *, unsigned int);
     int (*XDefineCursor)(Display *, Window, unsigned long);
+    int (*XFree)(void *);
 
     int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
 
@@ -615,6 +615,18 @@ typedef struct
     bool override_redirect;
 } XConfigureEvent;
 
+typedef struct
+{
+    int type;
+    unsigned long serial;
+    bool send_event;
+    Display *display;
+    Window window;
+    Atom atom;
+    unsigned long time;
+    int state;
+} XPropertyEvent;
+
 #define X11_KeyPress 2
 #define X11_KeyRelease 3
 #define X11_ButtonPress 4
@@ -633,6 +645,7 @@ typedef struct
 #define X11_ButtonRelease 5
 #define X11_GrabModeAsync 1
 #define X11_CurrentTime 0L
+#define X11_PropertyNotify 28
 
 #define RESIZE_EDGE_NONE 0
 #define RESIZE_EDGE_TOP 1
@@ -3156,7 +3169,8 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
                           (1L << 6) |  // PointerMotionHintMask
                           (1L << 15) | // ExposureMask
                           (1L << 17) | // StructureNotifyMask
-                          (1L << 19);  // FocusChangeMask
+                          (1L << 19) | // FocusChangeMask
+                          (1L << 22);  // PropertyChangeMask
 
         x11.XSelectInput(x11.display, (Window)window, event_mask);
 
@@ -3243,9 +3257,9 @@ static unsigned int _canvas_get_x11_cursor_id(canvas_cursor_type cursor)
     case SIZE_EW:
         return 108; // XC_sb_h_double_arrow
     case SIZE_NESW:
-        return 12; // XC_bottom_left_corner
+        return 52;
     case SIZE_NWSE:
-        return 14; // XC_bottom_right_corner
+        return 52;
     case SIZE_ALL:
         return 52; // XC_fleur
     case NOT_ALLOWED:
@@ -3264,6 +3278,9 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
     if (_canvas_using_wayland)
         return CANVAS_OK;
 
+    canvas_info.canvas[window_id].cursor = cursor;
+    canvas_info.canvas[window_id].active_cursor = cursor;
+
     if (!x11.cursors_loaded)
     {
         for (int i = 0; i < 11; i++)
@@ -3277,8 +3294,28 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
     x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x11.cursors[cursor]);
     x11.XFlush(x11.display);
 
-    canvas_info.canvas[window_id].cursor = cursor;
     return CANVAS_OK;
+}
+
+static void _canvas_set_active_cursor(int window_id, canvas_cursor_type cursor)
+{
+    if (canvas_info.canvas[window_id].active_cursor == cursor)
+        return;
+
+    canvas_info.canvas[window_id].active_cursor = cursor;
+
+    if (!x11.cursors_loaded)
+    {
+        for (int i = 0; i < 11; i++)
+        {
+            unsigned int id = _canvas_get_x11_cursor_id((canvas_cursor_type)i);
+            x11.cursors[i] = (unsigned long)x11.XCreateFontCursor(x11.display, id);
+        }
+        x11.cursors_loaded = true;
+    }
+
+    x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x11.cursors[cursor]);
+    x11.XFlush(x11.display);
 }
 
 int _canvas_init_x11()
@@ -3332,6 +3369,7 @@ int _canvas_init_x11()
     LOAD_X11(XMoveWindow);
     LOAD_X11(XCreateFontCursor);
     LOAD_X11(XDefineCursor);
+    LOAD_X11(XFree);
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
@@ -3378,6 +3416,68 @@ int _canvas_platform()
     return CANVAS_OK;
 }
 
+static canvas_cursor_type _canvas_get_resize_cursor(int action)
+{
+    switch (action)
+    {
+    case _NET_WM_MOVERESIZE_SIZE_TOPLEFT:
+        return SIZE_NESW;
+    case _NET_WM_MOVERESIZE_SIZE_TOPRIGHT:
+        return SIZE_NWSE;
+    case _NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT:
+        return SIZE_NESW;
+    case _NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT:
+        return SIZE_NWSE;
+    case _NET_WM_MOVERESIZE_SIZE_TOP:
+    case _NET_WM_MOVERESIZE_SIZE_BOTTOM:
+        return SIZE_NS;
+    case _NET_WM_MOVERESIZE_SIZE_LEFT:
+    case _NET_WM_MOVERESIZE_SIZE_RIGHT:
+        return SIZE_EW;
+    default:
+        return ARROW;
+    }
+}
+
+static bool _canvas_is_window_maximized(int window_id)
+{
+    Window window = (Window)canvas_info.canvas[window_id].window;
+
+    Atom actual_type;
+    int actual_format;
+    unsigned long nitems, bytes_after;
+    unsigned char *prop_data = NULL;
+
+    Atom net_wm_state = _canvas_data[window_id].x11_net_wm_state;
+
+    int result = x11.XGetWindowProperty(
+        x11.display, window,
+        net_wm_state,
+        0, 1024, false, XA_ATOM,
+        &actual_type, &actual_format,
+        &nitems, &bytes_after,
+        &prop_data);
+
+    if (result != 0 || !prop_data)
+        return false;
+
+    Atom *atoms = (Atom *)prop_data;
+    bool horz_maximized = false;
+    bool vert_maximized = false;
+
+    for (unsigned long i = 0; i < nitems; i++)
+    {
+        if (atoms[i] == _canvas_data[window_id].x11_net_wm_state_maximized_horz)
+            horz_maximized = true;
+        if (atoms[i] == _canvas_data[window_id].x11_net_wm_state_maximized_vert)
+            vert_maximized = true;
+    }
+
+    x11.XFree(prop_data);
+
+    return horz_maximized && vert_maximized;
+}
+
 int _canvas_update()
 {
     if (_canvas_using_wayland)
@@ -3422,11 +3522,6 @@ int _canvas_update()
                 if (xce->send_event)
                     break;
 
-                // windows with titlebars on x11:
-                // x11 dosn't have a way to propperly detect this edge case
-                // if (canvas_info.canvas[window_id].x != xce->x || canvas_info.canvas[window_id].y != xce->y)
-                //    canvas_info.canvas[window_id].os_moved = true;
-
                 canvas_info.canvas[window_id].x = xce->x;
                 canvas_info.canvas[window_id].y = xce->y;
 
@@ -3458,12 +3553,20 @@ int _canvas_update()
                     }
                     else
                     {
-                        int action = _canvas_get_resize_edge_action(window_id, xbe->x, xbe->y);
-
-                        if (action >= 0)
+                        if (!canvas_info.canvas[window_id].maximized)
                         {
-                            canvas_info.canvas[window_id].os_resized = true;
-                            _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, action);
+                            int action = _canvas_get_resize_edge_action(window_id, xbe->x, xbe->y);
+
+                            if (action >= 0)
+                            {
+                                canvas_info.canvas[window_id].os_resized = true;
+                                _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, action);
+                            }
+                            else if (xbe->y < 30)
+                            {
+                                canvas_info.canvas[window_id].os_moved = true;
+                                _canvas_start_wm_move_resize(window_id, xbe->x_root, xbe->y_root, _NET_WM_MOVERESIZE_MOVE);
+                            }
                         }
                         else if (xbe->y < 30)
                         {
@@ -3483,8 +3586,53 @@ int _canvas_update()
             {
                 XMotionEvent *xme = (XMotionEvent *)&event;
 
-                int action = _canvas_get_resize_edge_action(window_id, xme->x, xme->y);
+                if (!canvas_info.canvas[window_id].maximized)
+                {
+                    int action = _canvas_get_resize_edge_action(window_id, xme->x, xme->y);
 
+                    if (action >= 0)
+                    {
+                        canvas_cursor_type resize_cursor = _canvas_get_resize_cursor(action);
+                        _canvas_set_active_cursor(window_id, resize_cursor);
+                    }
+                    else if (xme->y < 30)
+                    {
+                        _canvas_set_active_cursor(window_id, ARROW);
+                    }
+                    else
+                    {
+                        _canvas_set_active_cursor(window_id, canvas_info.canvas[window_id].cursor);
+                    }
+                }
+                else
+                {
+                    if (xme->y < 30)
+                    {
+                        _canvas_set_active_cursor(window_id, ARROW);
+                    }
+                    else
+                    {
+                        _canvas_set_active_cursor(window_id, canvas_info.canvas[window_id].cursor);
+                    }
+                }
+
+                break;
+            }
+
+            case X11_PropertyNotify:
+            {
+                XPropertyEvent *xpe = (XPropertyEvent *)&event;
+
+                if (xpe->atom == _canvas_data[window_id].x11_net_wm_state)
+                {
+                    bool was_maximized = canvas_info.canvas[window_id].maximized;
+                    bool is_maximized = _canvas_is_window_maximized(window_id);
+
+                    canvas_info.canvas[window_id].maximized = is_maximized;
+
+                    if (was_maximized != is_maximized)
+                        canvas_info.canvas[window_id].active_cursor = ARROW;
+                }
                 break;
             }
 
