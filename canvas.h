@@ -696,7 +696,10 @@ void canvas_library_close(void *lib)
 canvas_library_handle canvas_lib_vulkan;
 VkInstance vulkan_instance;
 VkPhysicalDevice physical_device;
-int graphics_family;
+VkDevice device;
+VkQueue graphics_queue;
+VkQueue present_queue;
+int graphics_family, present_family;
 
 static struct
 {
@@ -706,6 +709,8 @@ static struct
 
     PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
+    PFN_vkCreateDevice vkCreateDevice;
+    PFN_vkGetDeviceQueue vkGetDeviceQueue;
 } vk;
 
 #if defined(_WIN32)
@@ -884,6 +889,46 @@ int canvas_backend_vulkan_init()
 
     if (canvas_select_physical_device() != VK_SUCCESS)
         goto fail;
+
+    float queue_priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_create_infos[2];
+    uint32_t queue_count = 0;
+    uint32_t unique_families[2] = {graphics_family, present_family};
+    uint32_t unique_count = (graphics_family == present_family) ? 1 : 2;
+
+    for (uint32_t i = 0; i < unique_count; i++)
+    {
+        queue_create_infos[i] = (VkDeviceQueueCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = unique_families[i],
+            .queueCount = 1,
+            .pQueuePriorities = &queue_priority};
+        queue_count++;
+    }
+
+    VkPhysicalDeviceFeatures device_features = {0};
+
+    const char *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+    VkDeviceCreateInfo dev_create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = queue_count,
+        .pQueueCreateInfos = queue_create_infos,
+        .pEnabledFeatures = &device_features,
+        .enabledExtensionCount = 1,
+        .ppEnabledExtensionNames = device_extensions};
+
+    vk.vkCreateDevice = (PFN_vkCreateDevice)vk.vkGetInstanceProcAddr(vulkan_instance, "vkCreateDevice");
+
+    VkResult dev_result = vk.vkCreateDevice(physical_device, &dev_create_info, NULL, &device);
+
+    if (dev_result != VK_SUCCESS)
+        goto fail;
+
+    vk.vkGetDeviceQueue = (PFN_vkGetDeviceQueue)vk.vkGetInstanceProcAddr(vulkan_instance, "vkGetDeviceQueue");
+
+    vk.vkGetDeviceQueue(device, graphics_family, 0, &graphics_queue);
+    vk.vkGetDeviceQueue(device, present_family, 0, &present_queue);
 
     return CANVAS_OK;
 
