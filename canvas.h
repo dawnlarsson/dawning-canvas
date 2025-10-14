@@ -176,7 +176,7 @@ typedef struct
     int display_count, limit_fps, highest_refresh_rate;
 
     canvas_type canvas[MAX_CANVAS];
-    canvas_display displays[MAX_DISPLAYS];
+    canvas_display display[MAX_DISPLAYS];
 
     canvas_update_callback update_callback;
     canvas_time_data time;
@@ -689,15 +689,16 @@ void canvas_library_close(void *lib)
 #define MAX_EXTENSIONS 32
 
 canvas_library_handle canvas_lib_vulkan;
-VkInstance vulkan_instance;
-VkPhysicalDevice physical_device;
-VkDevice device;
-VkQueue graphics_queue;
-VkQueue present_queue;
-int graphics_family, present_family;
 
 static struct
 {
+    VkInstance instance;
+    VkPhysicalDevice physical_device;
+    VkDevice gpu;
+    VkQueue graphics_queue;
+    VkQueue present_queue;
+    int graphics_family, present_family;
+
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
     PFN_vkCreateInstance vkCreateInstance;
     PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
@@ -766,20 +767,20 @@ static bool canvas_is_device_suitable_core(VkPhysicalDevice device)
 static VkResult canvas_select_physical_device()
 {
     uint32_t device_count = 0;
-    vk.vkEnumeratePhysicalDevices(vulkan_instance, &device_count, NULL);
+    vk.vkEnumeratePhysicalDevices(vk.instance, &device_count, NULL);
 
     if (device_count == 0)
         return VK_ERROR_INITIALIZATION_FAILED;
 
     VkPhysicalDevice *devices = malloc(device_count * sizeof(VkPhysicalDevice));
-    vk.vkEnumeratePhysicalDevices(vulkan_instance, &device_count, devices);
+    vk.vkEnumeratePhysicalDevices(vk.instance, &device_count, devices);
 
     for (uint32_t i = 0; i < device_count; i++)
     {
         if (!canvas_is_device_suitable_core(devices[i]))
             continue;
 
-        physical_device = devices[i];
+        vk.physical_device = devices[i];
 
         uint32_t queue_family_count = 0;
         vk.vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &queue_family_count, NULL);
@@ -790,7 +791,7 @@ static VkResult canvas_select_physical_device()
         for (uint32_t j = 0; j < queue_family_count; j++)
         {
             if (queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-                graphics_family = j;
+                vk.graphics_family = j;
 
             /*
             if (queue_families[j].queueFlags & VK_QUEUE_COMPUTE_BIT)
@@ -804,12 +805,12 @@ static VkResult canvas_select_physical_device()
 
     free(devices);
 
-    return physical_device != VK_NULL_HANDLE ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+    return vk.physical_device != VK_NULL_HANDLE ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
 }
 
 int canvas_backend_vulkan_init()
 {
-    if (vulkan_instance)
+    if (vk.instance)
         return CANVAS_OK;
 
     CANVAS_INFO("loading vulkan\n");
@@ -872,15 +873,15 @@ int canvas_backend_vulkan_init()
 
     vk.vkCreateInstance = (PFN_vkCreateInstance)vk.vkGetInstanceProcAddr(NULL, "vkCreateInstance");
 
-    if (vk.vkCreateInstance(&createInfo, NULL, &vulkan_instance))
+    if (vk.vkCreateInstance(&createInfo, NULL, &vk.instance))
     {
         CANVAS_ERR("failed to load vulkan");
         return CANVAS_ERR_GET_GPU;
     }
 
-    vk.vkEnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)vk.vkGetInstanceProcAddr(vulkan_instance, "vkEnumeratePhysicalDevices");
-    vk.vkEnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)vk.vkGetInstanceProcAddr(vulkan_instance, "vkEnumerateDeviceExtensionProperties");
-    vk.vkGetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)vk.vkGetInstanceProcAddr(vulkan_instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    vk.vkEnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)vk.vkGetInstanceProcAddr(vk.instance, "vkEnumeratePhysicalDevices");
+    vk.vkEnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)vk.vkGetInstanceProcAddr(vk.instance, "vkEnumerateDeviceExtensionProperties");
+    vk.vkGetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)vk.vkGetInstanceProcAddr(vk.instance, "vkGetPhysicalDeviceQueueFamilyProperties");
 
     if (canvas_select_physical_device() != VK_SUCCESS)
         goto fail;
@@ -888,8 +889,8 @@ int canvas_backend_vulkan_init()
     float queue_priority = 1.0f;
     VkDeviceQueueCreateInfo queue_create_infos[2];
     uint32_t queue_count = 0;
-    uint32_t unique_families[2] = {graphics_family, present_family};
-    uint32_t unique_count = (graphics_family == present_family) ? 1 : 2;
+    uint32_t unique_families[2] = {vk.graphics_family, vk.present_family};
+    uint32_t unique_count = (vk.graphics_family == vk.present_family) ? 1 : 2;
 
     for (uint32_t i = 0; i < unique_count; i++)
     {
@@ -913,24 +914,24 @@ int canvas_backend_vulkan_init()
         .enabledExtensionCount = 1,
         .ppEnabledExtensionNames = device_extensions};
 
-    vk.vkCreateDevice = (PFN_vkCreateDevice)vk.vkGetInstanceProcAddr(vulkan_instance, "vkCreateDevice");
+    vk.vkCreateDevice = (PFN_vkCreateDevice)vk.vkGetInstanceProcAddr(vk.instance, "vkCreateDevice");
 
-    VkResult dev_result = vk.vkCreateDevice(physical_device, &dev_create_info, NULL, &device);
+    VkResult dev_result = vk.vkCreateDevice(vk.physical_device, &dev_create_info, NULL, &vk.gpu);
 
     if (dev_result != VK_SUCCESS)
         goto fail;
 
-    vk.vkGetDeviceQueue = (PFN_vkGetDeviceQueue)vk.vkGetInstanceProcAddr(vulkan_instance, "vkGetDeviceQueue");
+    vk.vkGetDeviceQueue = (PFN_vkGetDeviceQueue)vk.vkGetInstanceProcAddr(vk.instance, "vkGetDeviceQueue");
 
-    vk.vkGetDeviceQueue(device, graphics_family, 0, &graphics_queue);
-    vk.vkGetDeviceQueue(device, present_family, 0, &present_queue);
+    vk.vkGetDeviceQueue(vk.gpu, vk.graphics_family, 0, &vk.graphics_queue);
+    vk.vkGetDeviceQueue(vk.gpu, vk.present_family, 0, &vk.present_queue);
 
     return CANVAS_OK;
 
 fail:
     canvas_library_close(canvas_lib_vulkan);
     canvas_lib_vulkan = NULL;
-    vulkan_instance = NULL;
+    vk.instance = NULL;
     return CANVAS_FAIL;
 }
 
@@ -1097,7 +1098,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     }
 
     CANVAS_DISPLAY_BOUNDS(display);
-    y = canvas_info.displays[display].height - (y + height);
+    y = canvas_info.display[display].height - (y + height);
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
@@ -1157,14 +1158,14 @@ int _canvas_get_window_display(int window_id)
     unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
 
     uint32_t max_displays = MAX_DISPLAYS;
-    CGDirectDisplayID displays[MAX_DISPLAYS];
+    CGDirectDisplayID canvas_info.display[MAX_DISPLAYS];
     uint32_t display_count = 0;
 
     CGGetActiveDisplayList(max_displays, displays, &display_count);
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        if (displays[i] != (CGDirectDisplayID)display_id)
+        if (canvas_info.display[i] != (CGDirectDisplayID)display_id)
             continue;
 
         canvas_info.canvas[window_id].display = i;
@@ -1177,10 +1178,10 @@ int _canvas_get_window_display(int window_id)
 int _canvas_refresh_displays()
 {
     canvas_info.display_count = 0;
-    canvas_info.displays_changed = false;
+    canvas_info.display_changed = false;
 
     uint32_t max_displays = MAX_DISPLAYS;
-    CGDirectDisplayID displays[MAX_DISPLAYS];
+    CGDirectDisplayID canvas_info.display[MAX_DISPLAYS];
     uint32_t display_count = 0;
 
     CGError err = CGGetActiveDisplayList(max_displays, displays, &display_count);
@@ -1194,7 +1195,7 @@ int _canvas_refresh_displays()
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        CGDirectDisplayID display_id = displays[i];
+        CGDirectDisplayID display_id = canvas_info.display[i];
         CGRect bounds = CGDisplayBounds(display_id);
         CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display_id);
         double refresh_rate = 60.0;
@@ -1209,12 +1210,12 @@ int _canvas_refresh_displays()
             CGDisplayModeRelease(mode);
         }
 
-        canvas_info.displays[i].primary = (display_id == main_display);
-        canvas_info.displays[i].x = (int)bounds.origin.x;
-        canvas_info.displays[i].y = (int)bounds.origin.y;
-        canvas_info.displays[i].width = (int)bounds.size.width;
-        canvas_info.displays[i].height = (int)bounds.size.height;
-        canvas_info.displays[i].refresh_rate = (int)refresh_rate;
+        canvas_info.display[i].primary = (display_id == main_display);
+        canvas_info.display[i].x = (int)bounds.origin.x;
+        canvas_info.display[i].y = (int)bounds.origin.y;
+        canvas_info.display[i].width = (int)bounds.size.width;
+        canvas_info.display[i].height = (int)bounds.size.height;
+        canvas_info.display[i].refresh_rate = (int)refresh_rate;
 
         if ((int)refresh_rate > canvas_info.highest_refresh_rate)
             canvas_info.highest_refresh_rate = (int)refresh_rate;
@@ -1234,12 +1235,12 @@ int _canvas_refresh_displays()
 void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo)
 {
     if (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplaySetModeFlag | kCGDisplayDesktopShapeChangedFlag))
-        canvas_info.displays_changed = true;
+        canvas_info.display_changed = true;
 }
 
 bool _canvas_check_display_changes()
 {
-    if (canvas_info.displays_changed)
+    if (canvas_info.display_changed)
     {
         _canvas_refresh_displays();
         return true;
@@ -1757,8 +1758,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
     CANVAS_DISPLAY_BOUNDS(display);
 
-    int screen_x = canvas_info.displays[display].x + x;
-    int screen_y = canvas_info.displays[display].y + y;
+    int screen_x = canvas_info.display[display].x + x;
+    int screen_y = canvas_info.display[display].y + y;
 
     SetWindowPos(window, NULL, screen_x, screen_y, width, height, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
 
@@ -1820,7 +1821,7 @@ int _canvas_get_window_display(int window_id)
 int _canvas_refresh_displays()
 {
     canvas_info.display_count = 0;
-    canvas_info.displays_changed = false;
+    canvas_info.display_changed = false;
 
     for (int i = 0; i < MAX_DISPLAYS; i++)
     {
@@ -1839,12 +1840,12 @@ int _canvas_refresh_displays()
         if (!EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm))
             continue;
 
-        canvas_info.displays[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
-        canvas_info.displays[i].x = dm.dmPosition.x;
-        canvas_info.displays[i].y = dm.dmPosition.y;
-        canvas_info.displays[i].width = dm.dmPelsWidth;
-        canvas_info.displays[i].height = dm.dmPelsHeight;
-        canvas_info.displays[i].refresh_rate = dm.dmDisplayFrequency;
+        canvas_info.display[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+        canvas_info.display[i].x = dm.dmPosition.x;
+        canvas_info.display[i].y = dm.dmPosition.y;
+        canvas_info.display[i].width = dm.dmPelsWidth;
+        canvas_info.display[i].height = dm.dmPelsHeight;
+        canvas_info.display[i].refresh_rate = dm.dmDisplayFrequency;
 
         if (dm.dmDisplayFrequency > canvas_info.highest_refresh_rate)
             canvas_info.highest_refresh_rate = dm.dmDisplayFrequency;
@@ -2045,7 +2046,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DISPLAYCHANGE:
     {
         canvas_info.canvas[window_index].os_moved = true;
-        canvas_info.displays_changed = true;
+        canvas_info.display_changed = true;
         return CANVAS_OK;
     }
 
@@ -2823,12 +2824,12 @@ int _canvas_init_displays()
         // TODO: Use Xinerama or XRandR for proper multi-monitor support
         int screen = x11.XDefaultScreen(x11.display);
 
-        canvas_info.displays[0].primary = true;
-        canvas_info.displays[0].x = 0;
-        canvas_info.displays[0].y = 0;
-        canvas_info.displays[0].width = x11.XDisplayWidth(x11.display, screen);
-        canvas_info.displays[0].height = x11.XDisplayHeight(x11.display, screen);
-        canvas_info.displays[0].refresh_rate = 60;
+        canvas_info.display[0].primary = true;
+        canvas_info.display[0].x = 0;
+        canvas_info.display[0].y = 0;
+        canvas_info.display[0].width = x11.XDisplayWidth(x11.display, screen);
+        canvas_info.display[0].height = x11.XDisplayHeight(x11.display, screen);
+        canvas_info.display[0].refresh_rate = 60;
 
         canvas_info.display_count = 1;
     }
@@ -3222,12 +3223,12 @@ int _canvas_init_x11()
 
         if (ci && ci->width > 0 && ci->height > 0)
         {
-            canvas_info.displays[canvas_info.display_count].x = ci->x;
-            canvas_info.displays[canvas_info.display_count].y = ci->y;
-            canvas_info.displays[canvas_info.display_count].width = ci->width;
-            canvas_info.displays[canvas_info.display_count].height = ci->height;
-            canvas_info.displays[canvas_info.display_count].refresh_rate = 60;
-            canvas_info.displays[canvas_info.display_count].primary = (i == 0);
+            canvas_info.display[canvas_info.display_count].x = ci->x;
+            canvas_info.display[canvas_info.display_count].y = ci->y;
+            canvas_info.display[canvas_info.display_count].width = ci->width;
+            canvas_info.display[canvas_info.display_count].height = ci->height;
+            canvas_info.display[canvas_info.display_count].refresh_rate = 60;
+            canvas_info.display[canvas_info.display_count].primary = (i == 0);
 
             canvas_info.display_count++;
         }
@@ -3488,7 +3489,7 @@ void canvas_time_init(canvas_time_data *time)
 int _canvas_primary_display_index(void)
 {
     for (int i = 0; i < canvas_info.display_count; ++i)
-        if (canvas_info.displays[i].primary)
+        if (canvas_info.display[i].primary)
             return i;
     return 0;
 }
@@ -3505,7 +3506,7 @@ int canvas_startup()
 
     for (int i = 0; i < MAX_DISPLAYS; ++i)
     {
-        canvas_info.displays[i] = (canvas_display){0};
+        canvas_info.display[i] = (canvas_display){0};
     }
 
     for (int i = 0; i < MAX_CANVAS; ++i)
@@ -3630,8 +3631,8 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 
     CANVAS_DISPLAY_BOUNDS(display);
 
-    int target_x = (x == -1) ? canvas_info.displays[display].width / 2 - width / 2 : x;
-    int target_y = (y == -1) ? canvas_info.displays[display].height / 2 - height / 2 : y;
+    int target_x = (x == -1) ? canvas_info.display[display].width / 2 - width / 2 : x;
+    int target_y = (y == -1) ? canvas_info.display[display].height / 2 - height / 2 : y;
 
     if (title)
     {
