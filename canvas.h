@@ -266,19 +266,22 @@ typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 static LARGE_INTEGER _canvas_qpc_frequency = {0};
 static LARGE_INTEGER _canvas_start_counter = {0};
 
-HINSTANCE _win_instance = NULL;
-ATOM _win_main_class = 0;
+typedef struct
+{
+    HINSTANCE instance;
+    ATOM class;
 
-ID3D12Device *_win_device = NULL;
-ID3D12CommandQueue *_win_cmdQueue = NULL;
-IDXGIFactory4 *_win_factory = NULL;
-ID3D12CommandAllocator *_win_cmdAllocator = NULL;
-ID3D12GraphicsCommandList *_win_cmdList = NULL;
-ID3D12DescriptorHeap *_win_rtvHeap = NULL;
-ID3D12Fence *_win_fence = NULL;
-UINT64 _win_fence_value = 0;
-HANDLE _win_fence_event = NULL;
-UINT _win_rtvDescriptorSize = 0;
+    ID3D12Device *device;
+    ID3D12CommandQueue *cmdQueue;
+    IDXGIFactory4 *factory;
+    ID3D12CommandAllocator *cmdAllocator;
+    ID3D12GraphicsCommandList *cmdList;
+    ID3D12DescriptorHeap *rtvHeap;
+    ID3D12Fence *fence;
+    UINT64 fence_value;
+    HANDLE fence_event;
+    UINT rtvDescriptorSize;
+} _canvas_platform_windows;
 
 typedef struct
 {
@@ -288,6 +291,7 @@ typedef struct
 } canvas_data;
 
 canvas_data _canvas_data[MAX_CANVAS];
+_canvas_platform_windows canvas_win32;
 
 #endif
 
@@ -2277,25 +2281,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     if (window_id < 0)
         return window_id;
 
-    if (!_win_main_class)
-    {
-        WNDCLASSA wc = {0};
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc = WndProc;
-        wc.hInstance = _win_instance;
-        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = NULL;
-        wc.lpszClassName = "CanvasWindowClass";
-
-        _win_main_class = RegisterClassA(&wc);
-
-        if (!_win_main_class)
-        {
-            CANVAS_ERR("register windows class failed");
-            return CANVAS_ERR_GET_PLATFORM;
-        }
-    }
-
     DWORD style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
     canvas_info.canvas[window_id].index = window_id;
@@ -2305,7 +2290,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         title,
         style,
         x, y, width, height,
-        NULL, NULL, _win_instance, NULL);
+        NULL, NULL, canvas_win32.instance, NULL);
 
     if (!window)
     {
@@ -2323,7 +2308,23 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
 int _canvas_platform()
 {
-    _win_instance = GetModuleHandle(NULL);
+    canvas_win32.instance = GetModuleHandle(NULL);
+
+    WNDCLASSA wc = {0};
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = canvas_win32.instance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = "CanvasWindowClass";
+
+    canvas_win32.class = RegisterClassA(&wc);
+
+    if (!canvas_win32.class)
+    {
+        CANVAS_ERR("register windows class failed");
+        return CANVAS_ERR_GET_PLATFORM;
+    }
 
     return CANVAS_OK;
 }
@@ -2337,7 +2338,7 @@ int _canvas_update()
         DispatchMessage(&msg);
     }
 
-    if (_win_device)
+    if (canvas_win32.device)
     {
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
@@ -2347,8 +2348,8 @@ int _canvas_update()
             }
         }
 
-        _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
-        _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
+        canvas_win32.cmdAllocator->lpVtbl->Reset(canvas_win32.cmdAllocator);
+        canvas_win32.cmdList->lpVtbl->Reset(canvas_win32.cmdList, canvas_win32.cmdAllocator, NULL);
 
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
@@ -2365,20 +2366,18 @@ int _canvas_update()
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            _win_cmdList->lpVtbl->ResourceBarrier(_win_cmdList, 1, &barrier);
+            canvas_win32.cmdList->lpVtbl->ResourceBarrier(canvas_win32.cmdList, 1, &barrier);
 
-            _win_cmdList->lpVtbl->ClearRenderTargetView(_win_cmdList,
-                                                        _canvas_data[i].rtvHandles[backBufferIndex],
-                                                        canvas_info.canvas[i].clear, 0, NULL);
+            canvas_win32.cmdList->lpVtbl->ClearRenderTargetView(canvas_win32.cmdList, _canvas_data[i].rtvHandles[backBufferIndex], canvas_info.canvas[i].clear, 0, NULL);
 
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-            _win_cmdList->lpVtbl->ResourceBarrier(_win_cmdList, 1, &barrier);
+            canvas_win32.cmdList->lpVtbl->ResourceBarrier(canvas_win32.cmdList, 1, &barrier);
         }
 
-        _win_cmdList->lpVtbl->Close(_win_cmdList);
-        ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)_win_cmdList};
-        _win_cmdQueue->lpVtbl->ExecuteCommandLists(_win_cmdQueue, 1, cmdLists);
+        canvas_win32.cmdList->lpVtbl->Close(canvas_win32.cmdList);
+        ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)canvas_win32.cmdList};
+        canvas_win32.cmdQueue->lpVtbl->ExecuteCommandLists(canvas_win32.cmdQueue, 1, cmdLists);
 
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
@@ -2395,12 +2394,12 @@ int _canvas_update()
             }
         }
 
-        _win_fence_value++;
-        _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
-        if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+        canvas_win32.fence_value++;
+        canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+        if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
         {
-            _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
-            WaitForSingleObject(_win_fence_event, INFINITE);
+            canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+            WaitForSingleObject(canvas_win32.fence_event, INFINITE);
         }
     }
 
@@ -2416,70 +2415,70 @@ int _canvas_gpu_init()
 
     HRESULT result;
 
-    result = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&_win_factory);
+    result = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&canvas_win32.factory);
     if (FAILED(result))
     {
         CANVAS_ERR("create dx12 factory failed (HRESULT: 0x%08lX)\n", result);
         return CANVAS_ERR_GET_GPU;
     }
 
-    result = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&_win_device);
+    result = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&canvas_win32.device);
     if (FAILED(result))
     {
         CANVAS_ERR("create dx12 device failed (HRESULT: 0x%08lX)\n", result);
-        _win_factory->lpVtbl->Release(_win_factory);
-        _win_factory = NULL;
+        canvas_win32.factory->lpVtbl->Release(canvas_win32.factory);
+        canvas_win32.factory = NULL;
         return CANVAS_ERR_GET_GPU;
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {0};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-    result = _win_device->lpVtbl->CreateCommandQueue(_win_device, &queueDesc, &IID_ID3D12CommandQueue, (void **)&_win_cmdQueue);
+    result = canvas_win32.device->lpVtbl->CreateCommandQueue(canvas_win32.device, &queueDesc, &IID_ID3D12CommandQueue, (void **)&canvas_win32.cmdQueue);
     if (FAILED(result))
     {
         CANVAS_ERR("create command queue failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    result = _win_device->lpVtbl->CreateCommandAllocator(_win_device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&_win_cmdAllocator);
+    result = canvas_win32.device->lpVtbl->CreateCommandAllocator(canvas_win32.device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&canvas_win32.cmdAllocator);
     if (FAILED(result))
     {
         CANVAS_ERR("create command allocator failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    result = _win_device->lpVtbl->CreateCommandList(_win_device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, _win_cmdAllocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&_win_cmdList);
+    result = canvas_win32.device->lpVtbl->CreateCommandList(canvas_win32.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, canvas_win32.cmdAllocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&canvas_win32.cmdList);
     if (FAILED(result))
     {
         CANVAS_ERR("create command list failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    _win_cmdList->lpVtbl->Close(_win_cmdList);
+    canvas_win32.cmdList->lpVtbl->Close(canvas_win32.cmdList);
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
     heapDesc.NumDescriptors = MAX_CANVAS * 2;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
-    result = _win_device->lpVtbl->CreateDescriptorHeap(_win_device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&_win_rtvHeap);
+    result = canvas_win32.device->lpVtbl->CreateDescriptorHeap(canvas_win32.device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&canvas_win32.rtvHeap);
     if (FAILED(result))
     {
         CANVAS_ERR("create descriptor heap failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(_win_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    canvas_win32.rtvDescriptorSize = canvas_win32.device->lpVtbl->GetDescriptorHandleIncrementSize(canvas_win32.device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-    result = _win_device->lpVtbl->CreateFence(_win_device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&_win_fence);
+    result = canvas_win32.device->lpVtbl->CreateFence(canvas_win32.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&canvas_win32.fence);
     if (FAILED(result))
     {
         CANVAS_ERR("create fence failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    _win_fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (!_win_fence_event)
+    canvas_win32.fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!canvas_win32.fence_event)
     {
         CANVAS_ERR("create fence event failed (GetLastError: %lu)\n", GetLastError());
         goto cleanup_gpu;
@@ -2488,40 +2487,40 @@ int _canvas_gpu_init()
     return CANVAS_OK;
 
 cleanup_gpu:
-    if (_win_fence)
+    if (canvas_win32.fence)
     {
-        _win_fence->lpVtbl->Release(_win_fence);
-        _win_fence = NULL;
+        canvas_win32.fence->lpVtbl->Release(canvas_win32.fence);
+        canvas_win32.fence = NULL;
     }
-    if (_win_rtvHeap)
+    if (canvas_win32.rtvHeap)
     {
-        _win_rtvHeap->lpVtbl->Release(_win_rtvHeap);
-        _win_rtvHeap = NULL;
+        canvas_win32.rtvHeap->lpVtbl->Release(canvas_win32.rtvHeap);
+        canvas_win32.rtvHeap = NULL;
     }
-    if (_win_cmdList)
+    if (canvas_win32.cmdList)
     {
-        _win_cmdList->lpVtbl->Release(_win_cmdList);
-        _win_cmdList = NULL;
+        canvas_win32.cmdList->lpVtbl->Release(canvas_win32.cmdList);
+        canvas_win32.cmdList = NULL;
     }
-    if (_win_cmdAllocator)
+    if (canvas_win32.cmdAllocator)
     {
-        _win_cmdAllocator->lpVtbl->Release(_win_cmdAllocator);
-        _win_cmdAllocator = NULL;
+        canvas_win32.cmdAllocator->lpVtbl->Release(canvas_win32.cmdAllocator);
+        canvas_win32.cmdAllocator = NULL;
     }
-    if (_win_cmdQueue)
+    if (canvas_win32.cmdQueue)
     {
-        _win_cmdQueue->lpVtbl->Release(_win_cmdQueue);
-        _win_cmdQueue = NULL;
+        canvas_win32.cmdQueue->lpVtbl->Release(canvas_win32.cmdQueue);
+        canvas_win32.cmdQueue = NULL;
     }
-    if (_win_device)
+    if (canvas_win32.device)
     {
-        _win_device->lpVtbl->Release(_win_device);
-        _win_device = NULL;
+        canvas_win32.device->lpVtbl->Release(canvas_win32.device);
+        canvas_win32.device = NULL;
     }
-    if (_win_factory)
+    if (canvas_win32.factory)
     {
-        _win_factory->lpVtbl->Release(_win_factory);
-        _win_factory = NULL;
+        canvas_win32.factory->lpVtbl->Release(canvas_win32.factory);
+        canvas_win32.factory = NULL;
     }
 
     canvas_info.init_gpu = 0;
@@ -2552,9 +2551,9 @@ int _canvas_gpu_new_window(int window_id)
     scDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     IDXGISwapChain1 *swapChain1;
-    HRESULT result = _win_factory->lpVtbl->CreateSwapChainForHwnd(
-        _win_factory,
-        (IUnknown *)_win_cmdQueue,
+    HRESULT result = canvas_win32.factory->lpVtbl->CreateSwapChainForHwnd(
+        canvas_win32.factory,
+        (IUnknown *)canvas_win32.cmdQueue,
         window,
         &scDesc,
         NULL,
@@ -2579,15 +2578,15 @@ int _canvas_gpu_new_window(int window_id)
         return CANVAS_ERR_GET_GPU;
     }
 
-    _win_factory->lpVtbl->MakeWindowAssociation(
-        _win_factory,
+    canvas_win32.factory->lpVtbl->MakeWindowAssociation(
+        canvas_win32.factory,
         window,
         DXGI_MWA_NO_ALT_ENTER);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
-    _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
+    canvas_win32.rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(canvas_win32.rtvHeap, &rtvHandle);
 
-    rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
+    rtvHandle.ptr += window_id * 2 * canvas_win32.rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
     {
@@ -2604,12 +2603,12 @@ int _canvas_gpu_new_window(int window_id)
         }
 
         _canvas_data[window_id].rtvHandles[i] = rtvHandle;
-        _win_device->lpVtbl->CreateRenderTargetView(
-            _win_device,
+        canvas_win32.device->lpVtbl->CreateRenderTargetView(
+            canvas_win32.device,
             _canvas_data[window_id].backBuffers[i],
             NULL,
             rtvHandle);
-        rtvHandle.ptr += _win_rtvDescriptorSize;
+        rtvHandle.ptr += canvas_win32.rtvDescriptorSize;
     }
 
     return CANVAS_OK;
@@ -2629,12 +2628,12 @@ int _canvas_window_resize(int window_id)
 
     canvas_info.canvas[window_id].resize = false;
 
-    _win_fence_value++;
-    _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
-    if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+    canvas_win32.fence_value++;
+    canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+    if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
     {
-        _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
-        WaitForSingleObject(_win_fence_event, INFINITE);
+        canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+        WaitForSingleObject(canvas_win32.fence_event, INFINITE);
     }
 
     RECT rect;
@@ -2666,8 +2665,8 @@ int _canvas_window_resize(int window_id)
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
-    _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
-    rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
+    canvas_win32.rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(canvas_win32.rtvHeap, &rtvHandle);
+    rtvHandle.ptr += window_id * 2 * canvas_win32.rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
     {
@@ -2682,9 +2681,9 @@ int _canvas_window_resize(int window_id)
         }
 
         window->rtvHandles[i] = rtvHandle;
-        _win_device->lpVtbl->CreateRenderTargetView(
-            _win_device, window->backBuffers[i], NULL, rtvHandle);
-        rtvHandle.ptr += _win_rtvDescriptorSize;
+        canvas_win32.device->lpVtbl->CreateRenderTargetView(
+            canvas_win32.device, window->backBuffers[i], NULL, rtvHandle);
+        rtvHandle.ptr += canvas_win32.rtvDescriptorSize;
     }
 
     return CANVAS_OK;
@@ -2697,24 +2696,24 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    if (_win_fence_event)
-        CloseHandle(_win_fence_event);
-    if (_win_fence)
-        _win_fence->lpVtbl->Release(_win_fence);
-    if (_win_rtvHeap)
-        _win_rtvHeap->lpVtbl->Release(_win_rtvHeap);
-    if (_win_cmdList)
-        _win_cmdList->lpVtbl->Release(_win_cmdList);
-    if (_win_cmdAllocator)
-        _win_cmdAllocator->lpVtbl->Release(_win_cmdAllocator);
-    if (_win_cmdQueue)
-        _win_cmdQueue->lpVtbl->Release(_win_cmdQueue);
-    if (_win_device)
-        _win_device->lpVtbl->Release(_win_device);
-    if (_win_factory)
-        _win_factory->lpVtbl->Release(_win_factory);
-    if (_win_main_class)
-        UnregisterClassA("CanvasWindowClass", _win_instance);
+    if (canvas_win32.fence_event)
+        CloseHandle(canvas_win32.fence_event);
+    if (canvas_win32.fence)
+        canvas_win32.fence->lpVtbl->Release(canvas_win32.fence);
+    if (canvas_win32.rtvHeap)
+        canvas_win32.rtvHeap->lpVtbl->Release(canvas_win32.rtvHeap);
+    if (canvas_win32.cmdList)
+        canvas_win32.cmdList->lpVtbl->Release(canvas_win32.cmdList);
+    if (canvas_win32.cmdAllocator)
+        canvas_win32.cmdAllocator->lpVtbl->Release(canvas_win32.cmdAllocator);
+    if (canvas_win32.cmdQueue)
+        canvas_win32.cmdQueue->lpVtbl->Release(canvas_win32.cmdQueue);
+    if (canvas_win32.device)
+        canvas_win32.device->lpVtbl->Release(canvas_win32.device);
+    if (canvas_win32.factory)
+        canvas_win32.factory->lpVtbl->Release(canvas_win32.factory);
+    if (canvas_win32.class)
+        UnregisterClassA("CanvasWindowClass", canvas_win32.instance);
     return CANVAS_OK;
 }
 
