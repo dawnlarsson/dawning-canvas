@@ -2254,6 +2254,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CLOSE:
     {
         canvas_info.canvas[window_index].close = true;
+        canvas_info.os_timed = false;
+
+        if (canvas_info.os_timed)
+            KillTimer(hwnd, 1);
+
         return 0;
     }
 
@@ -2940,8 +2945,11 @@ int _canvas_init_displays()
 
         unsigned long primary_output = xrandr.XRRGetOutputPrimary(x11.display, root);
 
-        for (int i = 0; i < sr->ncrtc && canvas_info.display_count < MAX_DISPLAYS; i++)
+        for (int i = 0; i < sr->ncrtc; i++)
         {
+            if (canvas_info.display_count >= MAX_DISPLAYS)
+                break;
+
             XRRCrtcInfo *ci = xrandr.XRRGetCrtcInfo(x11.display, sr, sr->crtcs[i]);
 
             if (!ci || ci->width == 0 || ci->height == 0 || ci->noutput == 0)
@@ -3287,12 +3295,20 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
         {
             unsigned int id = _canvas_get_x11_cursor_id((canvas_cursor_type)i);
             x11.cursors[i] = (unsigned long)x11.XCreateFontCursor(x11.display, id);
+            if (!x11.cursors[i])
+            {
+                CANVAS_ERR("failed to create cursor %d\n", i);
+                x11.cursors[i] = (unsigned long)x11.XCreateFontCursor(x11.display, 2);
+            }
         }
         x11.cursors_loaded = true;
     }
 
-    x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x11.cursors[cursor]);
-    x11.XFlush(x11.display);
+    if (x11.cursors[cursor])
+    {
+        x11.XDefineCursor(x11.display, (Window)canvas_info.canvas[window_id].window, x11.cursors[cursor]);
+        x11.XFlush(x11.display);
+    }
 
     return CANVAS_OK;
 }
@@ -3719,7 +3735,12 @@ double canvas_get_time(canvas_time_data *time)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    if (ts.tv_sec < 0 || ts.tv_nsec < 0)
+        return 0.0;
+
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+
     return (double)(now - time->start) / 1e9;
 }
 
@@ -3901,7 +3922,7 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     int target_x = (x == -1) ? canvas_info.display[display].width / 2 - width / 2 : x;
     int target_y = (y == -1) ? canvas_info.display[display].height / 2 - height / 2 : y;
 
-    if (title)
+    if (title && strlen(title) > 0)
     {
         strncpy(canvas_info.canvas[window_id].title, title, MAX_CANVAS_TITLE - 1);
         canvas_info.canvas[window_id].title[MAX_CANVAS_TITLE - 1] = '\0';
