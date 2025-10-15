@@ -483,7 +483,7 @@ static struct
     }
 
 const char *canvas_wayland_library_names[2] = {"libwayland-client.so.0", "libwayland-client.so"};
-const char *canvas_x11_library_names[2] = {"libX11.so", "libX11.so"};
+const char *canvas_x11_library_names[2] = {"libX11.so.6", "libX11.so"};
 const char *canvas_xrandr_library_names[2] = {"libXrandr.so.2", "libXrandr.so"};
 
 typedef struct
@@ -641,8 +641,6 @@ typedef struct
 #define X11_ClientMessage 33
 #define X11_MapNotify 19
 #define X11_UnmapNotify 18
-#define X11_ButtonPress 4
-#define X11_ButtonRelease 5
 #define X11_GrabModeAsync 1
 #define X11_CurrentTime 0L
 #define X11_PropertyNotify 28
@@ -1967,6 +1965,8 @@ int _canvas_refresh_displays()
 int _canvas_init_displays()
 {
     canvas_info.display_count = 0;
+
+    // SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     return _canvas_refresh_displays();
 }
@@ -3377,7 +3377,6 @@ int _canvas_init_x11()
 
     if (!xrandr.library)
     {
-        dlclose(xrandr.library);
         CANVAS_WARN("libXrandr.so.2 or libXrandr.so not found");
         return CANVAS_OK;
     }
