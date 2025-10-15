@@ -200,23 +200,17 @@ canvas_context_type canvas_info = (canvas_context_type){0};
 #include <ApplicationServices/ApplicationServices.h>
 #include <dlfcn.h>
 
-static mach_timebase_info_data_t _canvas_timebase = {0};
-
 typedef void *objc_id;
 typedef void *objc_sel;
-static objc_id _mac_pool = NULL;
-static objc_id _mac_app = NULL;
-static objc_id _mac_device = NULL;
-static objc_id _metal_queue = NULL;
 
-typedef struct
+typedef enum
 {
-    objc_id view;
-    objc_id layer;
-    double scale;
-} canvas_data;
-
-canvas_data _canvas_data[MAX_CANVAS];
+    NSWindowStyleMaskTitled = 1 << 0,
+    NSWindowStyleMaskClosable = 1 << 1,
+    NSWindowStyleMaskMiniaturizable = 1 << 2,
+    NSWindowStyleMaskResizable = 1 << 3,
+    NSWindowStyleMaskFullSizeContent = 1 << 15,
+} NSWindowStyleMask;
 
 typedef struct
 {
@@ -228,7 +222,33 @@ typedef struct
     double x, y, w, h;
 } _CGRect;
 
+typedef struct
+{
+    objc_id view;
+    objc_id layer;
+    double scale;
+} canvas_data;
+
+typedef struct
+{
+    objc_id pool;
+    objc_id app;
+    mach_timebase_info_data_t timebase;
+
+    // metal
+    objc_id device;
+    objc_id queue;
+} canvas_platform_macos;
+
 extern objc_id MTLCreateSystemDefaultDevice(void);
+
+typedef objc_id (*msg_send_id_id)(objc_id, objc_sel);
+typedef void (*msg_send_void_id)(objc_id, objc_sel);
+typedef void (*msg_send_void_id_id)(objc_id, objc_sel, objc_id);
+typedef void (*msg_send_void_id_bool)(objc_id, objc_sel, int);
+typedef void (*msg_send_void_id_long)(objc_id, objc_sel, long);
+typedef double (*msg_send_dbl_id)(objc_id, objc_sel);
+typedef unsigned long (*msg_send_ulong_id)(objc_id, objc_sel);
 
 static inline objc_sel sel_c(const char *s) { return sel_registerName(s); }
 static inline objc_id cls(const char *s) { return objc_getClass(s); }
@@ -248,6 +268,181 @@ typedef void (*MSG_void_id_clear)(objc_id, objc_sel, _MTLClearColor);
 typedef void (*MSG_void_id_rect)(objc_id, objc_sel, _CGRect);
 typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 
+static inline objc_id msg_id(objc_id obj, const char *sel)
+{
+    return ((msg_send_id_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void(objc_id obj, const char *sel)
+{
+    ((msg_send_void_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void_id(objc_id obj, const char *sel, objc_id arg)
+{
+    ((msg_send_void_id_id)objc_msgSend)(obj, sel_c(sel), arg);
+}
+
+static inline void msg_void_bool(objc_id obj, const char *sel, bool val)
+{
+    ((msg_send_void_id_bool)objc_msgSend)(obj, sel_c(sel), val ? 1 : 0);
+}
+
+static inline void msg_void_long(objc_id obj, const char *sel, long val)
+{
+    ((msg_send_void_id_long)objc_msgSend)(obj, sel_c(sel), val);
+}
+
+static inline double msg_dbl(objc_id obj, const char *sel)
+{
+    return ((msg_send_dbl_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline unsigned long msg_ulong(objc_id obj, const char *sel)
+{
+    return ((msg_send_ulong_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline bool msg_bool(objc_id obj, const char *sel)
+{
+    typedef bool (*msg_send_bool)(objc_id, objc_sel);
+    return ((msg_send_bool)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void_rect_bool(objc_id obj, const char *sel, _CGRect rect, bool display)
+{
+    typedef void (*msg_send_rect_bool)(objc_id, objc_sel, _CGRect, int);
+    ((msg_send_rect_bool)objc_msgSend)(obj, sel_c(sel), rect, display ? 1 : 0);
+}
+
+static inline objc_id nsstring_from_cstr(const char *str)
+{
+    if (!str || !str[0])
+        return NULL;
+    typedef objc_id (*msg_from_cstr)(objc_id, objc_sel, const char *);
+    return ((msg_from_cstr)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), str);
+}
+
+static inline objc_id msg_id_id(objc_id obj, const char *sel, objc_id arg)
+{
+    typedef objc_id (*msg_send_id_id)(objc_id, objc_sel, objc_id);
+    return ((msg_send_id_id)objc_msgSend)(obj, sel_c(sel), arg);
+}
+
+static inline _CGRect msg_rect(objc_id obj, const char *sel)
+{
+    typedef _CGRect (*msg_send_rect)(objc_id, objc_sel);
+    return ((msg_send_rect)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void_size(objc_id obj, const char *sel, double width, double height)
+{
+    struct
+    {
+        double width;
+        double height;
+    } sz = {width, height};
+    typedef void (*msg_send_size)(objc_id, objc_sel, typeof(sz));
+    ((msg_send_size)objc_msgSend)(obj, sel_c(sel), sz);
+}
+
+static inline objc_id msg_id_rect(objc_id obj, const char *sel, _CGRect rect)
+{
+    typedef objc_id (*msg_send_rect)(objc_id, objc_sel, _CGRect);
+    return ((msg_send_rect)objc_msgSend)(obj, sel_c(sel), rect);
+}
+
+static inline void msg_void_double(objc_id obj, const char *sel, double val)
+{
+    typedef void (*msg_send_dbl)(objc_id, objc_sel, double);
+    ((msg_send_dbl)objc_msgSend)(obj, sel_c(sel), val);
+}
+
+static inline objc_id msg_id_ulong(objc_id obj, const char *sel, unsigned long val)
+{
+    typedef objc_id (*msg_send_ulong)(objc_id, objc_sel, unsigned long);
+    return ((msg_send_ulong)objc_msgSend)(obj, sel_c(sel), val);
+}
+
+static inline void msg_void_clear_color(objc_id obj, const char *sel, _MTLClearColor color)
+{
+    typedef void (*msg_send_clear)(objc_id, objc_sel, _MTLClearColor);
+    ((msg_send_clear)objc_msgSend)(obj, sel_c(sel), color);
+}
+
+static inline objc_id msg_id_id_descriptor(objc_id obj, const char *sel, objc_id descriptor)
+{
+    typedef objc_id (*msg_send_desc)(objc_id, objc_sel, objc_id);
+    return ((msg_send_desc)objc_msgSend)(obj, sel_c(sel), descriptor);
+}
+
+static inline objc_id canvas_next_event(objc_id app, unsigned long long mask, objc_id until_date, objc_id mode, bool dequeue)
+{
+    typedef objc_id (*msg_send_event)(objc_id, objc_sel, unsigned long long, objc_id, objc_id, signed char);
+    msg_send_event next = (msg_send_event)objc_msgSend;
+    return next(app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+                mask, until_date, mode, dequeue ? 1 : 0);
+}
+
+typedef enum
+{
+    NSBackingStoreBuffered = 2,
+} NSBackingStoreType;
+
+typedef enum
+{
+    NSWindowTitleHidden = 1,
+} NSWindowTitleVisibility;
+
+typedef enum
+{
+    NSApplicationActivationPolicyRegular = 0,
+} NSApplicationActivationPolicy;
+
+typedef enum
+{
+    MTLPixelFormatBGRA8Unorm = 80,
+} MTLPixelFormat;
+
+typedef enum
+{
+    MTLLoadActionClear = 2,
+} MTLLoadAction;
+
+typedef enum
+{
+    MTLStoreActionStore = 1,
+} MTLStoreAction;
+
+static inline _CGRect make_rect(double x, double y, double w, double h)
+{
+    _CGRect r = {x, y, w, h};
+    return r;
+}
+
+static inline _MTLClearColor make_clear_color(float r, float g, float b, float a)
+{
+    _MTLClearColor c = {r, g, b, a};
+    return c;
+}
+
+static const char *_cursor_selector_names[] = {
+    [ARROW] = "arrowCursor",
+    [TEXT] = "IBeamCursor",
+    [CROSSHAIR] = "crosshairCursor",
+    [HAND] = "pointingHandCursor",
+    [SIZE_NS] = "resizeUpDownCursor",
+    [SIZE_EW] = "resizeLeftRightCursor",
+    [SIZE_NESW] = "closedHandCursor",
+    [SIZE_NWSE] = "closedHandCursor",
+    [SIZE_ALL] = "closedHandCursor",
+    [NOT_ALLOWED] = "operationNotAllowedCursor",
+    [WAIT] = "arrowCursor",
+};
+
+canvas_data _canvas_data[MAX_CANVAS];
+canvas_platform_macos canvas_macos;
+
 #endif
 
 #if defined(_WIN32)
@@ -266,19 +461,22 @@ typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
 static LARGE_INTEGER _canvas_qpc_frequency = {0};
 static LARGE_INTEGER _canvas_start_counter = {0};
 
-HINSTANCE _win_instance = NULL;
-ATOM _win_main_class = 0;
+typedef struct
+{
+    HINSTANCE instance;
+    ATOM class;
 
-ID3D12Device *_win_device = NULL;
-ID3D12CommandQueue *_win_cmdQueue = NULL;
-IDXGIFactory4 *_win_factory = NULL;
-ID3D12CommandAllocator *_win_cmdAllocator = NULL;
-ID3D12GraphicsCommandList *_win_cmdList = NULL;
-ID3D12DescriptorHeap *_win_rtvHeap = NULL;
-ID3D12Fence *_win_fence = NULL;
-UINT64 _win_fence_value = 0;
-HANDLE _win_fence_event = NULL;
-UINT _win_rtvDescriptorSize = 0;
+    ID3D12Device *device;
+    ID3D12CommandQueue *cmdQueue;
+    IDXGIFactory4 *factory;
+    ID3D12CommandAllocator *cmdAllocator;
+    ID3D12GraphicsCommandList *cmdList;
+    ID3D12DescriptorHeap *rtvHeap;
+    ID3D12Fence *fence;
+    UINT64 fence_value;
+    HANDLE fence_event;
+    UINT rtvDescriptorSize;
+} _canvas_platform_windows;
 
 typedef struct
 {
@@ -288,6 +486,7 @@ typedef struct
 } canvas_data;
 
 canvas_data _canvas_data[MAX_CANVAS];
+_canvas_platform_windows canvas_win32;
 
 #endif
 
@@ -1453,7 +1652,8 @@ int canvas_minimize(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("miniaturize:"), (objc_id)0);
+    msg_void_id(window, sel_c("miniaturize:"), NULL);
+
     canvas_info.canvas[window_id].minimized = true;
     canvas_info.canvas[window_id].maximized = false;
 
@@ -1471,11 +1671,11 @@ int canvas_maximize(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    bool is_zoomed = ((bool (*)(objc_id, objc_sel))objc_msgSend)(window, sel_c("isZoomed"));
+    bool is_zoomed = msg_bool(window, "isZoomed");
 
     if (!is_zoomed)
     {
-        ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
+        msg_void_id(window, sel_c("zoom:"), NULL);
         canvas_info.canvas[window_id].maximized = true;
     }
 
@@ -1497,11 +1697,11 @@ int canvas_restore(int window_id)
 
     if (canvas_info.canvas[window_id].minimized)
     {
-        ((MSG_void_id_id)objc_msgSend)(window, sel_c("deminiaturize:"), (objc_id)0);
+        msg_void_id(window, sel_c("deminiaturize:"), NULL);
     }
     else if (canvas_info.canvas[window_id].maximized)
     {
-        ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
+        msg_void_id(window, sel_c("zoom:"), NULL);
     }
 
     canvas_info.canvas[window_id].minimized = false;
@@ -1510,37 +1710,17 @@ int canvas_restore(int window_id)
     return CANVAS_OK;
 }
 
-objc_id _canvas_get_ns_cursor(canvas_cursor_type cursor)
+static objc_id _canvas_get_ns_cursor(canvas_cursor_type cursor)
 {
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
+    if (cursor < 0 || cursor >= sizeof(_cursor_selector_names) / sizeof(_cursor_selector_names[0]))
+        cursor = ARROW;
 
-    switch (cursor)
-    {
-    case ARROW:
-        return m(cls("NSCursor"), sel_c("arrowCursor"));
-    case TEXT:
-        return m(cls("NSCursor"), sel_c("IBeamCursor"));
-    case CROSSHAIR:
-        return m(cls("NSCursor"), sel_c("crosshairCursor"));
-    case HAND:
-        return m(cls("NSCursor"), sel_c("pointingHandCursor"));
-    case SIZE_NS:
-        return m(cls("NSCursor"), sel_c("resizeUpDownCursor"));
-    case SIZE_EW:
-        return m(cls("NSCursor"), sel_c("resizeLeftRightCursor"));
-    case SIZE_NESW:
-        return m(cls("NSCursor"), sel_c("closedHandCursor"));
-    case SIZE_NWSE:
-        return m(cls("NSCursor"), sel_c("closedHandCursor"));
-    case SIZE_ALL:
-        return m(cls("NSCursor"), sel_c("closedHandCursor"));
-    case NOT_ALLOWED:
-        return m(cls("NSCursor"), sel_c("operationNotAllowedCursor"));
-    case WAIT:
-        return m(cls("NSCursor"), sel_c("arrowCursor"));
-    default:
-        return m(cls("NSCursor"), sel_c("arrowCursor"));
-    }
+    const char *selector = _cursor_selector_names[cursor];
+
+    if (!selector)
+        selector = "arrowCursor";
+
+    return msg_id(cls("NSCursor"), selector);
 }
 
 int canvas_cursor(int window_id, canvas_cursor_type cursor)
@@ -1551,7 +1731,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 
     objc_id ns_cursor = _canvas_get_ns_cursor(cursor);
     if (ns_cursor)
-        ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
+        msg_void(ns_cursor, "set");
 
     return CANVAS_OK;
 }
@@ -1567,21 +1747,12 @@ int _canvas_close(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    // cleanup metal layer and view
-    if (_canvas_data[window_id].layer)
-    {
-        ((MSG_void_id)objc_msgSend)(_canvas_data[window_id].layer, sel_c("release"));
-        _canvas_data[window_id].layer = NULL;
-    }
+    _canvas_data[window_id].layer = NULL;
+    _canvas_data[window_id].view = NULL;
+    _canvas_data[window_id].scale = 0.0;
 
-    if (_canvas_data[window_id].view)
-    {
-        ((MSG_void_id)objc_msgSend)(_canvas_data[window_id].view, sel_c("release"));
-        _canvas_data[window_id].view = NULL;
-    }
-
-    ((MSG_void_id)objc_msgSend)(window, sel_c("close"));
-    ((MSG_void_id)objc_msgSend)(window, sel_c("release"));
+    msg_void(window, "close");
+    msg_void(window, "release");
 
     return CANVAS_OK;
 }
@@ -1604,16 +1775,15 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
-        _CGRect rect = {(double)global_x, (double)global_y, (double)width, (double)height};
-        typedef void (*MSG_void_id_rect_bool)(objc_id, objc_sel, _CGRect, int);
-        ((MSG_void_id_rect_bool)objc_msgSend)(window, sel_c("setFrame:display:"), rect, 1);
+        _CGRect rect = make_rect(global_x, global_y, width, height);
+        msg_void_rect_bool(window, "setFrame:display:", rect, true);
     }
 
     if (title)
     {
-        objc_id nsTitle = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), title);
+        objc_id nsTitle = nsstring_from_cstr(title);
         if (nsTitle)
-            ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitle:"), nsTitle);
+            msg_void_id(window, "setTitle:", nsTitle);
     }
 
     return CANVAS_OK;
@@ -1630,44 +1800,39 @@ int _canvas_get_window_display(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    objc_id screen = ((MSG_id_id)objc_msgSend)(window, sel_c("screen"));
+    objc_id screen = msg_id(window, "screen");
     if (!screen)
     {
-        CANVAS_ERR("no screen to get display: %d\n", window_id);
+        CANVAS_ERR("no screen for window: %d\n", window_id);
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    objc_id device_desc = ((MSG_id_id)objc_msgSend)(screen, sel_c("deviceDescription"));
+    objc_id device_desc = msg_id(screen, "deviceDescription");
     if (!device_desc)
     {
-        CANVAS_ERR("no device description to get display: %d\n", window_id);
+        CANVAS_ERR("no device description: %d\n", window_id);
         return CANVAS_ERR_GET_GPU;
     }
 
-    objc_id screen_number_key = ((MSG_id_id_charp)objc_msgSend)(
-        cls("NSString"),
-        sel_c("stringWithUTF8String:"),
-        "NSScreenNumber");
+    objc_id screen_number_key = nsstring_from_cstr("NSScreenNumber");
+    if (!screen_number_key)
+        return CANVAS_ERR_GET_DISPLAY;
 
-    objc_id display_id_obj = ((MSG_id_id_id)objc_msgSend)(
-        device_desc,
-        sel_c("objectForKey:"),
-        screen_number_key);
-
+    objc_id display_id_obj = msg_id_id(device_desc, "objectForKey:", screen_number_key);
     if (!display_id_obj)
         return CANVAS_ERR_GET_DISPLAY;
 
-    unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
+    unsigned long display_id = msg_ulong(display_id_obj, "unsignedIntValue");
 
     uint32_t max_displays = MAX_DISPLAYS;
-    CGDirectDisplayID display[MAX_DISPLAYS];
+    CGDirectDisplayID displays[MAX_DISPLAYS];
     uint32_t display_count = 0;
 
-    CGGetActiveDisplayList(max_displays, display, &display_count);
+    CGGetActiveDisplayList(max_displays, displays, &display_count);
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        if (display[i] != (CGDirectDisplayID)display_id)
+        if (displays[i] != (CGDirectDisplayID)display_id)
             continue;
 
         canvas_info.canvas[window_id].display = i;
@@ -1706,7 +1871,7 @@ int _canvas_refresh_displays()
         {
             refresh_rate = CGDisplayModeGetRefreshRate(mode);
 
-            if (refresh_rate == 0.0)
+            if (refresh_rate <= 0.0)
                 refresh_rate = 60.0;
 
             CGDisplayModeRelease(mode);
@@ -1740,16 +1905,6 @@ void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayCh
         canvas_info.display_changed = true;
 }
 
-bool _canvas_check_display_changes()
-{
-    if (canvas_info.display_changed)
-    {
-        _canvas_refresh_displays();
-        return true;
-    }
-    return false;
-}
-
 int _canvas_init_displays()
 {
     canvas_info.display_count = 0;
@@ -1763,29 +1918,29 @@ void _post_init()
     if (canvas_info.init_post)
         return;
     canvas_info.init_post = 1;
+
     objc_id poolClass = cls("NSAutoreleasePool");
     if (!poolClass)
         return;
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
-    objc_id alloc = m(poolClass, sel_c("alloc"));
-    _mac_pool = m(alloc, sel_c("init"));
-    mach_timebase_info(&_canvas_timebase);
+
+    objc_id alloc = msg_id(poolClass, "alloc");
+    canvas_macos.pool = msg_id(alloc, "init");
+    mach_timebase_info(&canvas_macos.timebase);
 }
 
 int _canvas_platform()
 {
     _post_init();
 
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
-    _mac_app = m(cls("NSApplication"), sel_c("sharedApplication"));
-    if (!_mac_app)
+    canvas_macos.app = msg_id(cls("NSApplication"), "sharedApplication");
+    if (!canvas_macos.app)
     {
-        CANVAS_ERR("get macOS application\n");
+        CANVAS_ERR("failed to get NSApplication\n");
         return CANVAS_ERR_GET_PLATFORM;
     }
 
-    ((MSG_void_id_long)objc_msgSend)(_mac_app, sel_c("setActivationPolicy:"), (long)0);
-    ((MSG_void_id_bool)objc_msgSend)(_mac_app, sel_c("activateIgnoringOtherApps:"), 1);
+    msg_void_long(canvas_macos.app, "setActivationPolicy:", NSApplicationActivationPolicyRegular);
+    msg_void_bool(canvas_macos.app, "activateIgnoringOtherApps:", true);
 
     return CANVAS_OK;
 }
@@ -1795,55 +1950,49 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _post_init();
     canvas_startup();
 
-    unsigned long style =
-        (1UL << 0) /*Titled*/
-        | (1UL << 1) /*Closable*/ |
-        (1UL << 2) /*Mini*/ | (1UL << 3) /*Resizable*/;
-
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
+    unsigned long style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
 
     objc_id winClass = cls("NSWindow");
-
     if (!winClass)
     {
-        CANVAS_ERR("get NSWindow class\n");
+        CANVAS_ERR("failed to get NSWindow class\n");
         return CANVAS_ERR_GET_WINDOW;
     }
-
-    objc_id walloc = m(winClass, sel_c("alloc"));
 
     int window_id = _canvas_get_free();
     if (window_id < 0)
         return window_id;
 
-    typedef objc_id (*MSG_initWin)(objc_id, objc_sel, _CGRect, unsigned long, long, int);
-    _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
-    objc_id window = ((MSG_initWin)objc_msgSend)(walloc,
-                                                 sel_c("initWithContentRect:styleMask:backing:defer:"),
-                                                 rect, style, (long)2, 0);
+    objc_id walloc = msg_id(winClass, "alloc");
+
+    typedef objc_id (*msg_initWin)(objc_id, objc_sel, _CGRect, unsigned long, long, int);
+
+    _CGRect rect = make_rect(x, y, width, height);
+
+    objc_id window = ((msg_initWin)objc_msgSend)(walloc, sel_c("initWithContentRect:styleMask:backing:defer:"), rect, style, (long)NSBackingStoreBuffered, 0);
 
     if (!window)
     {
         canvas_info.canvas[window_id]._valid = false;
-        CANVAS_ERR("create NSWindow\n");
+        CANVAS_ERR("failed to create NSWindow\n");
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ((MSG_void_id_bool)objc_msgSend)(window, sel_c("setTitlebarAppearsTransparent:"), 1);
-    ((MSG_void_id_long)objc_msgSend)(window, sel_c("setTitleVisibility:"), 1L /* NSWindowTitleHidden */);
+    msg_void_bool(window, "setTitlebarAppearsTransparent:", true);
+    msg_void_long(window, "setTitleVisibility:", NSWindowTitleHidden);
 
-    unsigned long sm = ((MSG_ulong_id)objc_msgSend)(window, sel_c("styleMask"));
-    sm |= (1UL << 15); /* NSWindowStyleMaskFullSizeContentView */
-    ((MSG_void_id_ulong)objc_msgSend)(window, sel_c("setStyleMask:"), sm);
+    unsigned long sm = msg_ulong(window, "styleMask");
+    sm |= NSWindowStyleMaskFullSizeContent;
+    msg_void_long(window, "setStyleMask:", sm);
 
     if (title)
     {
-        objc_id nsTitle = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), title);
+        objc_id nsTitle = nsstring_from_cstr(title);
         if (nsTitle)
-            ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitle:"), nsTitle);
+            msg_void_id(window, "setTitle:", nsTitle);
     }
 
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
+    msg_void_id(window, "makeKeyAndOrderFront:", NULL);
 
     canvas_info.canvas[window_id].window = window;
     canvas_info.canvas[window_id].resize = false;
@@ -1859,15 +2008,21 @@ int _canvas_gpu_init()
         return CANVAS_OK;
     canvas_info.init_gpu = 1;
 
-    _mac_device = MTLCreateSystemDefaultDevice();
-    if (!_mac_device)
+    canvas_macos.device = MTLCreateSystemDefaultDevice();
+    if (!canvas_macos.device)
     {
-        CANVAS_ERR("get macOS Metal device\n");
+        CANVAS_ERR("failed to create Metal device\n");
         return CANVAS_ERR_GET_GPU;
     }
 
-    _metal_queue = ((MSG_id_id)objc_msgSend)(_mac_device, sel_c("newCommandQueue"));
-    return _metal_queue ? 0 : CANVAS_ERR_GET_GPU;
+    canvas_macos.queue = msg_id(canvas_macos.device, "newCommandQueue");
+    if (!canvas_macos.queue)
+    {
+        CANVAS_ERR("failed to create Metal command queue\n");
+        return CANVAS_ERR_GET_GPU;
+    }
+
+    return CANVAS_OK;
 }
 
 int _canvas_update_drawable_size(int window_id)
@@ -1880,16 +2035,10 @@ int _canvas_update_drawable_size(int window_id)
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(_canvas_data[window_id].view, sel_c("bounds"));
+    _CGRect b = msg_rect(_canvas_data[window_id].view, "bounds");
     double w = b.w * _canvas_data[window_id].scale;
     double h = b.h * _canvas_data[window_id].scale;
-
-    struct
-    {
-        double width;
-        double height;
-    } sz = {w, h};
-    ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(_canvas_data[window_id].layer, sel_c("setDrawableSize:"), sz);
+    msg_void_size(_canvas_data[window_id].layer, "setDrawableSize:", w, h);
 
     return CANVAS_OK;
 }
@@ -1900,40 +2049,37 @@ int _canvas_gpu_new_window(int window_id)
 
     objc_id window = canvas_info.canvas[window_id].window;
 
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
-
-    objc_id view = m(cls("NSView"), sel_c("alloc"));
-    view = ((MSG_id_id_rect)objc_msgSend)(view, sel_c("initWithFrame:"), (_CGRect){0, 0, 800, 600});
+    objc_id view = msg_id(cls("NSView"), "alloc");
+    view = msg_id_rect(view, "initWithFrame:", make_rect(0, 0, 800, 600));
     if (!view)
     {
-        CANVAS_ERR("create NSView for window: %d\n", window_id);
+        CANVAS_ERR("failed to create NSView for window: %d\n", window_id);
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ((MSG_void_id_bool)objc_msgSend)(view, sel_c("setWantsLayer:"), 1);
+    msg_void_bool(view, "setWantsLayer:", true);
 
-    objc_id layer = m(cls("CAMetalLayer"), sel_c("alloc"));
-    layer = m(layer, sel_c("init"));
-
+    objc_id layer = msg_id(cls("CAMetalLayer"), "alloc");
+    layer = msg_id(layer, "init");
     if (!layer)
     {
-        CANVAS_ERR("create CAMetalLayer for window: %d\n", window_id);
+        CANVAS_ERR("failed to create CAMetalLayer for window: %d\n", window_id);
         return CANVAS_ERR_GET_GPU;
     }
 
-    ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), _mac_device);
-    ((MSG_void_id_long)objc_msgSend)(layer, sel_c("setPixelFormat:"), 80L /*BGRA8Unorm*/);
-    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setFramebufferOnly:"), 1);
-    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setAllowsNextDrawableTimeout:"), 0);
+    msg_void_id(layer, "setDevice:", canvas_macos.device);
+    msg_void_long(layer, "setPixelFormat:", MTLPixelFormatBGRA8Unorm);
+    msg_void_bool(layer, "setFramebufferOnly:", true);
+    msg_void_bool(layer, "setAllowsNextDrawableTimeout:", false);
 
     double scale = 1.0;
-    objc_id screen = m(window, sel_c("screen"));
+    objc_id screen = msg_id(window, "screen");
     if (screen)
-        scale = ((MSG_dbl_id)objc_msgSend)(screen, sel_c("backingScaleFactor"));
-    ((void (*)(objc_id, objc_sel, double))objc_msgSend)(layer, sel_c("setContentsScale:"), scale);
+        scale = msg_dbl(screen, "backingScaleFactor");
+    msg_void_double(layer, "setContentsScale:", scale);
 
-    ((MSG_void_id_id)objc_msgSend)(view, sel_c("setLayer:"), layer);
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("setContentView:"), view);
+    msg_void_id(view, "setLayer:", layer);
+    msg_void_id(window, "setContentView:", view);
 
     _canvas_data[window_id].view = view;
     _canvas_data[window_id].layer = layer;
@@ -1944,9 +2090,9 @@ int _canvas_gpu_new_window(int window_id)
 
 void _canvas_gpu_draw_all()
 {
-    if (!_metal_queue)
+    if (!canvas_macos.queue)
     {
-        CANVAS_VERBOSE("no metal command queue to draw\n");
+        CANVAS_VERBOSE("no metal command queue\n");
         return;
     }
 
@@ -1961,30 +2107,33 @@ void _canvas_gpu_draw_all()
         if (!layer)
             continue;
 
-        objc_id drawable = ((MSG_id_id)objc_msgSend)(layer, sel_c("nextDrawable"));
-
+        objc_id drawable = msg_id(layer, "nextDrawable");
         if (!drawable)
             continue;
 
-        objc_id texture = ((MSG_id_id)objc_msgSend)(drawable, sel_c("texture"));
+        objc_id texture = msg_id(drawable, "texture");
 
-        objc_id rpd = ((MSG_id_id)objc_msgSend)(cls("MTLRenderPassDescriptor"), sel_c("renderPassDescriptor"));
-        objc_id caps = ((MSG_id_id)objc_msgSend)(rpd, sel_c("colorAttachments"));
-        objc_id att0 = ((MSG_id_id_ulong)objc_msgSend)(caps, sel_c("objectAtIndexedSubscript:"), 0UL);
+        objc_id rpd = msg_id(cls("MTLRenderPassDescriptor"), "renderPassDescriptor");
+        objc_id caps = msg_id(rpd, "colorAttachments");
+        objc_id att0 = msg_id_ulong(caps, "objectAtIndexedSubscript:", 0UL);
 
-        ((MSG_void_id_id)objc_msgSend)(att0, sel_c("setTexture:"), texture);
-        ((MSG_void_id_ulong)objc_msgSend)(att0, sel_c("setLoadAction:"), 2UL);  /* Clear */
-        ((MSG_void_id_ulong)objc_msgSend)(att0, sel_c("setStoreAction:"), 1UL); /* Store */
+        msg_void_id(att0, "setTexture:", texture);
+        msg_void_long(att0, "setLoadAction:", MTLLoadActionClear);
+        msg_void_long(att0, "setStoreAction:", MTLStoreActionStore);
 
-        _MTLClearColor cc = {canvas_info.canvas[i].clear[0], canvas_info.canvas[i].clear[1], canvas_info.canvas[i].clear[2], canvas_info.canvas[i].clear[3]};
-        ((MSG_void_id_clear)objc_msgSend)(att0, sel_c("setClearColor:"), cc);
+        _MTLClearColor clear = make_clear_color(
+            canvas_info.canvas[i].clear[0],
+            canvas_info.canvas[i].clear[1],
+            canvas_info.canvas[i].clear[2],
+            canvas_info.canvas[i].clear[3]);
+        msg_void_clear_color(att0, "setClearColor:", clear);
 
-        objc_id cmd = ((MSG_id_id)objc_msgSend)(_metal_queue, sel_c("commandBuffer"));
-        objc_id enc = ((MSG_id_id_id)objc_msgSend)(cmd, sel_c("renderCommandEncoderWithDescriptor:"), rpd);
-        ((MSG_void_id)objc_msgSend)(enc, sel_c("endEncoding"));
+        objc_id cmd = msg_id(canvas_macos.queue, "commandBuffer");
+        objc_id enc = msg_id_id_descriptor(cmd, "renderCommandEncoderWithDescriptor:", rpd);
+        msg_void(enc, "endEncoding");
 
-        ((MSG_void_id_id)objc_msgSend)(cmd, sel_c("presentDrawable:"), drawable);
-        ((MSG_void_id)objc_msgSend)(cmd, sel_c("commit"));
+        msg_void_id(cmd, "presentDrawable:", drawable);
+        msg_void(cmd, "commit");
     }
 }
 
@@ -1992,59 +2141,48 @@ int _canvas_update()
 {
     _post_init();
 
-    _canvas_check_display_changes();
+    if (canvas_info.display_changed)
+        _canvas_refresh_displays();
 
     objc_id poolClass = cls("NSAutoreleasePool");
     objc_id framePool = NULL;
     if (poolClass)
     {
-        objc_id tmp = ((MSG_id_id)objc_msgSend)(poolClass, sel_c("alloc"));
-        framePool = ((MSG_id_id)objc_msgSend)(tmp, sel_c("init"));
+        objc_id tmp = msg_id(poolClass, "alloc");
+        framePool = msg_id(tmp, "init");
     }
 
-    objc_id ns_mode = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), "kCFRunLoopDefaultMode");
-    objc_id distantPast = ((MSG_id_id)objc_msgSend)(cls("NSDate"), sel_c("distantPast"));
-
-    typedef objc_id (*MSG_nextEvent)(objc_id, objc_sel, unsigned long long, objc_id, objc_id, signed char);
-    MSG_nextEvent nextEvent = (MSG_nextEvent)objc_msgSend;
+    objc_id ns_mode = nsstring_from_cstr("kCFRunLoopDefaultMode");
+    objc_id distantPast = msg_id(cls("NSDate"), "distantPast");
 
     for (;;)
     {
-        objc_id ev = nextEvent(_mac_app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
-                               ~0ULL, distantPast, ns_mode, (signed char)1);
+        objc_id ev = canvas_next_event(canvas_macos.app, ~0ULL, distantPast, ns_mode, true);
         if (!ev)
             break;
 
-        unsigned long eventType = ((MSG_ulong_id)objc_msgSend)(ev, sel_c("type"));
-
-        objc_id eventWindow = ((MSG_id_id)objc_msgSend)(ev, sel_c("window"));
+        unsigned long eventType = msg_ulong(ev, "type");
+        objc_id eventWindow = msg_id(ev, "window");
 
         if (eventWindow)
         {
             int window_idx = _canvas_window_index(eventWindow);
-
             if (window_idx >= 0)
             {
-                // NSEventType constants
-                // NSEventTypeLeftMouseDragged = 6
-                // NSEventTypeOtherMouseDragged = 27
-                // NSEventTypeRightMouseDragged = 7
-
                 if (eventType == 5) // NSEventTypeMouseMoved
                 {
                     objc_id ns_cursor = _canvas_get_ns_cursor(canvas_info.canvas[window_idx].cursor);
                     if (ns_cursor)
-                        ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
+                        msg_void(ns_cursor, "set");
                 }
 
                 switch (eventType)
                 {
-
                 case 6:  // NSEventTypeLeftMouseDragged
-                case 27: // NSEventTypeOtherMouseDragged
                 case 7:  // NSEventTypeRightMouseDragged
+                case 27: // NSEventTypeOtherMouseDragged
                 {
-                    _CGRect frame = ((MSG_rect_id)objc_msgSend)(eventWindow, sel_c("frame"));
+                    _CGRect frame = msg_rect(eventWindow, "frame");
 
                     if ((int)frame.x != canvas_info.canvas[window_idx].x ||
                         (int)frame.y != canvas_info.canvas[window_idx].y)
@@ -2068,25 +2206,23 @@ int _canvas_update()
             }
         }
 
-        ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
+        msg_void_id(canvas_macos.app, "sendEvent:", ev);
     }
 
-    objc_id tracking_mode = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), "NSEventTrackingRunLoopMode");
+    objc_id tracking_mode = nsstring_from_cstr("NSEventTrackingRunLoopMode");
     for (;;)
     {
-        objc_id ev = nextEvent(_mac_app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
-                               ~0ULL, distantPast, tracking_mode, (signed char)1);
+        objc_id ev = canvas_next_event(canvas_macos.app, ~0ULL, distantPast, tracking_mode, true);
         if (!ev)
             break;
-        ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
+        msg_void_id(canvas_macos.app, "sendEvent:", ev);
     }
 
-    ((MSG_void_id)objc_msgSend)(_mac_app, sel_c("updateWindows"));
-
+    msg_void(canvas_macos.app, "updateWindows");
     _canvas_gpu_draw_all();
 
     if (framePool)
-        ((MSG_void_id)objc_msgSend)(framePool, sel_c("drain"));
+        msg_void(framePool, "drain");
 
     return CANVAS_OK;
 }
@@ -2098,20 +2234,20 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    if (_metal_queue)
+    if (canvas_macos.queue)
     {
-        ((MSG_void_id)objc_msgSend)(_metal_queue, sel_c("release"));
-        _metal_queue = NULL;
+        ((MSG_void_id)objc_msgSend)(canvas_macos.queue, sel_c("release"));
+        canvas_macos.queue = NULL;
     }
-    if (_mac_device)
+    if (canvas_macos.device)
     {
-        ((MSG_void_id)objc_msgSend)(_mac_device, sel_c("release"));
-        _mac_device = NULL;
+        ((MSG_void_id)objc_msgSend)(canvas_macos.device, sel_c("release"));
+        canvas_macos.device = NULL;
     }
-    if (_mac_pool)
+    if (canvas_macos.pool)
     {
-        ((MSG_void_id)objc_msgSend)(_mac_pool, sel_c("drain"));
-        _mac_pool = NULL;
+        ((MSG_void_id)objc_msgSend)(canvas_macos.pool, sel_c("drain"));
+        canvas_macos.pool = NULL;
     }
     CGDisplayRemoveReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
     return CANVAS_OK;
@@ -2119,16 +2255,16 @@ int _canvas_exit()
 
 static inline void _canvas_ensure_timebase()
 {
-    if (_canvas_timebase.denom == 0)
-        mach_timebase_info(&_canvas_timebase);
+    if (canvas_macos.timebase.denom == 0)
+        mach_timebase_info(&canvas_macos.timebase);
 }
 
 double canvas_get_time(canvas_time_data *time)
 {
     _canvas_ensure_timebase();
     uint64_t elapsed = mach_absolute_time() - time->start;
-    return (double)elapsed * (double)_canvas_timebase.numer /
-           (double)_canvas_timebase.denom / 1e9;
+    return (double)elapsed * (double)canvas_macos.timebase.numer /
+           (double)canvas_macos.timebase.denom / 1e9;
 }
 
 void canvas_sleep(double seconds)
@@ -2679,25 +2815,6 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     if (window_id < 0)
         return window_id;
 
-    if (!_win_main_class)
-    {
-        WNDCLASSA wc = {0};
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc = WndProc;
-        wc.hInstance = _win_instance;
-        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = NULL;
-        wc.lpszClassName = "CanvasWindowClass";
-
-        _win_main_class = RegisterClassA(&wc);
-
-        if (!_win_main_class)
-        {
-            CANVAS_ERR("register windows class failed");
-            return CANVAS_ERR_GET_PLATFORM;
-        }
-    }
-
     DWORD style = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_VISIBLE;
 
     canvas_info.canvas[window_id].index = window_id;
@@ -2707,7 +2824,7 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
         title,
         style,
         x, y, width, height,
-        NULL, NULL, _win_instance, NULL);
+        NULL, NULL, canvas_win32.instance, NULL);
 
     if (!window)
     {
@@ -2725,7 +2842,23 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
 int _canvas_platform()
 {
-    _win_instance = GetModuleHandle(NULL);
+    canvas_win32.instance = GetModuleHandle(NULL);
+
+    WNDCLASSA wc = {0};
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = canvas_win32.instance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = "CanvasWindowClass";
+
+    canvas_win32.class = RegisterClassA(&wc);
+
+    if (!canvas_win32.class)
+    {
+        CANVAS_ERR("register windows class failed");
+        return CANVAS_ERR_GET_PLATFORM;
+    }
 
     return CANVAS_OK;
 }
@@ -2739,7 +2872,7 @@ int _canvas_update()
         DispatchMessage(&msg);
     }
 
-    if (_win_device)
+    if (canvas_win32.device)
     {
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
@@ -2749,8 +2882,8 @@ int _canvas_update()
             }
         }
 
-        _win_cmdAllocator->lpVtbl->Reset(_win_cmdAllocator);
-        _win_cmdList->lpVtbl->Reset(_win_cmdList, _win_cmdAllocator, NULL);
+        canvas_win32.cmdAllocator->lpVtbl->Reset(canvas_win32.cmdAllocator);
+        canvas_win32.cmdList->lpVtbl->Reset(canvas_win32.cmdList, canvas_win32.cmdAllocator, NULL);
 
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
@@ -2767,20 +2900,18 @@ int _canvas_update()
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            _win_cmdList->lpVtbl->ResourceBarrier(_win_cmdList, 1, &barrier);
+            canvas_win32.cmdList->lpVtbl->ResourceBarrier(canvas_win32.cmdList, 1, &barrier);
 
-            _win_cmdList->lpVtbl->ClearRenderTargetView(_win_cmdList,
-                                                        _canvas_data[i].rtvHandles[backBufferIndex],
-                                                        canvas_info.canvas[i].clear, 0, NULL);
+            canvas_win32.cmdList->lpVtbl->ClearRenderTargetView(canvas_win32.cmdList, _canvas_data[i].rtvHandles[backBufferIndex], canvas_info.canvas[i].clear, 0, NULL);
 
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-            _win_cmdList->lpVtbl->ResourceBarrier(_win_cmdList, 1, &barrier);
+            canvas_win32.cmdList->lpVtbl->ResourceBarrier(canvas_win32.cmdList, 1, &barrier);
         }
 
-        _win_cmdList->lpVtbl->Close(_win_cmdList);
-        ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)_win_cmdList};
-        _win_cmdQueue->lpVtbl->ExecuteCommandLists(_win_cmdQueue, 1, cmdLists);
+        canvas_win32.cmdList->lpVtbl->Close(canvas_win32.cmdList);
+        ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)canvas_win32.cmdList};
+        canvas_win32.cmdQueue->lpVtbl->ExecuteCommandLists(canvas_win32.cmdQueue, 1, cmdLists);
 
         for (int i = 0; i < MAX_CANVAS; ++i)
         {
@@ -2797,12 +2928,12 @@ int _canvas_update()
             }
         }
 
-        _win_fence_value++;
-        _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
-        if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+        canvas_win32.fence_value++;
+        canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+        if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
         {
-            _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
-            WaitForSingleObject(_win_fence_event, INFINITE);
+            canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+            WaitForSingleObject(canvas_win32.fence_event, INFINITE);
         }
     }
 
@@ -2818,70 +2949,70 @@ int _canvas_gpu_init()
 
     HRESULT result;
 
-    result = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&_win_factory);
+    result = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&canvas_win32.factory);
     if (FAILED(result))
     {
         CANVAS_ERR("create dx12 factory failed (HRESULT: 0x%08lX)\n", result);
         return CANVAS_ERR_GET_GPU;
     }
 
-    result = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&_win_device);
+    result = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&canvas_win32.device);
     if (FAILED(result))
     {
         CANVAS_ERR("create dx12 device failed (HRESULT: 0x%08lX)\n", result);
-        _win_factory->lpVtbl->Release(_win_factory);
-        _win_factory = NULL;
+        canvas_win32.factory->lpVtbl->Release(canvas_win32.factory);
+        canvas_win32.factory = NULL;
         return CANVAS_ERR_GET_GPU;
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {0};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-    result = _win_device->lpVtbl->CreateCommandQueue(_win_device, &queueDesc, &IID_ID3D12CommandQueue, (void **)&_win_cmdQueue);
+    result = canvas_win32.device->lpVtbl->CreateCommandQueue(canvas_win32.device, &queueDesc, &IID_ID3D12CommandQueue, (void **)&canvas_win32.cmdQueue);
     if (FAILED(result))
     {
         CANVAS_ERR("create command queue failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    result = _win_device->lpVtbl->CreateCommandAllocator(_win_device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&_win_cmdAllocator);
+    result = canvas_win32.device->lpVtbl->CreateCommandAllocator(canvas_win32.device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&canvas_win32.cmdAllocator);
     if (FAILED(result))
     {
         CANVAS_ERR("create command allocator failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    result = _win_device->lpVtbl->CreateCommandList(_win_device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, _win_cmdAllocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&_win_cmdList);
+    result = canvas_win32.device->lpVtbl->CreateCommandList(canvas_win32.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, canvas_win32.cmdAllocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&canvas_win32.cmdList);
     if (FAILED(result))
     {
         CANVAS_ERR("create command list failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    _win_cmdList->lpVtbl->Close(_win_cmdList);
+    canvas_win32.cmdList->lpVtbl->Close(canvas_win32.cmdList);
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
     heapDesc.NumDescriptors = MAX_CANVAS * 2;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
-    result = _win_device->lpVtbl->CreateDescriptorHeap(_win_device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&_win_rtvHeap);
+    result = canvas_win32.device->lpVtbl->CreateDescriptorHeap(canvas_win32.device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&canvas_win32.rtvHeap);
     if (FAILED(result))
     {
         CANVAS_ERR("create descriptor heap failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    _win_rtvDescriptorSize = _win_device->lpVtbl->GetDescriptorHandleIncrementSize(_win_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    canvas_win32.rtvDescriptorSize = canvas_win32.device->lpVtbl->GetDescriptorHandleIncrementSize(canvas_win32.device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-    result = _win_device->lpVtbl->CreateFence(_win_device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&_win_fence);
+    result = canvas_win32.device->lpVtbl->CreateFence(canvas_win32.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&canvas_win32.fence);
     if (FAILED(result))
     {
         CANVAS_ERR("create fence failed (HRESULT: 0x%08lX)\n", result);
         goto cleanup_gpu;
     }
 
-    _win_fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (!_win_fence_event)
+    canvas_win32.fence_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!canvas_win32.fence_event)
     {
         CANVAS_ERR("create fence event failed (GetLastError: %lu)\n", GetLastError());
         goto cleanup_gpu;
@@ -2890,40 +3021,40 @@ int _canvas_gpu_init()
     return CANVAS_OK;
 
 cleanup_gpu:
-    if (_win_fence)
+    if (canvas_win32.fence)
     {
-        _win_fence->lpVtbl->Release(_win_fence);
-        _win_fence = NULL;
+        canvas_win32.fence->lpVtbl->Release(canvas_win32.fence);
+        canvas_win32.fence = NULL;
     }
-    if (_win_rtvHeap)
+    if (canvas_win32.rtvHeap)
     {
-        _win_rtvHeap->lpVtbl->Release(_win_rtvHeap);
-        _win_rtvHeap = NULL;
+        canvas_win32.rtvHeap->lpVtbl->Release(canvas_win32.rtvHeap);
+        canvas_win32.rtvHeap = NULL;
     }
-    if (_win_cmdList)
+    if (canvas_win32.cmdList)
     {
-        _win_cmdList->lpVtbl->Release(_win_cmdList);
-        _win_cmdList = NULL;
+        canvas_win32.cmdList->lpVtbl->Release(canvas_win32.cmdList);
+        canvas_win32.cmdList = NULL;
     }
-    if (_win_cmdAllocator)
+    if (canvas_win32.cmdAllocator)
     {
-        _win_cmdAllocator->lpVtbl->Release(_win_cmdAllocator);
-        _win_cmdAllocator = NULL;
+        canvas_win32.cmdAllocator->lpVtbl->Release(canvas_win32.cmdAllocator);
+        canvas_win32.cmdAllocator = NULL;
     }
-    if (_win_cmdQueue)
+    if (canvas_win32.cmdQueue)
     {
-        _win_cmdQueue->lpVtbl->Release(_win_cmdQueue);
-        _win_cmdQueue = NULL;
+        canvas_win32.cmdQueue->lpVtbl->Release(canvas_win32.cmdQueue);
+        canvas_win32.cmdQueue = NULL;
     }
-    if (_win_device)
+    if (canvas_win32.device)
     {
-        _win_device->lpVtbl->Release(_win_device);
-        _win_device = NULL;
+        canvas_win32.device->lpVtbl->Release(canvas_win32.device);
+        canvas_win32.device = NULL;
     }
-    if (_win_factory)
+    if (canvas_win32.factory)
     {
-        _win_factory->lpVtbl->Release(_win_factory);
-        _win_factory = NULL;
+        canvas_win32.factory->lpVtbl->Release(canvas_win32.factory);
+        canvas_win32.factory = NULL;
     }
 
     canvas_info.init_gpu = 0;
@@ -2954,9 +3085,9 @@ int _canvas_gpu_new_window(int window_id)
     scDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     IDXGISwapChain1 *swapChain1;
-    HRESULT result = _win_factory->lpVtbl->CreateSwapChainForHwnd(
-        _win_factory,
-        (IUnknown *)_win_cmdQueue,
+    HRESULT result = canvas_win32.factory->lpVtbl->CreateSwapChainForHwnd(
+        canvas_win32.factory,
+        (IUnknown *)canvas_win32.cmdQueue,
         window,
         &scDesc,
         NULL,
@@ -2981,15 +3112,15 @@ int _canvas_gpu_new_window(int window_id)
         return CANVAS_ERR_GET_GPU;
     }
 
-    _win_factory->lpVtbl->MakeWindowAssociation(
-        _win_factory,
+    canvas_win32.factory->lpVtbl->MakeWindowAssociation(
+        canvas_win32.factory,
         window,
         DXGI_MWA_NO_ALT_ENTER);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
-    _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
+    canvas_win32.rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(canvas_win32.rtvHeap, &rtvHandle);
 
-    rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
+    rtvHandle.ptr += window_id * 2 * canvas_win32.rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
     {
@@ -3006,12 +3137,12 @@ int _canvas_gpu_new_window(int window_id)
         }
 
         _canvas_data[window_id].rtvHandles[i] = rtvHandle;
-        _win_device->lpVtbl->CreateRenderTargetView(
-            _win_device,
+        canvas_win32.device->lpVtbl->CreateRenderTargetView(
+            canvas_win32.device,
             _canvas_data[window_id].backBuffers[i],
             NULL,
             rtvHandle);
-        rtvHandle.ptr += _win_rtvDescriptorSize;
+        rtvHandle.ptr += canvas_win32.rtvDescriptorSize;
     }
 
     return CANVAS_OK;
@@ -3031,12 +3162,12 @@ int _canvas_window_resize(int window_id)
 
     canvas_info.canvas[window_id].resize = false;
 
-    _win_fence_value++;
-    _win_cmdQueue->lpVtbl->Signal(_win_cmdQueue, _win_fence, _win_fence_value);
-    if (_win_fence->lpVtbl->GetCompletedValue(_win_fence) < _win_fence_value)
+    canvas_win32.fence_value++;
+    canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+    if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
     {
-        _win_fence->lpVtbl->SetEventOnCompletion(_win_fence, _win_fence_value, _win_fence_event);
-        WaitForSingleObject(_win_fence_event, INFINITE);
+        canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+        WaitForSingleObject(canvas_win32.fence_event, INFINITE);
     }
 
     RECT rect;
@@ -3068,8 +3199,8 @@ int _canvas_window_resize(int window_id)
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
-    _win_rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(_win_rtvHeap, &rtvHandle);
-    rtvHandle.ptr += window_id * 2 * _win_rtvDescriptorSize;
+    canvas_win32.rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(canvas_win32.rtvHeap, &rtvHandle);
+    rtvHandle.ptr += window_id * 2 * canvas_win32.rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
     {
@@ -3084,9 +3215,9 @@ int _canvas_window_resize(int window_id)
         }
 
         window->rtvHandles[i] = rtvHandle;
-        _win_device->lpVtbl->CreateRenderTargetView(
-            _win_device, window->backBuffers[i], NULL, rtvHandle);
-        rtvHandle.ptr += _win_rtvDescriptorSize;
+        canvas_win32.device->lpVtbl->CreateRenderTargetView(
+            canvas_win32.device, window->backBuffers[i], NULL, rtvHandle);
+        rtvHandle.ptr += canvas_win32.rtvDescriptorSize;
     }
 
     return CANVAS_OK;
@@ -3099,24 +3230,24 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    if (_win_fence_event)
-        CloseHandle(_win_fence_event);
-    if (_win_fence)
-        _win_fence->lpVtbl->Release(_win_fence);
-    if (_win_rtvHeap)
-        _win_rtvHeap->lpVtbl->Release(_win_rtvHeap);
-    if (_win_cmdList)
-        _win_cmdList->lpVtbl->Release(_win_cmdList);
-    if (_win_cmdAllocator)
-        _win_cmdAllocator->lpVtbl->Release(_win_cmdAllocator);
-    if (_win_cmdQueue)
-        _win_cmdQueue->lpVtbl->Release(_win_cmdQueue);
-    if (_win_device)
-        _win_device->lpVtbl->Release(_win_device);
-    if (_win_factory)
-        _win_factory->lpVtbl->Release(_win_factory);
-    if (_win_main_class)
-        UnregisterClassA("CanvasWindowClass", _win_instance);
+    if (canvas_win32.fence_event)
+        CloseHandle(canvas_win32.fence_event);
+    if (canvas_win32.fence)
+        canvas_win32.fence->lpVtbl->Release(canvas_win32.fence);
+    if (canvas_win32.rtvHeap)
+        canvas_win32.rtvHeap->lpVtbl->Release(canvas_win32.rtvHeap);
+    if (canvas_win32.cmdList)
+        canvas_win32.cmdList->lpVtbl->Release(canvas_win32.cmdList);
+    if (canvas_win32.cmdAllocator)
+        canvas_win32.cmdAllocator->lpVtbl->Release(canvas_win32.cmdAllocator);
+    if (canvas_win32.cmdQueue)
+        canvas_win32.cmdQueue->lpVtbl->Release(canvas_win32.cmdQueue);
+    if (canvas_win32.device)
+        canvas_win32.device->lpVtbl->Release(canvas_win32.device);
+    if (canvas_win32.factory)
+        canvas_win32.factory->lpVtbl->Release(canvas_win32.factory);
+    if (canvas_win32.class)
+        UnregisterClassA("CanvasWindowClass", canvas_win32.instance);
     return CANVAS_OK;
 }
 
