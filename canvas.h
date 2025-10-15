@@ -1016,7 +1016,28 @@ typedef unsigned long VisualID;
 #define canvas_vulkan_library_names {"libvulkan.dylib", "libvulkan.1.dylib", "libMoltenVK.dylib", "vulkan.framework/vulkan", "MoltenVK.framework/MoltenVK", "/usr/local/lib/libvulkan.dylib"}
 #endif
 
-const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_names;
+#define VK_LOAD_INSTANCE_FUNC(name)                                                    \
+    vk_info.name = (PFN_##name)vk_info.vkGetInstanceProcAddr(vk_info.instance, #name); \
+    if (!vk_info.name)                                                                 \
+    {                                                                                  \
+        CANVAS_ERR("failed to load instance function: " #name "\n");                   \
+        return CANVAS_ERR_LOAD_SYMBOL;                                                 \
+    }
+
+#define VK_LOAD_DEVICE_FUNC(name)                                                  \
+    vk_info.name = (PFN_##name)vk_info.vkGetDeviceProcAddr(vk_info.device, #name); \
+    if (!vk_info.name)                                                             \
+    {                                                                              \
+        CANVAS_ERR("failed to load device function: " #name "\n");                 \
+        return CANVAS_ERR_LOAD_SYMBOL;                                             \
+    }
+
+#define VK_CHECK(result, msg)                             \
+    if ((result) != VK_SUCCESS)                           \
+    {                                                     \
+        CANVAS_ERR("%s (VkResult: %d)\n", msg, (result)); \
+        return CANVAS_FAIL;                               \
+    }
 
 typedef struct
 {
@@ -1142,30 +1163,17 @@ static struct
 
 } vk_info = {0};
 
+typedef struct
+{
+    VkSurfaceCapabilitiesKHR capabilities;
+    VkSurfaceFormatKHR *formats;
+    uint32_t format_count;
+    VkPresentModeKHR *present_modes;
+    uint32_t present_mode_count;
+} SwapchainSupportDetails;
+
 static canvas_vulkan_window vk_windows[MAX_CANVAS] = {0};
-
-#define VK_LOAD_INSTANCE_FUNC(name)                                                    \
-    vk_info.name = (PFN_##name)vk_info.vkGetInstanceProcAddr(vk_info.instance, #name); \
-    if (!vk_info.name)                                                                 \
-    {                                                                                  \
-        CANVAS_ERR("failed to load instance function: " #name "\n");                   \
-        return CANVAS_ERR_LOAD_SYMBOL;                                                 \
-    }
-
-#define VK_LOAD_DEVICE_FUNC(name)                                                  \
-    vk_info.name = (PFN_##name)vk_info.vkGetDeviceProcAddr(vk_info.device, #name); \
-    if (!vk_info.name)                                                             \
-    {                                                                              \
-        CANVAS_ERR("failed to load device function: " #name "\n");                 \
-        return CANVAS_ERR_LOAD_SYMBOL;                                             \
-    }
-
-#define VK_CHECK(result, msg)                             \
-    if ((result) != VK_SUCCESS)                           \
-    {                                                     \
-        CANVAS_ERR("%s (VkResult: %d)\n", msg, (result)); \
-        return CANVAS_FAIL;                               \
-    }
+const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_names;
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data)
 {
@@ -1696,6 +1704,437 @@ static int vk_create_surface(int window_id, VkSurfaceKHR *surface)
     return CANVAS_FAIL;
 #endif
 
+    return CANVAS_OK;
+}
+
+static SwapchainSupportDetails vk_query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface)
+{
+    SwapchainSupportDetails details = {0};
+
+    vk_info.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+
+    vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &details.format_count, NULL);
+    if (details.format_count > 0)
+    {
+        details.formats = malloc(details.format_count * sizeof(VkSurfaceFormatKHR));
+        vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &details.format_count, details.formats);
+    }
+
+    vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &details.present_mode_count, NULL);
+    if (details.present_mode_count > 0)
+    {
+        details.present_modes = malloc(details.present_mode_count * sizeof(VkPresentModeKHR));
+        vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &details.present_mode_count, details.present_modes);
+    }
+
+    return details;
+}
+
+static void vk_cleanup_swapchain_support_details(SwapchainSupportDetails *details)
+{
+    if (details->formats)
+        free(details->formats);
+    if (details->present_modes)
+        free(details->present_modes);
+}
+
+static VkSurfaceFormatKHR vk_choose_surface_format(const VkSurfaceFormatKHR *formats, uint32_t format_count)
+{
+    for (uint32_t i = 0; i < format_count; i++)
+    {
+        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            return formats[i];
+    }
+
+    return formats[0];
+}
+
+static VkPresentModeKHR vk_choose_present_mode(const VkPresentModeKHR *present_modes, uint32_t mode_count, bool vsync)
+{
+    if (vsync)
+        return VK_PRESENT_MODE_FIFO_KHR;
+
+    for (uint32_t i = 0; i < mode_count; i++)
+    {
+        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+    }
+
+    for (uint32_t i = 0; i < mode_count; i++)
+    {
+        if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    }
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+static VkExtent2D vk_choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilities, int window_id)
+{
+    if (capabilities->currentExtent.width != UINT32_MAX)
+        return capabilities->currentExtent;
+
+    VkExtent2D actual_extent = {.width = (uint32_t)canvas_info.canvas[window_id].width, .height = (uint32_t)canvas_info.canvas[window_id].height};
+
+    if (actual_extent.width < capabilities->minImageExtent.width)
+        actual_extent.width = capabilities->minImageExtent.width;
+
+    else if (actual_extent.width > capabilities->maxImageExtent.width)
+        actual_extent.width = capabilities->maxImageExtent.width;
+
+    if (actual_extent.height < capabilities->minImageExtent.height)
+        actual_extent.height = capabilities->minImageExtent.height;
+
+    else if (actual_extent.height > capabilities->maxImageExtent.height)
+        actual_extent.height = capabilities->maxImageExtent.height;
+
+    return actual_extent;
+}
+
+static int vk_create_swapchain(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    SwapchainSupportDetails support = vk_query_swapchain_support(vk_info.physical_device, vk_win->surface);
+
+    if (support.format_count == 0 || support.present_mode_count == 0)
+    {
+        vk_cleanup_swapchain_support_details(&support);
+        CANVAS_ERR("inadequate swapchain support\n");
+        return CANVAS_FAIL;
+    }
+
+    VkSurfaceFormatKHR surface_format = vk_choose_surface_format(support.formats, support.format_count);
+    VkPresentModeKHR present_mode = vk_choose_present_mode(support.present_modes, support.present_mode_count, canvas_info.canvas[window_id].vsync);
+    VkExtent2D extent = vk_choose_swap_extent(&support.capabilities, window_id);
+
+    uint32_t image_count = support.capabilities.minImageCount + 1;
+
+    if (support.capabilities.maxImageCount > 0 && image_count > support.capabilities.maxImageCount)
+        image_count = support.capabilities.maxImageCount;
+
+    if (image_count > MAX_SWAPCHAIN_IMAGES)
+        image_count = MAX_SWAPCHAIN_IMAGES;
+
+    VkSwapchainCreateInfoKHR create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    create_info.surface = vk_win->surface;
+    create_info.minImageCount = image_count;
+    create_info.imageFormat = surface_format.format;
+    create_info.imageColorSpace = surface_format.colorSpace;
+    create_info.imageExtent = extent;
+    create_info.imageArrayLayers = 1;
+    create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+    uint32_t queue_families[] = {
+        (uint32_t)vk_info.graphics_family,
+        (uint32_t)vk_info.present_family};
+
+    if (vk_info.graphics_family != vk_info.present_family)
+    {
+        create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        create_info.queueFamilyIndexCount = 2;
+        create_info.pQueueFamilyIndices = queue_families;
+    }
+    else
+    {
+        create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
+
+    create_info.preTransform = support.capabilities.currentTransform;
+    create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    create_info.presentMode = present_mode;
+    create_info.clipped = VK_TRUE;
+    create_info.oldSwapchain = VK_NULL_HANDLE;
+
+    VkResult result = vk_info.vkCreateSwapchainKHR(vk_info.device, &create_info, NULL, &vk_win->swapchain);
+
+    vk_cleanup_swapchain_support_details(&support);
+
+    VK_CHECK(result, "failed to create swapchain");
+
+    vk_info.vkGetSwapchainImagesKHR(vk_info.device, vk_win->swapchain, &vk_win->swapchain_image_count, NULL);
+
+    if (vk_win->swapchain_image_count > MAX_SWAPCHAIN_IMAGES)
+        vk_win->swapchain_image_count = MAX_SWAPCHAIN_IMAGES;
+
+    vk_info.vkGetSwapchainImagesKHR(vk_info.device, vk_win->swapchain, &vk_win->swapchain_image_count, vk_win->swapchain_images);
+
+    vk_win->swapchain_format = surface_format.format;
+    vk_win->swapchain_extent = extent;
+
+    CANVAS_INFO("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
+
+    return CANVAS_OK;
+}
+
+static int vk_create_image_views(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
+    {
+        VkImageViewCreateInfo create_info = {0};
+        create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        create_info.image = vk_win->swapchain_images[i];
+        create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        create_info.format = vk_win->swapchain_format;
+        create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        create_info.subresourceRange.baseMipLevel = 0;
+        create_info.subresourceRange.levelCount = 1;
+        create_info.subresourceRange.baseArrayLayer = 0;
+        create_info.subresourceRange.layerCount = 1;
+
+        VkResult result = vk_info.vkCreateImageView(vk_info.device, &create_info, NULL, &vk_win->swapchain_image_views[i]);
+        if (result != VK_SUCCESS)
+        {
+            CANVAS_ERR("failed to create image view %u\n", i);
+
+            for (uint32_t j = 0; j < i; j++)
+                vk_info.vkDestroyImageView(vk_info.device, vk_win->swapchain_image_views[j], NULL);
+
+            return CANVAS_FAIL;
+        }
+    }
+
+    return CANVAS_OK;
+}
+
+static int vk_create_render_pass(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    VkAttachmentDescription color_attachment = {0};
+    color_attachment.format = vk_win->swapchain_format;
+    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference color_attachment_ref = {0};
+    color_attachment_ref.attachment = 0;
+    color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass = {0};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_attachment_ref;
+
+    VkSubpassDependency dependency = {0};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkRenderPassCreateInfo render_pass_info = {0};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_info.attachmentCount = 1;
+    render_pass_info.pAttachments = &color_attachment;
+    render_pass_info.subpassCount = 1;
+    render_pass_info.pSubpasses = &subpass;
+    render_pass_info.dependencyCount = 1;
+    render_pass_info.pDependencies = &dependency;
+
+    VkResult result = vk_info.vkCreateRenderPass(vk_info.device, &render_pass_info, NULL, &vk_win->render_pass);
+    VK_CHECK(result, "failed to create render pass");
+
+    return CANVAS_OK;
+}
+
+static int vk_create_framebuffers(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
+    {
+        VkImageView attachments[] = {vk_win->swapchain_image_views[i]};
+
+        VkFramebufferCreateInfo framebuffer_info = {0};
+        framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_info.renderPass = vk_win->render_pass;
+        framebuffer_info.attachmentCount = 1;
+        framebuffer_info.pAttachments = attachments;
+        framebuffer_info.width = vk_win->swapchain_extent.width;
+        framebuffer_info.height = vk_win->swapchain_extent.height;
+        framebuffer_info.layers = 1;
+
+        VkResult result = vk_info.vkCreateFramebuffer(vk_info.device, &framebuffer_info, NULL, &vk_win->framebuffers[i]);
+        if (result != VK_SUCCESS)
+        {
+            CANVAS_ERR("failed to create framebuffer %u\n", i);
+
+            for (uint32_t j = 0; j < i; j++)
+                vk_info.vkDestroyFramebuffer(vk_info.device, vk_win->framebuffers[j], NULL);
+
+            return CANVAS_FAIL;
+        }
+    }
+
+    return CANVAS_OK;
+}
+
+static int vk_create_command_pool(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    VkCommandPoolCreateInfo pool_info = {0};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.queueFamilyIndex = (uint32_t)vk_info.graphics_family;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+    VkResult result = vk_info.vkCreateCommandPool(vk_info.device, &pool_info, NULL, &vk_win->command_pool);
+    VK_CHECK(result, "failed to create command pool");
+
+    return CANVAS_OK;
+}
+
+static int vk_create_command_buffers(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    VkCommandBufferAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = vk_win->command_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = vk_win->swapchain_image_count;
+
+    VkResult result = vk_info.vkAllocateCommandBuffers(vk_info.device, &alloc_info, vk_win->command_buffers);
+    VK_CHECK(result, "failed to allocate command buffers");
+
+    return CANVAS_OK;
+}
+
+static int vk_create_sync_objects(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    VkSemaphoreCreateInfo semaphore_info = {0};
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fence_info = {0};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkResult result;
+
+        result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL, &vk_win->image_available_semaphores[i]);
+        if (result != VK_SUCCESS)
+        {
+            CANVAS_ERR("failed to create image available semaphore %d\n", i);
+            goto cleanup;
+        }
+
+        result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL, &vk_win->render_finished_semaphores[i]);
+        if (result != VK_SUCCESS)
+        {
+            CANVAS_ERR("failed to create render finished semaphore %d\n", i);
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
+            goto cleanup;
+        }
+
+        result = vk_info.vkCreateFence(vk_info.device, &fence_info, NULL, &vk_win->in_flight_fences[i]);
+        if (result != VK_SUCCESS)
+        {
+            CANVAS_ERR("failed to create fence %d\n", i);
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
+            goto cleanup;
+        }
+    }
+
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++)
+        vk_win->images_in_flight[i] = VK_NULL_HANDLE;
+
+    return CANVAS_OK;
+
+cleanup:
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        if (vk_win->image_available_semaphores[i])
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
+
+        if (vk_win->render_finished_semaphores[i])
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
+
+        if (vk_win->in_flight_fences[i])
+            vk_info.vkDestroyFence(vk_info.device, vk_win->in_flight_fences[i], NULL);
+    }
+    return CANVAS_FAIL;
+}
+
+static void vk_cleanup_swapchain(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    if (!vk_win->initialized)
+        return;
+
+    vk_info.vkDeviceWaitIdle(vk_info.device);
+
+    for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
+    {
+        if (vk_win->framebuffers[i])
+        {
+            vk_info.vkDestroyFramebuffer(vk_info.device, vk_win->framebuffers[i], NULL);
+            vk_win->framebuffers[i] = VK_NULL_HANDLE;
+        }
+        if (vk_win->swapchain_image_views[i])
+        {
+            vk_info.vkDestroyImageView(vk_info.device, vk_win->swapchain_image_views[i], NULL);
+            vk_win->swapchain_image_views[i] = VK_NULL_HANDLE;
+        }
+    }
+
+    if (vk_win->swapchain)
+    {
+        vk_info.vkDestroySwapchainKHR(vk_info.device, vk_win->swapchain, NULL);
+        vk_win->swapchain = VK_NULL_HANDLE;
+    }
+}
+
+static int vk_recreate_swapchain(int window_id)
+{
+    int width = canvas_info.canvas[window_id].width;
+    int height = canvas_info.canvas[window_id].height;
+
+    while (width == 0 || height == 0)
+    {
+        canvas_sleep(0.01);
+        width = canvas_info.canvas[window_id].width;
+        height = canvas_info.canvas[window_id].height;
+    }
+
+    vk_info.vkDeviceWaitIdle(vk_info.device);
+
+    vk_cleanup_swapchain(window_id);
+
+    int result;
+    result = vk_create_swapchain(window_id);
+    if (result != CANVAS_OK)
+        return result;
+
+    result = vk_create_image_views(window_id);
+    if (result != CANVAS_OK)
+        return result;
+
+    result = vk_create_framebuffers(window_id);
+    if (result != CANVAS_OK)
+        return result;
+
+    vk_windows[window_id].needs_resize = false;
+
+    CANVAS_INFO("swapchain recreated for window %d\n", window_id);
     return CANVAS_OK;
 }
 
