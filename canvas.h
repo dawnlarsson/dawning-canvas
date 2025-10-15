@@ -781,31 +781,30 @@ void canvas_library_close(void *lib)
 #endif
 }
 
-#if defined(CANVAS_VULKAN)
+#ifdef CANVAS_VULKAN
 
 #include <vulkan/vulkan.h>
-#define MAX_EXTENSIONS 32
 
-canvas_library_handle canvas_lib_vulkan;
+#ifdef __linux__
+typedef unsigned long VisualID;
+#define VK_USE_PLATFORM_XLIB_KHR
+#include <vulkan/vulkan_xlib.h>
 
-static struct
-{
-    VkInstance instance;
-    VkPhysicalDevice physical_device;
-    VkDevice gpu;
-    VkQueue graphics_queue;
-    VkQueue present_queue;
-    int graphics_family, present_family;
+#define VK_USE_PLATFORM_WAYLAND_KHR
+#include <vulkan/vulkan_wayland.h>
+#endif
 
-    PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
-    PFN_vkCreateInstance vkCreateInstance;
-    PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
+#ifdef _WIN32
+#define VK_USE_PLATFORM_WIN32_KHR
+#include <vulkan/vulkan_win32.h>
+#endif
 
-    PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
-    PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
-    PFN_vkCreateDevice vkCreateDevice;
-    PFN_vkGetDeviceQueue vkGetDeviceQueue;
-} vk;
+#ifdef __APPLE__
+#define VK_USE_PLATFORM_METAL_EXT
+#endif
+
+#define MAX_FRAMES_IN_FLIGHT 2
+#define MAX_SWAPCHAIN_IMAGES 3
 
 #if defined(_WIN32)
 #define canvas_vulkan_names 1
@@ -820,32 +819,308 @@ static struct
 
 const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_names;
 
-static bool canvas_is_device_suitable_core(VkPhysicalDevice device)
+typedef struct
 {
-    // Check for graphics queue family
-    uint32_t queue_family_count = 0;
-    vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
+    VkSurfaceKHR surface;
+    VkSwapchainKHR swapchain;
+    VkImage swapchain_images[MAX_SWAPCHAIN_IMAGES];
+    VkImageView swapchain_image_views[MAX_SWAPCHAIN_IMAGES];
+    VkFramebuffer framebuffers[MAX_SWAPCHAIN_IMAGES];
+    uint32_t swapchain_image_count;
+    VkFormat swapchain_format;
+    VkExtent2D swapchain_extent;
 
-    VkQueueFamilyProperties *queue_families = malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
-    vk.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families);
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffers[MAX_SWAPCHAIN_IMAGES];
 
-    bool has_graphics = false;
-    for (uint32_t i = 0; i < queue_family_count; i++)
+    VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
+    VkFence images_in_flight[MAX_SWAPCHAIN_IMAGES];
+    uint32_t current_frame;
+
+    VkRenderPass render_pass;
+    bool needs_resize;
+    bool initialized;
+} canvas_vulkan_window;
+
+static struct
+{
+    canvas_library_handle library;
+
+    VkInstance instance;
+    VkPhysicalDevice physical_device;
+    VkDevice device;
+    VkQueue graphics_queue;
+    VkQueue present_queue;
+    int graphics_family;
+    int present_family;
+    bool validation_enabled;
+    VkDebugUtilsMessengerEXT debug_messenger;
+
+    PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+    PFN_vkCreateInstance vkCreateInstance;
+    PFN_vkDestroyInstance vkDestroyInstance;
+    PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
+    PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
+    PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties;
+    PFN_vkGetPhysicalDeviceFeatures vkGetPhysicalDeviceFeatures;
+    PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties;
+    PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties;
+    PFN_vkEnumerateInstanceExtensionProperties vkEnumerateInstanceExtensionProperties;
+
+    // Device functions
+    PFN_vkCreateDevice vkCreateDevice;
+    PFN_vkDestroyDevice vkDestroyDevice;
+    PFN_vkGetDeviceQueue vkGetDeviceQueue;
+    PFN_vkDeviceWaitIdle vkDeviceWaitIdle;
+
+    // Surface functions
+    PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
+    PFN_vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceSurfaceSupportKHR;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
+    PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR;
+    PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR;
+
+    // Platform-specific surface creation
+#ifdef __linux__
+    PFN_vkCreateXlibSurfaceKHR vkCreateXlibSurfaceKHR;
+    PFN_vkCreateWaylandSurfaceKHR vkCreateWaylandSurfaceKHR;
+#endif
+#ifdef _WIN32
+    PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
+#endif
+#ifdef __APPLE__
+    PFN_vkCreateMetalSurfaceEXT vkCreateMetalSurfaceEXT;
+#endif
+
+    // Swapchain functions
+    PFN_vkCreateSwapchainKHR vkCreateSwapchainKHR;
+    PFN_vkDestroySwapchainKHR vkDestroySwapchainKHR;
+    PFN_vkGetSwapchainImagesKHR vkGetSwapchainImagesKHR;
+    PFN_vkAcquireNextImageKHR vkAcquireNextImageKHR;
+    PFN_vkQueuePresentKHR vkQueuePresentKHR;
+
+    // Command buffer functions
+    PFN_vkCreateCommandPool vkCreateCommandPool;
+    PFN_vkDestroyCommandPool vkDestroyCommandPool;
+    PFN_vkAllocateCommandBuffers vkAllocateCommandBuffers;
+    PFN_vkFreeCommandBuffers vkFreeCommandBuffers;
+    PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
+    PFN_vkEndCommandBuffer vkEndCommandBuffer;
+    PFN_vkResetCommandBuffer vkResetCommandBuffer;
+
+    // Synchronization
+    PFN_vkCreateSemaphore vkCreateSemaphore;
+    PFN_vkDestroySemaphore vkDestroySemaphore;
+    PFN_vkCreateFence vkCreateFence;
+    PFN_vkDestroyFence vkDestroyFence;
+    PFN_vkWaitForFences vkWaitForFences;
+    PFN_vkResetFences vkResetFences;
+
+    // Command submission
+    PFN_vkQueueSubmit vkQueueSubmit;
+    PFN_vkQueueWaitIdle vkQueueWaitIdle;
+
+    // Render pass and framebuffer
+    PFN_vkCreateRenderPass vkCreateRenderPass;
+    PFN_vkDestroyRenderPass vkDestroyRenderPass;
+    PFN_vkCreateFramebuffer vkCreateFramebuffer;
+    PFN_vkDestroyFramebuffer vkDestroyFramebuffer;
+    PFN_vkCreateImageView vkCreateImageView;
+    PFN_vkDestroyImageView vkDestroyImageView;
+
+    // Command buffer recording
+    PFN_vkCmdBeginRenderPass vkCmdBeginRenderPass;
+    PFN_vkCmdEndRenderPass vkCmdEndRenderPass;
+    PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier;
+
+    // Debug utils (optional, for validation)
+    PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
+    PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
+
+} vk_info = {0};
+
+static canvas_vulkan_window vk_windows[MAX_CANVAS] = {0};
+
+#define VK_LOAD_INSTANCE_FUNC(name)                                                    \
+    vk_info.name = (PFN_##name)vk_info.vkGetInstanceProcAddr(vk_info.instance, #name); \
+    if (!vk_info.name)                                                                 \
+    {                                                                                  \
+        CANVAS_ERR("failed to load instance function: " #name "\n");                   \
+        return CANVAS_ERR_LOAD_SYMBOL;                                                 \
+    }
+
+#define VK_LOAD_DEVICE_FUNC(name)                                                      \
+    vk_info.name = (PFN_##name)vk_info.vkGetInstanceProcAddr(vk_info.instance, #name); \
+    if (!vk_info.name)                                                                 \
+    {                                                                                  \
+        CANVAS_ERR("failed to load device function: " #name "\n");                     \
+        return CANVAS_ERR_LOAD_SYMBOL;                                                 \
+    }
+
+#define VK_CHECK(result, msg)                             \
+    if ((result) != VK_SUCCESS)                           \
+    {                                                     \
+        CANVAS_ERR("%s (VkResult: %d)\n", msg, (result)); \
+        return CANVAS_FAIL;                               \
+    }
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data)
+{
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        CANVAS_WARN("vulkan validation: %s\n", callback_data->pMessage);
+
+    return VK_FALSE;
+}
+
+static bool vk_check_validation_layers()
+{
+    if (!vk_info.vkEnumerateInstanceLayerProperties)
     {
-        if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        CANVAS_WARN("vkEnumerateInstanceLayerProperties not available\n");
+        return false;
+    }
+
+    uint32_t layer_count = 0;
+    VkResult result = vk_info.vkEnumerateInstanceLayerProperties(&layer_count, NULL);
+
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_WARN("failed to enumerate validation layers (code: %d), disabling validation\n", result);
+        return false;
+    }
+
+    if (layer_count == 0)
+    {
+        CANVAS_VERBOSE("no validation layers available\n");
+        return false;
+    }
+
+    VkLayerProperties *available_layers = malloc(layer_count * sizeof(VkLayerProperties));
+    if (!available_layers)
+    {
+        CANVAS_WARN("failed to allocate memory for layer properties\n");
+        return false;
+    }
+
+    result = vk_info.vkEnumerateInstanceLayerProperties(&layer_count, available_layers);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_WARN("failed to get layer properties (code: %d), disabling validation\n", result);
+        free(available_layers);
+        return false;
+    }
+
+    bool found = false;
+    const char *validation_layer = "VK_LAYER_KHRONOS_validation";
+
+    for (uint32_t i = 0; i < layer_count; i++)
+    {
+        if (strcmp(validation_layer, available_layers[i].layerName) == 0)
         {
-            has_graphics = true;
+            found = true;
             break;
         }
     }
 
-    free(queue_families);
+    free(available_layers);
 
-    uint32_t extension_count;
-    vk.vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
+    if (!found)
+        CANVAS_VERBOSE("VK_LAYER_KHRONOS_validation not found, validation disabled\n");
+
+    return found;
+}
+
+static int vk_load_instance_functions()
+{
+    VK_LOAD_INSTANCE_FUNC(vkDestroyInstance);
+    VK_LOAD_INSTANCE_FUNC(vkEnumeratePhysicalDevices);
+    VK_LOAD_INSTANCE_FUNC(vkEnumerateDeviceExtensionProperties);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceQueueFamilyProperties);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceProperties);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceFeatures);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceMemoryProperties);
+    VK_LOAD_INSTANCE_FUNC(vkCreateDevice);
+    VK_LOAD_INSTANCE_FUNC(vkGetDeviceQueue);
+
+    VK_LOAD_INSTANCE_FUNC(vkDestroySurfaceKHR);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceSurfaceSupportKHR);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceSurfaceFormatsKHR);
+    VK_LOAD_INSTANCE_FUNC(vkGetPhysicalDeviceSurfacePresentModesKHR);
+
+#ifdef __linux__
+    vk_info.vkCreateXlibSurfaceKHR = (PFN_vkCreateXlibSurfaceKHR)vk_info.vkGetInstanceProcAddr(vk_info.instance, "vkCreateXlibSurfaceKHR");
+    vk_info.vkCreateWaylandSurfaceKHR = (PFN_vkCreateWaylandSurfaceKHR)vk_info.vkGetInstanceProcAddr(vk_info.instance, "vkCreateWaylandSurfaceKHR");
+#endif
+#ifdef _WIN32
+    VK_LOAD_INSTANCE_FUNC(vkCreateWin32SurfaceKHR);
+#endif
+#ifdef __APPLE__
+    VK_LOAD_INSTANCE_FUNC(vkCreateMetalSurfaceEXT);
+#endif
+
+    if (vk_info.validation_enabled)
+    {
+        vk_info.vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vk_info.vkGetInstanceProcAddr(vk_info.instance, "vkCreateDebugUtilsMessengerEXT");
+        vk_info.vkDestroyDebugUtilsMessengerEXT = (PFN_vkDestroyDebugUtilsMessengerEXT)vk_info.vkGetInstanceProcAddr(vk_info.instance, "vkDestroyDebugUtilsMessengerEXT");
+    }
+
+    return CANVAS_OK;
+}
+
+static int vk_load_device_functions()
+{
+    VK_LOAD_DEVICE_FUNC(vkDestroyDevice);
+    VK_LOAD_DEVICE_FUNC(vkDeviceWaitIdle);
+    VK_LOAD_DEVICE_FUNC(vkCreateSwapchainKHR);
+    VK_LOAD_DEVICE_FUNC(vkDestroySwapchainKHR);
+    VK_LOAD_DEVICE_FUNC(vkGetSwapchainImagesKHR);
+    VK_LOAD_DEVICE_FUNC(vkAcquireNextImageKHR);
+    VK_LOAD_DEVICE_FUNC(vkQueuePresentKHR);
+    VK_LOAD_DEVICE_FUNC(vkCreateCommandPool);
+    VK_LOAD_DEVICE_FUNC(vkDestroyCommandPool);
+    VK_LOAD_DEVICE_FUNC(vkAllocateCommandBuffers);
+    VK_LOAD_DEVICE_FUNC(vkFreeCommandBuffers);
+    VK_LOAD_DEVICE_FUNC(vkBeginCommandBuffer);
+    VK_LOAD_DEVICE_FUNC(vkEndCommandBuffer);
+    VK_LOAD_DEVICE_FUNC(vkResetCommandBuffer);
+    VK_LOAD_DEVICE_FUNC(vkCreateSemaphore);
+    VK_LOAD_DEVICE_FUNC(vkDestroySemaphore);
+    VK_LOAD_DEVICE_FUNC(vkCreateFence);
+    VK_LOAD_DEVICE_FUNC(vkDestroyFence);
+    VK_LOAD_DEVICE_FUNC(vkWaitForFences);
+    VK_LOAD_DEVICE_FUNC(vkResetFences);
+    VK_LOAD_DEVICE_FUNC(vkQueueSubmit);
+    VK_LOAD_DEVICE_FUNC(vkQueueWaitIdle);
+    VK_LOAD_DEVICE_FUNC(vkCreateRenderPass);
+    VK_LOAD_DEVICE_FUNC(vkDestroyRenderPass);
+    VK_LOAD_DEVICE_FUNC(vkCreateFramebuffer);
+    VK_LOAD_DEVICE_FUNC(vkDestroyFramebuffer);
+    VK_LOAD_DEVICE_FUNC(vkCreateImageView);
+    VK_LOAD_DEVICE_FUNC(vkDestroyImageView);
+    VK_LOAD_DEVICE_FUNC(vkCmdBeginRenderPass);
+    VK_LOAD_DEVICE_FUNC(vkCmdEndRenderPass);
+    VK_LOAD_DEVICE_FUNC(vkCmdPipelineBarrier);
+
+    return CANVAS_OK;
+}
+
+static bool vk_check_device_extension_support(VkPhysicalDevice device)
+{
+    uint32_t extension_count = 0;
+    vk_info.vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
+
+    if (extension_count == 0)
+        return false;
 
     VkExtensionProperties *available_extensions = malloc(extension_count * sizeof(VkExtensionProperties));
-    vk.vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, available_extensions);
+    if (!available_extensions)
+        return false;
+
+    vk_info.vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, available_extensions);
 
     bool has_swapchain = false;
     for (uint32_t i = 0; i < extension_count; i++)
@@ -858,182 +1133,309 @@ static bool canvas_is_device_suitable_core(VkPhysicalDevice device)
     }
 
     free(available_extensions);
-
-    return has_graphics && has_swapchain;
+    return has_swapchain;
 }
 
-static VkResult canvas_select_physical_device()
+static bool vk_find_queue_families(VkPhysicalDevice device, VkSurfaceKHR surface, int *graphics_family, int *present_family)
+{
+    uint32_t queue_family_count = 0;
+    vk_info.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
+
+    if (queue_family_count == 0)
+        return false;
+
+    VkQueueFamilyProperties *queue_families = malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
+    if (!queue_families)
+        return false;
+
+    vk_info.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families);
+
+    *graphics_family = -1;
+    *present_family = -1;
+
+    for (uint32_t i = 0; i < queue_family_count; i++)
+    {
+        if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            *graphics_family = (int)i;
+
+        VkBool32 present_support = VK_FALSE;
+        vk_info.vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present_support);
+        if (present_support)
+            *present_family = (int)i;
+
+        if (*graphics_family >= 0 && *present_family >= 0)
+            break;
+    }
+
+    free(queue_families);
+    return (*graphics_family >= 0 && *present_family >= 0);
+}
+
+static bool vk_is_device_suitable(VkPhysicalDevice device, VkSurfaceKHR test_surface)
+{
+    int graphics_family, present_family;
+
+    if (!vk_find_queue_families(device, test_surface, &graphics_family, &present_family))
+        return false;
+
+    if (!vk_check_device_extension_support(device))
+        return false;
+
+    uint32_t format_count = 0;
+    vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(device, test_surface, &format_count, NULL);
+
+    uint32_t present_mode_count = 0;
+    vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(device, test_surface, &present_mode_count, NULL);
+
+    return (format_count > 0 && present_mode_count > 0);
+}
+
+static VkResult vk_select_physical_device(VkSurfaceKHR test_surface)
 {
     uint32_t device_count = 0;
-    vk.vkEnumeratePhysicalDevices(vk.instance, &device_count, NULL);
-
-    if (device_count == 0)
+    VkResult result = vk_info.vkEnumeratePhysicalDevices(vk_info.instance, &device_count, NULL);
+    if (result != VK_SUCCESS || device_count == 0)
+    {
         return VK_ERROR_INITIALIZATION_FAILED;
+    }
 
     VkPhysicalDevice *devices = malloc(device_count * sizeof(VkPhysicalDevice));
-    vk.vkEnumeratePhysicalDevices(vk.instance, &device_count, devices);
+    if (!devices)
+    {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+
+    result = vk_info.vkEnumeratePhysicalDevices(vk_info.instance, &device_count, devices);
+    if (result != VK_SUCCESS)
+    {
+        free(devices);
+        return result;
+    }
 
     for (uint32_t i = 0; i < device_count; i++)
     {
-        if (!canvas_is_device_suitable_core(devices[i]))
-            continue;
-
-        vk.physical_device = devices[i];
-
-        uint32_t queue_family_count = 0;
-        vk.vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &queue_family_count, NULL);
-
-        VkQueueFamilyProperties *queue_families = malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
-        vk.vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &queue_family_count, queue_families);
-
-        for (uint32_t j = 0; j < queue_family_count; j++)
+        if (vk_is_device_suitable(devices[i], test_surface))
         {
-            if (queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-                vk.graphics_family = j;
+            vk_info.physical_device = devices[i];
 
-            /*
-            if (queue_families[j].queueFlags & VK_QUEUE_COMPUTE_BIT)
-                compute_family = j;
-            */
+            vk_find_queue_families(devices[i], test_surface, &vk_info.graphics_family, &vk_info.present_family);
+
+            VkPhysicalDeviceProperties props;
+            vk_info.vkGetPhysicalDeviceProperties(devices[i], &props);
+            CANVAS_INFO("selected GPU: %s\n", props.deviceName);
+
+            free(devices);
+            return VK_SUCCESS;
         }
-
-        free(queue_families);
-        break;
     }
 
     free(devices);
-
-    return vk.physical_device != VK_NULL_HANDLE ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+    return VK_ERROR_INITIALIZATION_FAILED;
 }
 
-int canvas_backend_vulkan_init()
+static int vk_create_instance()
 {
-    if (vk.instance)
-        return CANVAS_OK;
+    CANVAS_INFO("creating vulkan instance...\n");
 
-    CANVAS_INFO("loading vulkan\n");
+#ifdef NDEBUG
+    vk_info.validation_enabled = false;
+#else
+    vk_info.validation_enabled = vk_check_validation_layers();
+    if (vk_info.validation_enabled)
+        CANVAS_INFO("vulkan validation layers enabled\n");
+    else
+        CANVAS_INFO("vulkan validation layers not available - continuing without validation\n");
 
-    canvas_lib_vulkan = canvas_library_load(vulkan_library_names, canvas_vulkan_names);
+#endif
 
-    if (!canvas_lib_vulkan)
-        return CANVAS_ERR_LOAD_LIBRARY;
+    VkApplicationInfo app_info = {0};
+    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "Application";
+    app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    app_info.pEngineName = "Canvas";
+    app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+    app_info.apiVersion = VK_API_VERSION_1_0;
 
-    vk.vkGetInstanceProcAddr = canvas_library_symbol(canvas_lib_vulkan, "vkGetInstanceProcAddr");
+    const char *extensions[16];
+    uint32_t extension_count = 0;
 
-    if (!vk.vkGetInstanceProcAddr)
-    {
-        goto fail;
-    }
-
-    const char *extensions[MAX_EXTENSIONS];
-    int extension_count = 0;
-
-    extensions[extension_count++] = "VK_KHR_surface";
+    extensions[extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
 
 #ifdef _WIN32
-    extensions[extension_count++] = "VK_KHR_win32_surface";
+    extensions[extension_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
 #endif
-
-#ifdef __ANDROID__
-    extensions[extension_count++] = "VK_KHR_android_surface";
-#endif
-
 #ifdef __linux__
-    extensions[extension_count++] = "VK_KHR_wayland_surface";
+    extensions[extension_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
+#endif
+#ifdef __APPLE__
+    extensions[extension_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
 #endif
 
-#if defined(__APPLE__) && defined(__IOS__)
-    extensions[extension_count++] = "VK_KHR_ios_surface";
+    if (vk_info.validation_enabled)
+        extensions[extension_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+
+    const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
+
+    VkDebugUtilsMessengerCreateInfoEXT debug_create_info = {0};
+
+    VkInstanceCreateInfo create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    create_info.pApplicationInfo = &app_info;
+    create_info.enabledExtensionCount = extension_count;
+    create_info.ppEnabledExtensionNames = extensions;
+
+#ifdef __APPLE__
+    create_info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 #endif
 
-#if defined(__APPLE__) && defined(__MACOSX__)
-    extensions[extension_count++] = "VK_KHR_macos_surface";
-#endif
-
-#if defined(__APPLE__) && defined(__METAL__)
-    extensions[extension_count++] = "VK_EXT_metal_surface";
-#endif
-
-    VkApplicationInfo appInfo = {};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "";
-    appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
-    appInfo.pEngineName = "DAWNING_CANVAS";
-    appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_1;
-
-    VkInstanceCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pApplicationInfo = &appInfo;
-    createInfo.enabledExtensionCount = extension_count;
-    createInfo.ppEnabledExtensionNames = extensions;
-    createInfo.pNext = NULL;
-
-    vk.vkCreateInstance = (PFN_vkCreateInstance)vk.vkGetInstanceProcAddr(NULL, "vkCreateInstance");
-
-    if (vk.vkCreateInstance(&createInfo, NULL, &vk.instance))
+    if (vk_info.validation_enabled)
     {
-        CANVAS_ERR("failed to load vulkan");
-        return CANVAS_ERR_GET_GPU;
+        create_info.enabledLayerCount = 1;
+        create_info.ppEnabledLayerNames = validation_layers;
+
+        debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        debug_create_info.pfnUserCallback = vk_debug_callback;
+
+        create_info.pNext = &debug_create_info;
     }
 
-    vk.vkEnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)vk.vkGetInstanceProcAddr(vk.instance, "vkEnumeratePhysicalDevices");
-    vk.vkEnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)vk.vkGetInstanceProcAddr(vk.instance, "vkEnumerateDeviceExtensionProperties");
-    vk.vkGetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)vk.vkGetInstanceProcAddr(vk.instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    VkResult result = vk_info.vkCreateInstance(&create_info, NULL, &vk_info.instance);
 
-    if (canvas_select_physical_device() != VK_SUCCESS)
-        goto fail;
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("vkCreateInstance failed with code: %d\n", result);
+        return result;
+    }
+
+    return VK_SUCCESS;
+}
+
+static int vk_setup_debug_messenger()
+{
+    if (!vk_info.validation_enabled || !vk_info.vkCreateDebugUtilsMessengerEXT)
+        return CANVAS_OK;
+
+    VkDebugUtilsMessengerCreateInfoEXT create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    create_info.pfnUserCallback = vk_debug_callback;
+
+    VkResult result = vk_info.vkCreateDebugUtilsMessengerEXT(vk_info.instance, &create_info, NULL, &vk_info.debug_messenger);
+    VK_CHECK(result, "failed to setup debug messenger");
+
+    return CANVAS_OK;
+}
+
+static int vk_create_logical_device()
+{
+    uint32_t unique_families[2];
+    uint32_t unique_count = 1;
+    unique_families[0] = (uint32_t)vk_info.graphics_family;
+
+    if (vk_info.graphics_family != vk_info.present_family)
+    {
+        unique_families[1] = (uint32_t)vk_info.present_family;
+        unique_count = 2;
+    }
 
     float queue_priority = 1.0f;
     VkDeviceQueueCreateInfo queue_create_infos[2];
-    uint32_t queue_count = 0;
-    uint32_t unique_families[2] = {vk.graphics_family, vk.present_family};
-    uint32_t unique_count = (vk.graphics_family == vk.present_family) ? 1 : 2;
 
     for (uint32_t i = 0; i < unique_count; i++)
     {
-        queue_create_infos[i] = (VkDeviceQueueCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = unique_families[i],
-            .queueCount = 1,
-            .pQueuePriorities = &queue_priority};
-        queue_count++;
+        queue_create_infos[i] = (VkDeviceQueueCreateInfo){0};
+        queue_create_infos[i].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_create_infos[i].queueFamilyIndex = unique_families[i];
+        queue_create_infos[i].queueCount = 1;
+        queue_create_infos[i].pQueuePriorities = &queue_priority;
     }
 
     VkPhysicalDeviceFeatures device_features = {0};
 
     const char *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-    VkDeviceCreateInfo dev_create_info = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .queueCreateInfoCount = queue_count,
-        .pQueueCreateInfos = queue_create_infos,
-        .pEnabledFeatures = &device_features,
-        .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = device_extensions};
+    VkDeviceCreateInfo create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    create_info.queueCreateInfoCount = unique_count;
+    create_info.pQueueCreateInfos = queue_create_infos;
+    create_info.pEnabledFeatures = &device_features;
+    create_info.enabledExtensionCount = 1;
+    create_info.ppEnabledExtensionNames = device_extensions;
 
-    vk.vkCreateDevice = (PFN_vkCreateDevice)vk.vkGetInstanceProcAddr(vk.instance, "vkCreateDevice");
+    VkResult result = vk_info.vkCreateDevice(vk_info.physical_device, &create_info, NULL, &vk_info.device);
+    VK_CHECK(result, "failed to create logical device");
 
-    VkResult dev_result = vk.vkCreateDevice(vk.physical_device, &dev_create_info, NULL, &vk.gpu);
-
-    if (dev_result != VK_SUCCESS)
-        goto fail;
-
-    vk.vkGetDeviceQueue = (PFN_vkGetDeviceQueue)vk.vkGetInstanceProcAddr(vk.instance, "vkGetDeviceQueue");
-
-    vk.vkGetDeviceQueue(vk.gpu, vk.graphics_family, 0, &vk.graphics_queue);
-    vk.vkGetDeviceQueue(vk.gpu, vk.present_family, 0, &vk.present_queue);
+    vk_info.vkGetDeviceQueue(vk_info.device, vk_info.graphics_family, 0, &vk_info.graphics_queue);
+    vk_info.vkGetDeviceQueue(vk_info.device, vk_info.present_family, 0, &vk_info.present_queue);
 
     return CANVAS_OK;
-
-fail:
-    canvas_library_close(canvas_lib_vulkan);
-    canvas_lib_vulkan = NULL;
-    vk.instance = NULL;
-    return CANVAS_FAIL;
 }
 
-#endif
+int canvas_backend_vulkan_init()
+{
+    if (vk_info.instance)
+        return CANVAS_OK;
+
+    CANVAS_INFO("initializing Vulkan backend\n");
+
+    vk_info.library = canvas_library_load(vulkan_library_names, canvas_vulkan_names);
+
+    if (!vk_info.library)
+    {
+        CANVAS_ERR("failed to load Vulkan library\n");
+        return CANVAS_ERR_LOAD_LIBRARY;
+    }
+
+    vk_info.vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)canvas_library_symbol(vk_info.library, "vkGetInstanceProcAddr");
+
+    if (!vk_info.vkGetInstanceProcAddr)
+    {
+        CANVAS_ERR("failed to load vkGetInstanceProcAddr\n");
+        canvas_library_close(vk_info.library);
+        return CANVAS_ERR_LOAD_SYMBOL;
+    }
+
+    vk_info.vkCreateInstance = (PFN_vkCreateInstance)vk_info.vkGetInstanceProcAddr(NULL, "vkCreateInstance");
+    vk_info.vkEnumerateInstanceLayerProperties = (PFN_vkEnumerateInstanceLayerProperties)vk_info.vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceLayerProperties");
+    vk_info.vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)vk_info.vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceExtensionProperties");
+
+    if (!vk_info.vkCreateInstance || !vk_info.vkEnumerateInstanceLayerProperties || !vk_info.vkEnumerateInstanceExtensionProperties)
+    {
+        CANVAS_ERR("failed to load Vulkan functions\n");
+        canvas_library_close(vk_info.library);
+        return CANVAS_ERR_LOAD_SYMBOL;
+    }
+
+    int result = vk_create_instance();
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("failed to create vulkan instance (result: %d)\n", result);
+        canvas_library_close(vk_info.library);
+        return result;
+    }
+
+    result = vk_load_instance_functions();
+    if (result != CANVAS_OK)
+    {
+        CANVAS_ERR("failed to load vulkan instance functions\n");
+        vk_info.vkDestroyInstance(vk_info.instance, NULL);
+        canvas_library_close(vk_info.library);
+        return result;
+    }
+
+    vk_setup_debug_messenger();
+
+    CANVAS_INFO("vulkan instance created successfully\n");
+
+    return CANVAS_OK;
+}
+
+#endif // CANVAS_VULKAN
 
 //
 //
