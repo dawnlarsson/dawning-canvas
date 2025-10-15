@@ -200,23 +200,8 @@ canvas_context_type canvas_info = (canvas_context_type){0};
 #include <ApplicationServices/ApplicationServices.h>
 #include <dlfcn.h>
 
-static mach_timebase_info_data_t _canvas_timebase = {0};
-
 typedef void *objc_id;
 typedef void *objc_sel;
-static objc_id _mac_pool = NULL;
-static objc_id _mac_app = NULL;
-static objc_id _mac_device = NULL;
-static objc_id _metal_queue = NULL;
-
-typedef struct
-{
-    objc_id view;
-    objc_id layer;
-    double scale;
-} canvas_data;
-
-canvas_data _canvas_data[MAX_CANVAS];
 
 typedef struct
 {
@@ -227,6 +212,27 @@ typedef struct
 {
     double x, y, w, h;
 } _CGRect;
+
+typedef struct
+{
+    objc_id view;
+    objc_id layer;
+    double scale;
+} canvas_data;
+
+typedef struct
+{
+    objc_id pool;
+    objc_id app;
+    mach_timebase_info_data_t timebase;
+
+    // metal
+    objc_id device;
+    objc_id queue;
+} canvas_platform_macos;
+
+canvas_data _canvas_data[MAX_CANVAS];
+canvas_platform_macos canvas_macos;
 
 extern objc_id MTLCreateSystemDefaultDevice(void);
 
@@ -1370,8 +1376,8 @@ void _post_init()
         return;
     MSG_id_id m = (MSG_id_id)objc_msgSend;
     objc_id alloc = m(poolClass, sel_c("alloc"));
-    _mac_pool = m(alloc, sel_c("init"));
-    mach_timebase_info(&_canvas_timebase);
+    canvas_macos.pool = m(alloc, sel_c("init"));
+    mach_timebase_info(&canvas_macos.timebase);
 }
 
 int _canvas_platform()
@@ -1379,15 +1385,15 @@ int _canvas_platform()
     _post_init();
 
     MSG_id_id m = (MSG_id_id)objc_msgSend;
-    _mac_app = m(cls("NSApplication"), sel_c("sharedApplication"));
-    if (!_mac_app)
+    canvas_macos.app = m(cls("NSApplication"), sel_c("sharedApplication"));
+    if (!canvas_macos.app)
     {
         CANVAS_ERR("get macOS application\n");
         return CANVAS_ERR_GET_PLATFORM;
     }
 
-    ((MSG_void_id_long)objc_msgSend)(_mac_app, sel_c("setActivationPolicy:"), (long)0);
-    ((MSG_void_id_bool)objc_msgSend)(_mac_app, sel_c("activateIgnoringOtherApps:"), 1);
+    ((MSG_void_id_long)objc_msgSend)(canvas_macos.app, sel_c("setActivationPolicy:"), (long)0);
+    ((MSG_void_id_bool)objc_msgSend)(canvas_macos.app, sel_c("activateIgnoringOtherApps:"), 1);
 
     return CANVAS_OK;
 }
@@ -1461,15 +1467,15 @@ int _canvas_gpu_init()
         return CANVAS_OK;
     canvas_info.init_gpu = 1;
 
-    _mac_device = MTLCreateSystemDefaultDevice();
-    if (!_mac_device)
+    canvas_macos.device = MTLCreateSystemDefaultDevice();
+    if (!canvas_macos.device)
     {
         CANVAS_ERR("get macOS Metal device\n");
         return CANVAS_ERR_GET_GPU;
     }
 
-    _metal_queue = ((MSG_id_id)objc_msgSend)(_mac_device, sel_c("newCommandQueue"));
-    return _metal_queue ? 0 : CANVAS_ERR_GET_GPU;
+    canvas_macos.queue = ((MSG_id_id)objc_msgSend)(canvas_macos.device, sel_c("newCommandQueue"));
+    return canvas_macos.queue ? 0 : CANVAS_ERR_GET_GPU;
 }
 
 int _canvas_update_drawable_size(int window_id)
@@ -1523,7 +1529,7 @@ int _canvas_gpu_new_window(int window_id)
         return CANVAS_ERR_GET_GPU;
     }
 
-    ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), _mac_device);
+    ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), canvas_macos.device);
     ((MSG_void_id_long)objc_msgSend)(layer, sel_c("setPixelFormat:"), 80L /*BGRA8Unorm*/);
     ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setFramebufferOnly:"), 1);
     ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setAllowsNextDrawableTimeout:"), 0);
@@ -1546,7 +1552,7 @@ int _canvas_gpu_new_window(int window_id)
 
 void _canvas_gpu_draw_all()
 {
-    if (!_metal_queue)
+    if (!canvas_macos.queue)
     {
         CANVAS_VERBOSE("no metal command queue to draw\n");
         return;
@@ -1581,7 +1587,7 @@ void _canvas_gpu_draw_all()
         _MTLClearColor cc = {canvas_info.canvas[i].clear[0], canvas_info.canvas[i].clear[1], canvas_info.canvas[i].clear[2], canvas_info.canvas[i].clear[3]};
         ((MSG_void_id_clear)objc_msgSend)(att0, sel_c("setClearColor:"), cc);
 
-        objc_id cmd = ((MSG_id_id)objc_msgSend)(_metal_queue, sel_c("commandBuffer"));
+        objc_id cmd = ((MSG_id_id)objc_msgSend)(canvas_macos.queue, sel_c("commandBuffer"));
         objc_id enc = ((MSG_id_id_id)objc_msgSend)(cmd, sel_c("renderCommandEncoderWithDescriptor:"), rpd);
         ((MSG_void_id)objc_msgSend)(enc, sel_c("endEncoding"));
 
@@ -1612,7 +1618,7 @@ int _canvas_update()
 
     for (;;)
     {
-        objc_id ev = nextEvent(_mac_app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+        objc_id ev = nextEvent(canvas_macos.app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
                                ~0ULL, distantPast, ns_mode, (signed char)1);
         if (!ev)
             break;
@@ -1670,20 +1676,20 @@ int _canvas_update()
             }
         }
 
-        ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
+        ((MSG_void_id_id)objc_msgSend)(canvas_macos.app, sel_c("sendEvent:"), ev);
     }
 
     objc_id tracking_mode = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), "NSEventTrackingRunLoopMode");
     for (;;)
     {
-        objc_id ev = nextEvent(_mac_app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+        objc_id ev = nextEvent(canvas_macos.app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
                                ~0ULL, distantPast, tracking_mode, (signed char)1);
         if (!ev)
             break;
-        ((MSG_void_id_id)objc_msgSend)(_mac_app, sel_c("sendEvent:"), ev);
+        ((MSG_void_id_id)objc_msgSend)(canvas_macos.app, sel_c("sendEvent:"), ev);
     }
 
-    ((MSG_void_id)objc_msgSend)(_mac_app, sel_c("updateWindows"));
+    ((MSG_void_id)objc_msgSend)(canvas_macos.app, sel_c("updateWindows"));
 
     _canvas_gpu_draw_all();
 
@@ -1700,20 +1706,20 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
-    if (_metal_queue)
+    if (canvas_macos.queue)
     {
-        ((MSG_void_id)objc_msgSend)(_metal_queue, sel_c("release"));
-        _metal_queue = NULL;
+        ((MSG_void_id)objc_msgSend)(canvas_macos.queue, sel_c("release"));
+        canvas_macos.queue = NULL;
     }
-    if (_mac_device)
+    if (canvas_macos.device)
     {
-        ((MSG_void_id)objc_msgSend)(_mac_device, sel_c("release"));
-        _mac_device = NULL;
+        ((MSG_void_id)objc_msgSend)(canvas_macos.device, sel_c("release"));
+        canvas_macos.device = NULL;
     }
-    if (_mac_pool)
+    if (canvas_macos.pool)
     {
-        ((MSG_void_id)objc_msgSend)(_mac_pool, sel_c("drain"));
-        _mac_pool = NULL;
+        ((MSG_void_id)objc_msgSend)(canvas_macos.pool, sel_c("drain"));
+        canvas_macos.pool = NULL;
     }
     CGDisplayRemoveReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
     return CANVAS_OK;
@@ -1721,16 +1727,16 @@ int _canvas_exit()
 
 static inline void _canvas_ensure_timebase()
 {
-    if (_canvas_timebase.denom == 0)
-        mach_timebase_info(&_canvas_timebase);
+    if (canvas_macos.timebase.denom == 0)
+        mach_timebase_info(&canvas_macos.timebase);
 }
 
 double canvas_get_time(canvas_time_data *time)
 {
     _canvas_ensure_timebase();
     uint64_t elapsed = mach_absolute_time() - time->start;
-    return (double)elapsed * (double)_canvas_timebase.numer /
-           (double)_canvas_timebase.denom / 1e9;
+    return (double)elapsed * (double)canvas_macos.timebase.numer /
+           (double)canvas_macos.timebase.denom / 1e9;
 }
 
 void canvas_sleep(double seconds)
