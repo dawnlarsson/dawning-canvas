@@ -1634,6 +1634,69 @@ int canvas_backend_vulkan_init()
     return CANVAS_OK;
 }
 
+static int vk_create_surface(int window_id, VkSurfaceKHR *surface)
+{
+    VkResult result;
+
+#ifdef _WIN32
+    VkWin32SurfaceCreateInfoKHR create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    create_info.hwnd = (HWND)canvas_info.canvas[window_id].window;
+    create_info.hinstance = GetModuleHandle(NULL);
+
+    result = vk_info.vkCreateWin32SurfaceKHR(vk_info.instance, &create_info, NULL, surface);
+    VK_CHECK(result, "failed to create Win32 surface");
+
+#elif defined(__linux__)
+    if (_canvas_using_wayland && vk_info.vkCreateWaylandSurfaceKHR)
+    {
+        VkWaylandSurfaceCreateInfoKHR create_info = {0};
+        create_info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+        // TODO: wayland display and surface
+        // create_info.display = wl.display;
+        // create_info.surface = (struct wl_surface*)canvas_info.canvas[window_id].window;
+
+        result = vk_info.vkCreateWaylandSurfaceKHR(vk_info.instance, &create_info, NULL, surface);
+        VK_CHECK(result, "failed to create Wayland surface");
+    }
+    else if (vk_info.vkCreateXlibSurfaceKHR)
+    {
+        VkXlibSurfaceCreateInfoKHR create_info = {0};
+        create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        create_info.dpy = x11.display;
+        create_info.window = (Window)canvas_info.canvas[window_id].window;
+
+        result = vk_info.vkCreateXlibSurfaceKHR(vk_info.instance, &create_info, NULL, surface);
+        VK_CHECK(result, "failed to create Xlib surface");
+    }
+    else
+    {
+        CANVAS_ERR("no surface creation function available for Linux\n");
+        return CANVAS_FAIL;
+    }
+
+#elif defined(__APPLE__)
+    if (!_canvas_data[window_id].layer)
+    {
+        CANVAS_ERR("no Metal layer available for surface creation\n");
+        return CANVAS_FAIL;
+    }
+
+    VkMetalSurfaceCreateInfoEXT create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+    create_info.pLayer = _canvas_data[window_id].layer;
+
+    result = vk_info.vkCreateMetalSurfaceEXT(vk_info.instance, &create_info, NULL, surface);
+    VK_CHECK(result, "failed to create Metal surface");
+
+#else
+    CANVAS_ERR("unsupported platform for Vulkan surface creation\n");
+    return CANVAS_FAIL;
+#endif
+
+    return CANVAS_OK;
+}
+
 #endif // CANVAS_VULKAN
 
 //
@@ -4232,6 +4295,47 @@ int _canvas_gpu_init()
 int _canvas_gpu_new_window(int window_id)
 {
     CANVAS_BOUNDS(window_id);
+
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+    memset(vk_win, 0, sizeof(canvas_vulkan_window));
+
+    int result;
+
+    result = vk_create_surface(window_id, &vk_win->surface);
+    if (result != CANVAS_OK)
+    {
+        CANVAS_ERR("failed to create surface for window %d\n", window_id);
+        return result;
+    }
+
+    if (!vk_info.device)
+    {
+        VkResult vk_result = vk_select_physical_device(vk_win->surface);
+        if (vk_result != VK_SUCCESS)
+        {
+            CANVAS_ERR("Failed to select physical device\n");
+            vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+            return CANVAS_ERR_GET_GPU;
+        }
+
+        result = vk_create_logical_device();
+        if (result != CANVAS_OK)
+        {
+            vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+            return result;
+        }
+
+        result = vk_load_device_functions();
+        if (result != CANVAS_OK)
+        {
+            vk_info.vkDestroyDevice(vk_info.device, NULL);
+            vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+            return result;
+        }
+    }
+
+    vk_win->initialized = true;
+    vk_win->current_frame = 0;
 
     return CANVAS_OK;
 }
