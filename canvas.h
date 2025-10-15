@@ -4010,6 +4010,8 @@ int _canvas_init_x11()
         return CANVAS_OK;
     }
 
+    _canvas_using_wayland = false;
+
     return CANVAS_OK;
 }
 
@@ -4022,9 +4024,6 @@ int _canvas_platform()
 
     if (!_canvas_using_wayland && _canvas_init_x11() < 0)
         return CANVAS_ERR_GET_DISPLAY;
-
-    if (canvas_backend_vulkan_init() < 0)
-        return CANVAS_ERR_GET_GPU;
 
     return CANVAS_OK;
 }
@@ -4283,14 +4282,16 @@ int _canvas_update()
     return CANVAS_OK;
 }
 
-int _canvas_gpu_init()
+int _canvas_gpu_init(void)
 {
     if (canvas_info.init_gpu)
         return CANVAS_OK;
+
+    int result = canvas_backend_vulkan_init();
+    if (result != CANVAS_OK)
+        return result;
+
     canvas_info.init_gpu = 1;
-
-    // Select & init backend OpenGL / Vulkan
-
     return CANVAS_OK;
 }
 
