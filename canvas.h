@@ -203,6 +203,15 @@ canvas_context_type canvas_info = (canvas_context_type){0};
 typedef void *objc_id;
 typedef void *objc_sel;
 
+typedef enum
+{
+    NSWindowStyleMaskTitled = 1 << 0,
+    NSWindowStyleMaskClosable = 1 << 1,
+    NSWindowStyleMaskMiniaturizable = 1 << 2,
+    NSWindowStyleMaskResizable = 1 << 3,
+    NSWindowStyleMaskFullSizeContent = 1 << 15,
+} NSWindowStyleMask;
+
 typedef struct
 {
     double r, g, b, a;
@@ -231,10 +240,15 @@ typedef struct
     objc_id queue;
 } canvas_platform_macos;
 
-canvas_data _canvas_data[MAX_CANVAS];
-canvas_platform_macos canvas_macos;
-
 extern objc_id MTLCreateSystemDefaultDevice(void);
+
+typedef objc_id (*msg_send_id_id)(objc_id, objc_sel);
+typedef void (*msg_send_void_id)(objc_id, objc_sel);
+typedef void (*msg_send_void_id_id)(objc_id, objc_sel, objc_id);
+typedef void (*msg_send_void_id_bool)(objc_id, objc_sel, int);
+typedef void (*msg_send_void_id_long)(objc_id, objc_sel, long);
+typedef double (*msg_send_dbl_id)(objc_id, objc_sel);
+typedef unsigned long (*msg_send_ulong_id)(objc_id, objc_sel);
 
 static inline objc_sel sel_c(const char *s) { return sel_registerName(s); }
 static inline objc_id cls(const char *s) { return objc_getClass(s); }
@@ -253,6 +267,181 @@ typedef void (*MSG_void_id_ulong)(objc_id, objc_sel, unsigned long);
 typedef void (*MSG_void_id_clear)(objc_id, objc_sel, _MTLClearColor);
 typedef void (*MSG_void_id_rect)(objc_id, objc_sel, _CGRect);
 typedef _CGRect (*MSG_rect_id)(objc_id, objc_sel);
+
+static inline objc_id msg_id(objc_id obj, const char *sel)
+{
+    return ((msg_send_id_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void(objc_id obj, const char *sel)
+{
+    ((msg_send_void_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void_id(objc_id obj, const char *sel, objc_id arg)
+{
+    ((msg_send_void_id_id)objc_msgSend)(obj, sel_c(sel), arg);
+}
+
+static inline void msg_void_bool(objc_id obj, const char *sel, bool val)
+{
+    ((msg_send_void_id_bool)objc_msgSend)(obj, sel_c(sel), val ? 1 : 0);
+}
+
+static inline void msg_void_long(objc_id obj, const char *sel, long val)
+{
+    ((msg_send_void_id_long)objc_msgSend)(obj, sel_c(sel), val);
+}
+
+static inline double msg_dbl(objc_id obj, const char *sel)
+{
+    return ((msg_send_dbl_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline unsigned long msg_ulong(objc_id obj, const char *sel)
+{
+    return ((msg_send_ulong_id)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline bool msg_bool(objc_id obj, const char *sel)
+{
+    typedef bool (*msg_send_bool)(objc_id, objc_sel);
+    return ((msg_send_bool)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void_rect_bool(objc_id obj, const char *sel, _CGRect rect, bool display)
+{
+    typedef void (*msg_send_rect_bool)(objc_id, objc_sel, _CGRect, int);
+    ((msg_send_rect_bool)objc_msgSend)(obj, sel_c(sel), rect, display ? 1 : 0);
+}
+
+static inline objc_id nsstring_from_cstr(const char *str)
+{
+    if (!str || !str[0])
+        return NULL;
+    typedef objc_id (*msg_from_cstr)(objc_id, objc_sel, const char *);
+    return ((msg_from_cstr)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), str);
+}
+
+static inline objc_id msg_id_id(objc_id obj, const char *sel, objc_id arg)
+{
+    typedef objc_id (*msg_send_id_id)(objc_id, objc_sel, objc_id);
+    return ((msg_send_id_id)objc_msgSend)(obj, sel_c(sel), arg);
+}
+
+static inline _CGRect msg_rect(objc_id obj, const char *sel)
+{
+    typedef _CGRect (*msg_send_rect)(objc_id, objc_sel);
+    return ((msg_send_rect)objc_msgSend)(obj, sel_c(sel));
+}
+
+static inline void msg_void_size(objc_id obj, const char *sel, double width, double height)
+{
+    struct
+    {
+        double width;
+        double height;
+    } sz = {width, height};
+    typedef void (*msg_send_size)(objc_id, objc_sel, typeof(sz));
+    ((msg_send_size)objc_msgSend)(obj, sel_c(sel), sz);
+}
+
+static inline objc_id msg_id_rect(objc_id obj, const char *sel, _CGRect rect)
+{
+    typedef objc_id (*msg_send_rect)(objc_id, objc_sel, _CGRect);
+    return ((msg_send_rect)objc_msgSend)(obj, sel_c(sel), rect);
+}
+
+static inline void msg_void_double(objc_id obj, const char *sel, double val)
+{
+    typedef void (*msg_send_dbl)(objc_id, objc_sel, double);
+    ((msg_send_dbl)objc_msgSend)(obj, sel_c(sel), val);
+}
+
+static inline objc_id msg_id_ulong(objc_id obj, const char *sel, unsigned long val)
+{
+    typedef objc_id (*msg_send_ulong)(objc_id, objc_sel, unsigned long);
+    return ((msg_send_ulong)objc_msgSend)(obj, sel_c(sel), val);
+}
+
+static inline void msg_void_clear_color(objc_id obj, const char *sel, _MTLClearColor color)
+{
+    typedef void (*msg_send_clear)(objc_id, objc_sel, _MTLClearColor);
+    ((msg_send_clear)objc_msgSend)(obj, sel_c(sel), color);
+}
+
+static inline objc_id msg_id_id_descriptor(objc_id obj, const char *sel, objc_id descriptor)
+{
+    typedef objc_id (*msg_send_desc)(objc_id, objc_sel, objc_id);
+    return ((msg_send_desc)objc_msgSend)(obj, sel_c(sel), descriptor);
+}
+
+static inline objc_id canvas_next_event(objc_id app, unsigned long long mask, objc_id until_date, objc_id mode, bool dequeue)
+{
+    typedef objc_id (*msg_send_event)(objc_id, objc_sel, unsigned long long, objc_id, objc_id, signed char);
+    msg_send_event next = (msg_send_event)objc_msgSend;
+    return next(app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+                mask, until_date, mode, dequeue ? 1 : 0);
+}
+
+typedef enum
+{
+    NSBackingStoreBuffered = 2,
+} NSBackingStoreType;
+
+typedef enum
+{
+    NSWindowTitleHidden = 1,
+} NSWindowTitleVisibility;
+
+typedef enum
+{
+    NSApplicationActivationPolicyRegular = 0,
+} NSApplicationActivationPolicy;
+
+typedef enum
+{
+    MTLPixelFormatBGRA8Unorm = 80,
+} MTLPixelFormat;
+
+typedef enum
+{
+    MTLLoadActionClear = 2,
+} MTLLoadAction;
+
+typedef enum
+{
+    MTLStoreActionStore = 1,
+} MTLStoreAction;
+
+static inline _CGRect make_rect(double x, double y, double w, double h)
+{
+    _CGRect r = {x, y, w, h};
+    return r;
+}
+
+static inline _MTLClearColor make_clear_color(float r, float g, float b, float a)
+{
+    _MTLClearColor c = {r, g, b, a};
+    return c;
+}
+
+static const char *_cursor_selector_names[] = {
+    [ARROW] = "arrowCursor",
+    [TEXT] = "IBeamCursor",
+    [CROSSHAIR] = "crosshairCursor",
+    [HAND] = "pointingHandCursor",
+    [SIZE_NS] = "resizeUpDownCursor",
+    [SIZE_EW] = "resizeLeftRightCursor",
+    [SIZE_NESW] = "closedHandCursor",
+    [SIZE_NWSE] = "closedHandCursor",
+    [SIZE_ALL] = "closedHandCursor",
+    [NOT_ALLOWED] = "operationNotAllowedCursor",
+    [WAIT] = "arrowCursor",
+};
+
+canvas_data _canvas_data[MAX_CANVAS];
+canvas_platform_macos canvas_macos;
 
 #endif
 
@@ -1061,7 +1250,8 @@ int canvas_minimize(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("miniaturize:"), (objc_id)0);
+    msg_void_id(window, sel_c("miniaturize:"), NULL);
+
     canvas_info.canvas[window_id].minimized = true;
     canvas_info.canvas[window_id].maximized = false;
 
@@ -1079,11 +1269,11 @@ int canvas_maximize(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    bool is_zoomed = ((bool (*)(objc_id, objc_sel))objc_msgSend)(window, sel_c("isZoomed"));
+    bool is_zoomed = msg_bool(window, "isZoomed");
 
     if (!is_zoomed)
     {
-        ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
+        msg_void_id(window, sel_c("zoom:"), NULL);
         canvas_info.canvas[window_id].maximized = true;
     }
 
@@ -1105,11 +1295,11 @@ int canvas_restore(int window_id)
 
     if (canvas_info.canvas[window_id].minimized)
     {
-        ((MSG_void_id_id)objc_msgSend)(window, sel_c("deminiaturize:"), (objc_id)0);
+        msg_void_id(window, sel_c("deminiaturize:"), NULL);
     }
     else if (canvas_info.canvas[window_id].maximized)
     {
-        ((MSG_void_id_id)objc_msgSend)(window, sel_c("zoom:"), (objc_id)0);
+        msg_void_id(window, sel_c("zoom:"), NULL);
     }
 
     canvas_info.canvas[window_id].minimized = false;
@@ -1118,37 +1308,17 @@ int canvas_restore(int window_id)
     return CANVAS_OK;
 }
 
-objc_id _canvas_get_ns_cursor(canvas_cursor_type cursor)
+static objc_id _canvas_get_ns_cursor(canvas_cursor_type cursor)
 {
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
+    if (cursor < 0 || cursor >= sizeof(_cursor_selector_names) / sizeof(_cursor_selector_names[0]))
+        cursor = ARROW;
 
-    switch (cursor)
-    {
-    case ARROW:
-        return m(cls("NSCursor"), sel_c("arrowCursor"));
-    case TEXT:
-        return m(cls("NSCursor"), sel_c("IBeamCursor"));
-    case CROSSHAIR:
-        return m(cls("NSCursor"), sel_c("crosshairCursor"));
-    case HAND:
-        return m(cls("NSCursor"), sel_c("pointingHandCursor"));
-    case SIZE_NS:
-        return m(cls("NSCursor"), sel_c("resizeUpDownCursor"));
-    case SIZE_EW:
-        return m(cls("NSCursor"), sel_c("resizeLeftRightCursor"));
-    case SIZE_NESW:
-        return m(cls("NSCursor"), sel_c("closedHandCursor"));
-    case SIZE_NWSE:
-        return m(cls("NSCursor"), sel_c("closedHandCursor"));
-    case SIZE_ALL:
-        return m(cls("NSCursor"), sel_c("closedHandCursor"));
-    case NOT_ALLOWED:
-        return m(cls("NSCursor"), sel_c("operationNotAllowedCursor"));
-    case WAIT:
-        return m(cls("NSCursor"), sel_c("arrowCursor"));
-    default:
-        return m(cls("NSCursor"), sel_c("arrowCursor"));
-    }
+    const char *selector = _cursor_selector_names[cursor];
+
+    if (!selector)
+        selector = "arrowCursor";
+
+    return msg_id(cls("NSCursor"), selector);
 }
 
 int canvas_cursor(int window_id, canvas_cursor_type cursor)
@@ -1159,7 +1329,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor)
 
     objc_id ns_cursor = _canvas_get_ns_cursor(cursor);
     if (ns_cursor)
-        ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
+        msg_void(ns_cursor, "set");
 
     return CANVAS_OK;
 }
@@ -1175,21 +1345,12 @@ int _canvas_close(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    // cleanup metal layer and view
-    if (_canvas_data[window_id].layer)
-    {
-        ((MSG_void_id)objc_msgSend)(_canvas_data[window_id].layer, sel_c("release"));
-        _canvas_data[window_id].layer = NULL;
-    }
+    _canvas_data[window_id].layer = NULL;
+    _canvas_data[window_id].view = NULL;
+    _canvas_data[window_id].scale = 0.0;
 
-    if (_canvas_data[window_id].view)
-    {
-        ((MSG_void_id)objc_msgSend)(_canvas_data[window_id].view, sel_c("release"));
-        _canvas_data[window_id].view = NULL;
-    }
-
-    ((MSG_void_id)objc_msgSend)(window, sel_c("close"));
-    ((MSG_void_id)objc_msgSend)(window, sel_c("release"));
+    msg_void(window, "close");
+    msg_void(window, "release");
 
     return CANVAS_OK;
 }
@@ -1212,16 +1373,15 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
 
     if (x >= 0 && y >= 0 && width > 0 && height > 0)
     {
-        _CGRect rect = {(double)global_x, (double)global_y, (double)width, (double)height};
-        typedef void (*MSG_void_id_rect_bool)(objc_id, objc_sel, _CGRect, int);
-        ((MSG_void_id_rect_bool)objc_msgSend)(window, sel_c("setFrame:display:"), rect, 1);
+        _CGRect rect = make_rect(global_x, global_y, width, height);
+        msg_void_rect_bool(window, "setFrame:display:", rect, true);
     }
 
     if (title)
     {
-        objc_id nsTitle = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), title);
+        objc_id nsTitle = nsstring_from_cstr(title);
         if (nsTitle)
-            ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitle:"), nsTitle);
+            msg_void_id(window, "setTitle:", nsTitle);
     }
 
     return CANVAS_OK;
@@ -1238,44 +1398,39 @@ int _canvas_get_window_display(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    objc_id screen = ((MSG_id_id)objc_msgSend)(window, sel_c("screen"));
+    objc_id screen = msg_id(window, "screen");
     if (!screen)
     {
-        CANVAS_ERR("no screen to get display: %d\n", window_id);
+        CANVAS_ERR("no screen for window: %d\n", window_id);
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    objc_id device_desc = ((MSG_id_id)objc_msgSend)(screen, sel_c("deviceDescription"));
+    objc_id device_desc = msg_id(screen, "deviceDescription");
     if (!device_desc)
     {
-        CANVAS_ERR("no device description to get display: %d\n", window_id);
+        CANVAS_ERR("no device description: %d\n", window_id);
         return CANVAS_ERR_GET_GPU;
     }
 
-    objc_id screen_number_key = ((MSG_id_id_charp)objc_msgSend)(
-        cls("NSString"),
-        sel_c("stringWithUTF8String:"),
-        "NSScreenNumber");
+    objc_id screen_number_key = nsstring_from_cstr("NSScreenNumber");
+    if (!screen_number_key)
+        return CANVAS_ERR_GET_DISPLAY;
 
-    objc_id display_id_obj = ((MSG_id_id_id)objc_msgSend)(
-        device_desc,
-        sel_c("objectForKey:"),
-        screen_number_key);
-
+    objc_id display_id_obj = msg_id_id(device_desc, "objectForKey:", screen_number_key);
     if (!display_id_obj)
         return CANVAS_ERR_GET_DISPLAY;
 
-    unsigned long display_id = ((MSG_ulong_id)objc_msgSend)(display_id_obj, sel_c("unsignedIntValue"));
+    unsigned long display_id = msg_ulong(display_id_obj, "unsignedIntValue");
 
     uint32_t max_displays = MAX_DISPLAYS;
-    CGDirectDisplayID display[MAX_DISPLAYS];
+    CGDirectDisplayID displays[MAX_DISPLAYS];
     uint32_t display_count = 0;
 
-    CGGetActiveDisplayList(max_displays, display, &display_count);
+    CGGetActiveDisplayList(max_displays, displays, &display_count);
 
     for (uint32_t i = 0; i < display_count && i < MAX_DISPLAYS; i++)
     {
-        if (display[i] != (CGDirectDisplayID)display_id)
+        if (displays[i] != (CGDirectDisplayID)display_id)
             continue;
 
         canvas_info.canvas[window_id].display = i;
@@ -1314,7 +1469,7 @@ int _canvas_refresh_displays()
         {
             refresh_rate = CGDisplayModeGetRefreshRate(mode);
 
-            if (refresh_rate == 0.0)
+            if (refresh_rate <= 0.0)
                 refresh_rate = 60.0;
 
             CGDisplayModeRelease(mode);
@@ -1348,16 +1503,6 @@ void _canvas_display_reconfigure_callback(CGDirectDisplayID display, CGDisplayCh
         canvas_info.display_changed = true;
 }
 
-bool _canvas_check_display_changes()
-{
-    if (canvas_info.display_changed)
-    {
-        _canvas_refresh_displays();
-        return true;
-    }
-    return false;
-}
-
 int _canvas_init_displays()
 {
     canvas_info.display_count = 0;
@@ -1371,12 +1516,13 @@ void _post_init()
     if (canvas_info.init_post)
         return;
     canvas_info.init_post = 1;
+
     objc_id poolClass = cls("NSAutoreleasePool");
     if (!poolClass)
         return;
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
-    objc_id alloc = m(poolClass, sel_c("alloc"));
-    canvas_macos.pool = m(alloc, sel_c("init"));
+
+    objc_id alloc = msg_id(poolClass, "alloc");
+    canvas_macos.pool = msg_id(alloc, "init");
     mach_timebase_info(&canvas_macos.timebase);
 }
 
@@ -1384,16 +1530,15 @@ int _canvas_platform()
 {
     _post_init();
 
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
-    canvas_macos.app = m(cls("NSApplication"), sel_c("sharedApplication"));
+    canvas_macos.app = msg_id(cls("NSApplication"), "sharedApplication");
     if (!canvas_macos.app)
     {
-        CANVAS_ERR("get macOS application\n");
+        CANVAS_ERR("failed to get NSApplication\n");
         return CANVAS_ERR_GET_PLATFORM;
     }
 
-    ((MSG_void_id_long)objc_msgSend)(canvas_macos.app, sel_c("setActivationPolicy:"), (long)0);
-    ((MSG_void_id_bool)objc_msgSend)(canvas_macos.app, sel_c("activateIgnoringOtherApps:"), 1);
+    msg_void_long(canvas_macos.app, "setActivationPolicy:", NSApplicationActivationPolicyRegular);
+    msg_void_bool(canvas_macos.app, "activateIgnoringOtherApps:", true);
 
     return CANVAS_OK;
 }
@@ -1403,55 +1548,49 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     _post_init();
     canvas_startup();
 
-    unsigned long style =
-        (1UL << 0) /*Titled*/
-        | (1UL << 1) /*Closable*/ |
-        (1UL << 2) /*Mini*/ | (1UL << 3) /*Resizable*/;
-
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
+    unsigned long style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
 
     objc_id winClass = cls("NSWindow");
-
     if (!winClass)
     {
-        CANVAS_ERR("get NSWindow class\n");
+        CANVAS_ERR("failed to get NSWindow class\n");
         return CANVAS_ERR_GET_WINDOW;
     }
-
-    objc_id walloc = m(winClass, sel_c("alloc"));
 
     int window_id = _canvas_get_free();
     if (window_id < 0)
         return window_id;
 
-    typedef objc_id (*MSG_initWin)(objc_id, objc_sel, _CGRect, unsigned long, long, int);
-    _CGRect rect = {(double)x, (double)y, (double)width, (double)height};
-    objc_id window = ((MSG_initWin)objc_msgSend)(walloc,
-                                                 sel_c("initWithContentRect:styleMask:backing:defer:"),
-                                                 rect, style, (long)2, 0);
+    objc_id walloc = msg_id(winClass, "alloc");
+
+    typedef objc_id (*msg_initWin)(objc_id, objc_sel, _CGRect, unsigned long, long, int);
+
+    _CGRect rect = make_rect(x, y, width, height);
+
+    objc_id window = ((msg_initWin)objc_msgSend)(walloc, sel_c("initWithContentRect:styleMask:backing:defer:"), rect, style, (long)NSBackingStoreBuffered, 0);
 
     if (!window)
     {
         canvas_info.canvas[window_id]._valid = false;
-        CANVAS_ERR("create NSWindow\n");
+        CANVAS_ERR("failed to create NSWindow\n");
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ((MSG_void_id_bool)objc_msgSend)(window, sel_c("setTitlebarAppearsTransparent:"), 1);
-    ((MSG_void_id_long)objc_msgSend)(window, sel_c("setTitleVisibility:"), 1L /* NSWindowTitleHidden */);
+    msg_void_bool(window, "setTitlebarAppearsTransparent:", true);
+    msg_void_long(window, "setTitleVisibility:", NSWindowTitleHidden);
 
-    unsigned long sm = ((MSG_ulong_id)objc_msgSend)(window, sel_c("styleMask"));
-    sm |= (1UL << 15); /* NSWindowStyleMaskFullSizeContentView */
-    ((MSG_void_id_ulong)objc_msgSend)(window, sel_c("setStyleMask:"), sm);
+    unsigned long sm = msg_ulong(window, "styleMask");
+    sm |= NSWindowStyleMaskFullSizeContent;
+    msg_void_long(window, "setStyleMask:", sm);
 
     if (title)
     {
-        objc_id nsTitle = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), title);
+        objc_id nsTitle = nsstring_from_cstr(title);
         if (nsTitle)
-            ((MSG_void_id_id)objc_msgSend)(window, sel_c("setTitle:"), nsTitle);
+            msg_void_id(window, "setTitle:", nsTitle);
     }
 
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("makeKeyAndOrderFront:"), (objc_id)0);
+    msg_void_id(window, "makeKeyAndOrderFront:", NULL);
 
     canvas_info.canvas[window_id].window = window;
     canvas_info.canvas[window_id].resize = false;
@@ -1470,12 +1609,18 @@ int _canvas_gpu_init()
     canvas_macos.device = MTLCreateSystemDefaultDevice();
     if (!canvas_macos.device)
     {
-        CANVAS_ERR("get macOS Metal device\n");
+        CANVAS_ERR("failed to create Metal device\n");
         return CANVAS_ERR_GET_GPU;
     }
 
-    canvas_macos.queue = ((MSG_id_id)objc_msgSend)(canvas_macos.device, sel_c("newCommandQueue"));
-    return canvas_macos.queue ? 0 : CANVAS_ERR_GET_GPU;
+    canvas_macos.queue = msg_id(canvas_macos.device, "newCommandQueue");
+    if (!canvas_macos.queue)
+    {
+        CANVAS_ERR("failed to create Metal command queue\n");
+        return CANVAS_ERR_GET_GPU;
+    }
+
+    return CANVAS_OK;
 }
 
 int _canvas_update_drawable_size(int window_id)
@@ -1488,16 +1633,10 @@ int _canvas_update_drawable_size(int window_id)
         return CANVAS_ERR_GET_DISPLAY;
     }
 
-    _CGRect b = ((_CGRect (*)(objc_id, objc_sel))objc_msgSend)(_canvas_data[window_id].view, sel_c("bounds"));
+    _CGRect b = msg_rect(_canvas_data[window_id].view, "bounds");
     double w = b.w * _canvas_data[window_id].scale;
     double h = b.h * _canvas_data[window_id].scale;
-
-    struct
-    {
-        double width;
-        double height;
-    } sz = {w, h};
-    ((void (*)(objc_id, objc_sel, typeof(sz)))objc_msgSend)(_canvas_data[window_id].layer, sel_c("setDrawableSize:"), sz);
+    msg_void_size(_canvas_data[window_id].layer, "setDrawableSize:", w, h);
 
     return CANVAS_OK;
 }
@@ -1508,40 +1647,37 @@ int _canvas_gpu_new_window(int window_id)
 
     objc_id window = canvas_info.canvas[window_id].window;
 
-    MSG_id_id m = (MSG_id_id)objc_msgSend;
-
-    objc_id view = m(cls("NSView"), sel_c("alloc"));
-    view = ((MSG_id_id_rect)objc_msgSend)(view, sel_c("initWithFrame:"), (_CGRect){0, 0, 800, 600});
+    objc_id view = msg_id(cls("NSView"), "alloc");
+    view = msg_id_rect(view, "initWithFrame:", make_rect(0, 0, 800, 600));
     if (!view)
     {
-        CANVAS_ERR("create NSView for window: %d\n", window_id);
+        CANVAS_ERR("failed to create NSView for window: %d\n", window_id);
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ((MSG_void_id_bool)objc_msgSend)(view, sel_c("setWantsLayer:"), 1);
+    msg_void_bool(view, "setWantsLayer:", true);
 
-    objc_id layer = m(cls("CAMetalLayer"), sel_c("alloc"));
-    layer = m(layer, sel_c("init"));
-
+    objc_id layer = msg_id(cls("CAMetalLayer"), "alloc");
+    layer = msg_id(layer, "init");
     if (!layer)
     {
-        CANVAS_ERR("create CAMetalLayer for window: %d\n", window_id);
+        CANVAS_ERR("failed to create CAMetalLayer for window: %d\n", window_id);
         return CANVAS_ERR_GET_GPU;
     }
 
-    ((MSG_void_id_id)objc_msgSend)(layer, sel_c("setDevice:"), canvas_macos.device);
-    ((MSG_void_id_long)objc_msgSend)(layer, sel_c("setPixelFormat:"), 80L /*BGRA8Unorm*/);
-    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setFramebufferOnly:"), 1);
-    ((MSG_void_id_bool)objc_msgSend)(layer, sel_c("setAllowsNextDrawableTimeout:"), 0);
+    msg_void_id(layer, "setDevice:", canvas_macos.device);
+    msg_void_long(layer, "setPixelFormat:", MTLPixelFormatBGRA8Unorm);
+    msg_void_bool(layer, "setFramebufferOnly:", true);
+    msg_void_bool(layer, "setAllowsNextDrawableTimeout:", false);
 
     double scale = 1.0;
-    objc_id screen = m(window, sel_c("screen"));
+    objc_id screen = msg_id(window, "screen");
     if (screen)
-        scale = ((MSG_dbl_id)objc_msgSend)(screen, sel_c("backingScaleFactor"));
-    ((void (*)(objc_id, objc_sel, double))objc_msgSend)(layer, sel_c("setContentsScale:"), scale);
+        scale = msg_dbl(screen, "backingScaleFactor");
+    msg_void_double(layer, "setContentsScale:", scale);
 
-    ((MSG_void_id_id)objc_msgSend)(view, sel_c("setLayer:"), layer);
-    ((MSG_void_id_id)objc_msgSend)(window, sel_c("setContentView:"), view);
+    msg_void_id(view, "setLayer:", layer);
+    msg_void_id(window, "setContentView:", view);
 
     _canvas_data[window_id].view = view;
     _canvas_data[window_id].layer = layer;
@@ -1554,7 +1690,7 @@ void _canvas_gpu_draw_all()
 {
     if (!canvas_macos.queue)
     {
-        CANVAS_VERBOSE("no metal command queue to draw\n");
+        CANVAS_VERBOSE("no metal command queue\n");
         return;
     }
 
@@ -1569,30 +1705,33 @@ void _canvas_gpu_draw_all()
         if (!layer)
             continue;
 
-        objc_id drawable = ((MSG_id_id)objc_msgSend)(layer, sel_c("nextDrawable"));
-
+        objc_id drawable = msg_id(layer, "nextDrawable");
         if (!drawable)
             continue;
 
-        objc_id texture = ((MSG_id_id)objc_msgSend)(drawable, sel_c("texture"));
+        objc_id texture = msg_id(drawable, "texture");
 
-        objc_id rpd = ((MSG_id_id)objc_msgSend)(cls("MTLRenderPassDescriptor"), sel_c("renderPassDescriptor"));
-        objc_id caps = ((MSG_id_id)objc_msgSend)(rpd, sel_c("colorAttachments"));
-        objc_id att0 = ((MSG_id_id_ulong)objc_msgSend)(caps, sel_c("objectAtIndexedSubscript:"), 0UL);
+        objc_id rpd = msg_id(cls("MTLRenderPassDescriptor"), "renderPassDescriptor");
+        objc_id caps = msg_id(rpd, "colorAttachments");
+        objc_id att0 = msg_id_ulong(caps, "objectAtIndexedSubscript:", 0UL);
 
-        ((MSG_void_id_id)objc_msgSend)(att0, sel_c("setTexture:"), texture);
-        ((MSG_void_id_ulong)objc_msgSend)(att0, sel_c("setLoadAction:"), 2UL);  /* Clear */
-        ((MSG_void_id_ulong)objc_msgSend)(att0, sel_c("setStoreAction:"), 1UL); /* Store */
+        msg_void_id(att0, "setTexture:", texture);
+        msg_void_long(att0, "setLoadAction:", MTLLoadActionClear);
+        msg_void_long(att0, "setStoreAction:", MTLStoreActionStore);
 
-        _MTLClearColor cc = {canvas_info.canvas[i].clear[0], canvas_info.canvas[i].clear[1], canvas_info.canvas[i].clear[2], canvas_info.canvas[i].clear[3]};
-        ((MSG_void_id_clear)objc_msgSend)(att0, sel_c("setClearColor:"), cc);
+        _MTLClearColor clear = make_clear_color(
+            canvas_info.canvas[i].clear[0],
+            canvas_info.canvas[i].clear[1],
+            canvas_info.canvas[i].clear[2],
+            canvas_info.canvas[i].clear[3]);
+        msg_void_clear_color(att0, "setClearColor:", clear);
 
-        objc_id cmd = ((MSG_id_id)objc_msgSend)(canvas_macos.queue, sel_c("commandBuffer"));
-        objc_id enc = ((MSG_id_id_id)objc_msgSend)(cmd, sel_c("renderCommandEncoderWithDescriptor:"), rpd);
-        ((MSG_void_id)objc_msgSend)(enc, sel_c("endEncoding"));
+        objc_id cmd = msg_id(canvas_macos.queue, "commandBuffer");
+        objc_id enc = msg_id_id_descriptor(cmd, "renderCommandEncoderWithDescriptor:", rpd);
+        msg_void(enc, "endEncoding");
 
-        ((MSG_void_id_id)objc_msgSend)(cmd, sel_c("presentDrawable:"), drawable);
-        ((MSG_void_id)objc_msgSend)(cmd, sel_c("commit"));
+        msg_void_id(cmd, "presentDrawable:", drawable);
+        msg_void(cmd, "commit");
     }
 }
 
@@ -1600,59 +1739,48 @@ int _canvas_update()
 {
     _post_init();
 
-    _canvas_check_display_changes();
+    if (canvas_info.display_changed)
+        _canvas_refresh_displays();
 
     objc_id poolClass = cls("NSAutoreleasePool");
     objc_id framePool = NULL;
     if (poolClass)
     {
-        objc_id tmp = ((MSG_id_id)objc_msgSend)(poolClass, sel_c("alloc"));
-        framePool = ((MSG_id_id)objc_msgSend)(tmp, sel_c("init"));
+        objc_id tmp = msg_id(poolClass, "alloc");
+        framePool = msg_id(tmp, "init");
     }
 
-    objc_id ns_mode = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), "kCFRunLoopDefaultMode");
-    objc_id distantPast = ((MSG_id_id)objc_msgSend)(cls("NSDate"), sel_c("distantPast"));
-
-    typedef objc_id (*MSG_nextEvent)(objc_id, objc_sel, unsigned long long, objc_id, objc_id, signed char);
-    MSG_nextEvent nextEvent = (MSG_nextEvent)objc_msgSend;
+    objc_id ns_mode = nsstring_from_cstr("kCFRunLoopDefaultMode");
+    objc_id distantPast = msg_id(cls("NSDate"), "distantPast");
 
     for (;;)
     {
-        objc_id ev = nextEvent(canvas_macos.app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
-                               ~0ULL, distantPast, ns_mode, (signed char)1);
+        objc_id ev = canvas_next_event(canvas_macos.app, ~0ULL, distantPast, ns_mode, true);
         if (!ev)
             break;
 
-        unsigned long eventType = ((MSG_ulong_id)objc_msgSend)(ev, sel_c("type"));
-
-        objc_id eventWindow = ((MSG_id_id)objc_msgSend)(ev, sel_c("window"));
+        unsigned long eventType = msg_ulong(ev, "type");
+        objc_id eventWindow = msg_id(ev, "window");
 
         if (eventWindow)
         {
             int window_idx = _canvas_window_index(eventWindow);
-
             if (window_idx >= 0)
             {
-                // NSEventType constants
-                // NSEventTypeLeftMouseDragged = 6
-                // NSEventTypeOtherMouseDragged = 27
-                // NSEventTypeRightMouseDragged = 7
-
                 if (eventType == 5) // NSEventTypeMouseMoved
                 {
                     objc_id ns_cursor = _canvas_get_ns_cursor(canvas_info.canvas[window_idx].cursor);
                     if (ns_cursor)
-                        ((MSG_void_id)objc_msgSend)(ns_cursor, sel_c("set"));
+                        msg_void(ns_cursor, "set");
                 }
 
                 switch (eventType)
                 {
-
                 case 6:  // NSEventTypeLeftMouseDragged
-                case 27: // NSEventTypeOtherMouseDragged
                 case 7:  // NSEventTypeRightMouseDragged
+                case 27: // NSEventTypeOtherMouseDragged
                 {
-                    _CGRect frame = ((MSG_rect_id)objc_msgSend)(eventWindow, sel_c("frame"));
+                    _CGRect frame = msg_rect(eventWindow, "frame");
 
                     if ((int)frame.x != canvas_info.canvas[window_idx].x ||
                         (int)frame.y != canvas_info.canvas[window_idx].y)
@@ -1676,25 +1804,23 @@ int _canvas_update()
             }
         }
 
-        ((MSG_void_id_id)objc_msgSend)(canvas_macos.app, sel_c("sendEvent:"), ev);
+        msg_void_id(canvas_macos.app, "sendEvent:", ev);
     }
 
-    objc_id tracking_mode = ((MSG_id_id_charp)objc_msgSend)(cls("NSString"), sel_c("stringWithUTF8String:"), "NSEventTrackingRunLoopMode");
+    objc_id tracking_mode = nsstring_from_cstr("NSEventTrackingRunLoopMode");
     for (;;)
     {
-        objc_id ev = nextEvent(canvas_macos.app, sel_c("nextEventMatchingMask:untilDate:inMode:dequeue:"),
-                               ~0ULL, distantPast, tracking_mode, (signed char)1);
+        objc_id ev = canvas_next_event(canvas_macos.app, ~0ULL, distantPast, tracking_mode, true);
         if (!ev)
             break;
-        ((MSG_void_id_id)objc_msgSend)(canvas_macos.app, sel_c("sendEvent:"), ev);
+        msg_void_id(canvas_macos.app, "sendEvent:", ev);
     }
 
-    ((MSG_void_id)objc_msgSend)(canvas_macos.app, sel_c("updateWindows"));
-
+    msg_void(canvas_macos.app, "updateWindows");
     _canvas_gpu_draw_all();
 
     if (framePool)
-        ((MSG_void_id)objc_msgSend)(framePool, sel_c("drain"));
+        msg_void(framePool, "drain");
 
     return CANVAS_OK;
 }
