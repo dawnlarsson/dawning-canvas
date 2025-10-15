@@ -1058,6 +1058,7 @@ static struct
     VkDebugUtilsMessengerEXT debug_messenger;
 
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+    PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr;
     PFN_vkCreateInstance vkCreateInstance;
     PFN_vkDestroyInstance vkDestroyInstance;
     PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
@@ -1151,12 +1152,12 @@ static canvas_vulkan_window vk_windows[MAX_CANVAS] = {0};
         return CANVAS_ERR_LOAD_SYMBOL;                                                 \
     }
 
-#define VK_LOAD_DEVICE_FUNC(name)                                                      \
-    vk_info.name = (PFN_##name)vk_info.vkGetInstanceProcAddr(vk_info.instance, #name); \
-    if (!vk_info.name)                                                                 \
-    {                                                                                  \
-        CANVAS_ERR("failed to load device function: " #name "\n");                     \
-        return CANVAS_ERR_LOAD_SYMBOL;                                                 \
+#define VK_LOAD_DEVICE_FUNC(name)                                                  \
+    vk_info.name = (PFN_##name)vk_info.vkGetDeviceProcAddr(vk_info.device, #name); \
+    if (!vk_info.name)                                                             \
+    {                                                                              \
+        CANVAS_ERR("failed to load device function: " #name "\n");                 \
+        return CANVAS_ERR_LOAD_SYMBOL;                                             \
     }
 
 #define VK_CHECK(result, msg)                             \
@@ -1591,6 +1592,7 @@ int canvas_backend_vulkan_init()
     }
 
     vk_info.vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)canvas_library_symbol(vk_info.library, "vkGetInstanceProcAddr");
+    vk_info.vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)canvas_library_symbol(vk_info.library, "vkGetDeviceProcAddr");
 
     if (!vk_info.vkGetInstanceProcAddr)
     {
