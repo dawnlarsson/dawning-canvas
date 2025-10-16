@@ -1161,6 +1161,8 @@ static struct
     PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
     PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
 
+    PFN_vkResetCommandPool vkResetCommandPool;
+
 } vk_info = {0};
 
 typedef struct
@@ -1312,6 +1314,7 @@ static int vk_load_device_functions()
     VK_LOAD_DEVICE_FUNC(vkCmdBeginRenderPass);
     VK_LOAD_DEVICE_FUNC(vkCmdEndRenderPass);
     VK_LOAD_DEVICE_FUNC(vkCmdPipelineBarrier);
+    VK_LOAD_DEVICE_FUNC(vkResetCommandPool);
 
     return CANVAS_OK;
 }
@@ -1826,9 +1829,7 @@ static int vk_create_swapchain(int window_id)
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-    uint32_t queue_families[] = {
-        (uint32_t)vk_info.graphics_family,
-        (uint32_t)vk_info.present_family};
+    uint32_t queue_families[] = {(uint32_t)vk_info.graphics_family, (uint32_t)vk_info.present_family};
 
     if (vk_info.graphics_family != vk_info.present_family)
     {
@@ -1863,7 +1864,7 @@ static int vk_create_swapchain(int window_id)
     vk_win->swapchain_format = surface_format.format;
     vk_win->swapchain_extent = extent;
 
-    CANVAS_INFO("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
+    CANVAS_VERBOSE("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
 
     return CANVAS_OK;
 }
@@ -2031,14 +2032,14 @@ static int vk_create_sync_objects(int window_id)
         result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL, &vk_win->image_available_semaphores[i]);
         if (result != VK_SUCCESS)
         {
-            CANVAS_ERR("failed to create image available semaphore %d\n", i);
+            CANVAS_ERR("failed to create image available semaphore %d (result=%d)\n", i, result);
             goto cleanup;
         }
 
         result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL, &vk_win->render_finished_semaphores[i]);
         if (result != VK_SUCCESS)
         {
-            CANVAS_ERR("failed to create render finished semaphore %d\n", i);
+            CANVAS_ERR("failed to create render finished semaphore %d (result=%d)\n", i, result);
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
             goto cleanup;
         }
@@ -2046,7 +2047,7 @@ static int vk_create_sync_objects(int window_id)
         result = vk_info.vkCreateFence(vk_info.device, &fence_info, NULL, &vk_win->in_flight_fences[i]);
         if (result != VK_SUCCESS)
         {
-            CANVAS_ERR("failed to create fence %d\n", i);
+            CANVAS_ERR("failed to create fence %d (result=%d)\n", i, result);
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
             goto cleanup;
@@ -2082,6 +2083,14 @@ static void vk_cleanup_swapchain(int window_id)
 
     vk_info.vkDeviceWaitIdle(vk_info.device);
 
+    if (vk_win->command_pool && vk_win->swapchain_image_count > 0)
+    {
+        vk_info.vkFreeCommandBuffers(vk_info.device, vk_win->command_pool, vk_win->swapchain_image_count, vk_win->command_buffers);
+
+        for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
+            vk_win->command_buffers[i] = VK_NULL_HANDLE;
+    }
+
     for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
     {
         if (vk_win->framebuffers[i])
@@ -2096,6 +2105,9 @@ static void vk_cleanup_swapchain(int window_id)
         }
     }
 
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++)
+        vk_win->images_in_flight[i] = VK_NULL_HANDLE;
+
     if (vk_win->swapchain)
     {
         vk_info.vkDestroySwapchainKHR(vk_info.device, vk_win->swapchain, NULL);
@@ -2105,6 +2117,8 @@ static void vk_cleanup_swapchain(int window_id)
 
 static int vk_recreate_swapchain(int window_id)
 {
+    return CANVAS_OK; // Temporary, got a crash here
+
     int width = canvas_info.canvas[window_id].width;
     int height = canvas_info.canvas[window_id].height;
 
@@ -2122,20 +2136,251 @@ static int vk_recreate_swapchain(int window_id)
     int result;
     result = vk_create_swapchain(window_id);
     if (result != CANVAS_OK)
+    {
+        CANVAS_ERR("vk_recreate_swapchain: Failed to create swapchain\n");
         return result;
+    }
 
     result = vk_create_image_views(window_id);
     if (result != CANVAS_OK)
+    {
+        CANVAS_ERR("vk_recreate_swapchain: Failed to create image views\n");
         return result;
+    }
 
     result = vk_create_framebuffers(window_id);
     if (result != CANVAS_OK)
+    {
+        CANVAS_ERR("vk_recreate_swapchain: Failed to create framebuffers\n");
         return result;
+    }
+
+    result = vk_create_command_buffers(window_id);
+    if (result != CANVAS_OK)
+    {
+        CANVAS_ERR("vk_recreate_swapchain: Failed to create command buffers\n");
+        return result;
+    }
 
     vk_windows[window_id].needs_resize = false;
 
-    CANVAS_INFO("swapchain recreated for window %d\n", window_id);
     return CANVAS_OK;
+}
+
+static int vk_record_command_buffer(int window_id, uint32_t image_index)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    VkCommandBufferBeginInfo begin_info = {0};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    VkResult result = vk_info.vkBeginCommandBuffer(vk_win->command_buffers[image_index], &begin_info);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("failed to begin command buffer (result=%d)\n", result);
+        return CANVAS_FAIL;
+    }
+
+    VkRenderPassBeginInfo render_pass_info = {0};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = vk_win->render_pass;
+    render_pass_info.framebuffer = vk_win->framebuffers[image_index];
+    render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
+    render_pass_info.renderArea.extent = vk_win->swapchain_extent;
+
+    VkClearValue clear_color = {0};
+    clear_color.color.float32[0] = canvas_info.canvas[window_id].clear[0];
+    clear_color.color.float32[1] = canvas_info.canvas[window_id].clear[1];
+    clear_color.color.float32[2] = canvas_info.canvas[window_id].clear[2];
+    clear_color.color.float32[3] = canvas_info.canvas[window_id].clear[3];
+
+    render_pass_info.clearValueCount = 1;
+    render_pass_info.pClearValues = &clear_color;
+
+    vk_info.vkCmdBeginRenderPass(vk_win->command_buffers[image_index], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    vk_info.vkCmdEndRenderPass(vk_win->command_buffers[image_index]);
+
+    result = vk_info.vkEndCommandBuffer(vk_win->command_buffers[image_index]);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("failed to end command buffer (result=%d)\n", result);
+        return CANVAS_FAIL;
+    }
+
+    return CANVAS_OK;
+}
+
+static int vk_draw_frame(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    if (!vk_win->initialized)
+        return CANVAS_OK;
+
+    if (vk_win->current_frame >= MAX_FRAMES_IN_FLIGHT)
+        vk_win->current_frame = 0;
+
+    VkFence current_fence = vk_win->in_flight_fences[vk_win->current_frame];
+
+    if (current_fence == VK_NULL_HANDLE)
+        return CANVAS_FAIL;
+
+    vk_info.vkWaitForFences(vk_info.device, 1, &current_fence, VK_TRUE, UINT64_MAX);
+
+    uint32_t image_index;
+    VkResult result = vk_info.vkAcquireNextImageKHR(vk_info.device, vk_win->swapchain, UINT64_MAX, vk_win->image_available_semaphores[vk_win->current_frame], VK_NULL_HANDLE, &image_index);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        int recreate_result = vk_recreate_swapchain(window_id);
+        return recreate_result;
+    }
+    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    {
+        CANVAS_ERR("failed to acquire swapchain image\n");
+        return CANVAS_FAIL;
+    }
+
+    if (image_index >= vk_win->swapchain_image_count)
+        return CANVAS_FAIL;
+
+    if (vk_win->images_in_flight[image_index] != VK_NULL_HANDLE)
+    {
+        vk_info.vkWaitForFences(vk_info.device, 1, &vk_win->images_in_flight[image_index], VK_TRUE, UINT64_MAX);
+    }
+
+    vk_win->images_in_flight[image_index] = current_fence;
+
+    int record_result = vk_record_command_buffer(window_id, image_index);
+
+    if (record_result != CANVAS_OK)
+        return record_result;
+
+    VkSubmitInfo submit_info = {0};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore wait_semaphores[] = {vk_win->image_available_semaphores[vk_win->current_frame]};
+    VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = wait_semaphores;
+    submit_info.pWaitDstStageMask = wait_stages;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &vk_win->command_buffers[image_index];
+
+    VkSemaphore signal_semaphores[] = {vk_win->render_finished_semaphores[vk_win->current_frame]};
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = signal_semaphores;
+
+    vk_info.vkResetFences(vk_info.device, 1, &vk_win->in_flight_fences[vk_win->current_frame]);
+
+    result = vk_info.vkQueueSubmit(vk_info.graphics_queue, 1, &submit_info, vk_win->in_flight_fences[vk_win->current_frame]);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("failed to submit draw command buffer\n");
+        return CANVAS_FAIL;
+    }
+
+    VkPresentInfoKHR present_info = {0};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = signal_semaphores;
+
+    VkSwapchainKHR swapchains[] = {vk_win->swapchain};
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = swapchains;
+    present_info.pImageIndices = &image_index;
+
+    result = vk_info.vkQueuePresentKHR(vk_info.present_queue, &present_info);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || vk_win->needs_resize)
+    {
+        vk_win->needs_resize = false;
+        int recreate_result = vk_recreate_swapchain(window_id);
+        return recreate_result;
+    }
+    else if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("failed to present swapchain image\n");
+        return CANVAS_FAIL;
+    }
+
+    vk_win->current_frame = (vk_win->current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    return CANVAS_OK;
+}
+
+static void vk_cleanup_window(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    if (!vk_win->initialized)
+        return;
+
+    vk_info.vkDeviceWaitIdle(vk_info.device);
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        if (vk_win->image_available_semaphores[i])
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
+
+        if (vk_win->render_finished_semaphores[i])
+            vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
+
+        if (vk_win->in_flight_fences[i])
+            vk_info.vkDestroyFence(vk_info.device, vk_win->in_flight_fences[i], NULL);
+    }
+
+    if (vk_win->command_pool)
+        vk_info.vkDestroyCommandPool(vk_info.device, vk_win->command_pool, NULL);
+
+    if (vk_win->render_pass)
+        vk_info.vkDestroyRenderPass(vk_info.device, vk_win->render_pass, NULL);
+
+    vk_cleanup_swapchain(window_id);
+
+    if (vk_win->surface)
+        vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+
+    memset(vk_win, 0, sizeof(canvas_vulkan_window));
+}
+
+static void vk_cleanup(void)
+{
+    if (!vk_info.instance)
+        return;
+
+    if (vk_info.device)
+        vk_info.vkDeviceWaitIdle(vk_info.device);
+
+    for (int i = 0; i < MAX_CANVAS; i++)
+        vk_cleanup_window(i);
+
+    if (vk_info.device)
+    {
+        vk_info.vkDestroyDevice(vk_info.device, NULL);
+        vk_info.device = VK_NULL_HANDLE;
+    }
+
+    if (vk_info.validation_enabled && vk_info.debug_messenger && vk_info.vkDestroyDebugUtilsMessengerEXT)
+    {
+        vk_info.vkDestroyDebugUtilsMessengerEXT(vk_info.instance, vk_info.debug_messenger, NULL);
+        vk_info.debug_messenger = VK_NULL_HANDLE;
+    }
+
+    if (vk_info.instance)
+    {
+        vk_info.vkDestroyInstance(vk_info.instance, NULL);
+        vk_info.instance = VK_NULL_HANDLE;
+    }
+
+    if (vk_info.library)
+    {
+        canvas_library_close(vk_info.library);
+        vk_info.library = NULL;
+    }
+
+    CANVAS_INFO("vulkan cleaned up\n");
 }
 
 #endif // CANVAS_VULKAN
@@ -4718,6 +4963,14 @@ int _canvas_update()
         }
     }
 
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (!canvas_info.canvas[i]._valid || !vk_windows[i].initialized)
+            continue;
+
+        vk_draw_frame(i);
+    }
+
     return CANVAS_OK;
 }
 
@@ -4755,7 +5008,7 @@ int _canvas_gpu_new_window(int window_id)
         VkResult vk_result = vk_select_physical_device(vk_win->surface);
         if (vk_result != VK_SUCCESS)
         {
-            CANVAS_ERR("Failed to select physical device\n");
+            CANVAS_ERR("failed to select physical device\n");
             vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
             return CANVAS_ERR_GET_GPU;
         }
@@ -4776,9 +5029,55 @@ int _canvas_gpu_new_window(int window_id)
         }
     }
 
+    result = vk_create_swapchain(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
+    result = vk_create_image_views(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
+    result = vk_create_render_pass(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
+    result = vk_create_framebuffers(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
+    result = vk_create_command_pool(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
+    result = vk_create_command_buffers(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
+    result = vk_create_sync_objects(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
+
     vk_win->initialized = true;
     vk_win->current_frame = 0;
 
+    CANVAS_VERBOSE("vulkan setup complete for window %d\n", window_id);
+    return CANVAS_OK;
+
+cleanup:
+    vk_cleanup_window(window_id);
+    return result;
+}
+
+int _canvas_window_resize(int window_id)
+{
+    CANVAS_BOUNDS(window_id);
+
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    if (!vk_win->initialized)
+        return CANVAS_OK;
+
+    vk_win->needs_resize = true;
     return CANVAS_OK;
 }
 
@@ -4797,6 +5096,8 @@ int _canvas_post_update()
 
 int _canvas_exit()
 {
+    if (vk_info.library)
+        vk_cleanup();
 
     if (x11.display)
         x11.XCloseDisplay(x11.display);
@@ -4900,7 +5201,6 @@ int canvas_startup()
 
     return CANVAS_OK;
 }
-
 void canvas_main_loop()
 {
     canvas_time_update(&canvas_info.time);
@@ -4934,7 +5234,10 @@ void canvas_main_loop()
     _canvas_post_update();
 
     if (canvas_info.auto_exit && !any_alive)
+    {
+        CANVAS_DBG("auto exit triggered\n");
         canvas_info.quit = 1;
+    }
 
     canvas_limit_fps(&canvas_info.time, canvas_info.limit_fps);
 }
