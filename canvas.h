@@ -1185,6 +1185,23 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
+static int vk_setup_debug_messenger()
+{
+    if (!vk_info.validation_enabled || !vk_info.vkCreateDebugUtilsMessengerEXT)
+        return CANVAS_OK;
+
+    VkDebugUtilsMessengerCreateInfoEXT create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    create_info.pfnUserCallback = vk_debug_callback;
+
+    VkResult result = vk_info.vkCreateDebugUtilsMessengerEXT(vk_info.instance, &create_info, NULL, &vk_info.debug_messenger);
+    VK_CHECK(result, "failed to setup debug messenger");
+
+    return CANVAS_OK;
+}
+
 static bool vk_check_validation_layers()
 {
     if (!vk_info.vkEnumerateInstanceLayerProperties)
@@ -1444,104 +1461,6 @@ static VkResult vk_select_physical_device(VkSurfaceKHR test_surface)
     return VK_ERROR_INITIALIZATION_FAILED;
 }
 
-static int vk_create_instance()
-{
-    CANVAS_INFO("creating vulkan instance...\n");
-
-#ifdef NDEBUG
-    vk_info.validation_enabled = false;
-#else
-    vk_info.validation_enabled = vk_check_validation_layers();
-    if (vk_info.validation_enabled)
-        CANVAS_INFO("vulkan validation layers enabled\n");
-    else
-        CANVAS_INFO("vulkan validation layers not available - continuing without validation\n");
-
-#endif
-
-    VkApplicationInfo app_info = {0};
-    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.pApplicationName = "Application";
-    app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    app_info.pEngineName = "Canvas";
-    app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    app_info.apiVersion = VK_API_VERSION_1_0;
-
-    const char *extensions[16];
-    uint32_t extension_count = 0;
-
-    extensions[extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
-
-#ifdef _WIN32
-    extensions[extension_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
-#endif
-#ifdef __linux__
-    extensions[extension_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
-    extensions[extension_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
-#endif
-#ifdef __APPLE__
-    extensions[extension_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
-    extensions[extension_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
-#endif
-
-    if (vk_info.validation_enabled)
-        extensions[extension_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-
-    const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
-
-    VkDebugUtilsMessengerCreateInfoEXT debug_create_info = {0};
-
-    VkInstanceCreateInfo create_info = {0};
-    create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    create_info.pApplicationInfo = &app_info;
-    create_info.enabledExtensionCount = extension_count;
-    create_info.ppEnabledExtensionNames = extensions;
-
-#ifdef __APPLE__
-    create_info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-#endif
-
-    if (vk_info.validation_enabled)
-    {
-        create_info.enabledLayerCount = 1;
-        create_info.ppEnabledLayerNames = validation_layers;
-
-        debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        debug_create_info.pfnUserCallback = vk_debug_callback;
-
-        create_info.pNext = &debug_create_info;
-    }
-
-    VkResult result = vk_info.vkCreateInstance(&create_info, NULL, &vk_info.instance);
-
-    if (result != VK_SUCCESS)
-    {
-        CANVAS_ERR("vkCreateInstance failed with code: %d\n", result);
-        return result;
-    }
-
-    return VK_SUCCESS;
-}
-
-static int vk_setup_debug_messenger()
-{
-    if (!vk_info.validation_enabled || !vk_info.vkCreateDebugUtilsMessengerEXT)
-        return CANVAS_OK;
-
-    VkDebugUtilsMessengerCreateInfoEXT create_info = {0};
-    create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    create_info.pfnUserCallback = vk_debug_callback;
-
-    VkResult result = vk_info.vkCreateDebugUtilsMessengerEXT(vk_info.instance, &create_info, NULL, &vk_info.debug_messenger);
-    VK_CHECK(result, "failed to setup debug messenger");
-
-    return CANVAS_OK;
-}
-
 static int vk_create_logical_device()
 {
     uint32_t unique_families[2];
@@ -1623,11 +1542,79 @@ int canvas_backend_vulkan_init()
         return CANVAS_ERR_LOAD_SYMBOL;
     }
 
-    int result = vk_create_instance();
+    CANVAS_INFO("creating vulkan instance...\n");
+
+#ifdef NDEBUG
+    vk_info.validation_enabled = false;
+#else
+    vk_info.validation_enabled = vk_check_validation_layers();
+    if (vk_info.validation_enabled)
+        CANVAS_INFO("vulkan validation layers enabled\n");
+    else
+        CANVAS_INFO("vulkan validation layers not available - continuing without validation\n");
+
+#endif
+
+    VkApplicationInfo app_info = {0};
+    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "Application";
+    app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    app_info.pEngineName = "Canvas";
+    app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+    app_info.apiVersion = VK_API_VERSION_1_0;
+
+    const char *extensions[16];
+    uint32_t extension_count = 0;
+
+    extensions[extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
+
+#ifdef _WIN32
+    extensions[extension_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
+#endif
+#ifdef __linux__
+    extensions[extension_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
+#endif
+#ifdef __APPLE__
+    extensions[extension_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+#endif
+
+    if (vk_info.validation_enabled)
+        extensions[extension_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+
+    const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
+
+    VkDebugUtilsMessengerCreateInfoEXT debug_create_info = {0};
+
+    VkInstanceCreateInfo create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    create_info.pApplicationInfo = &app_info;
+    create_info.enabledExtensionCount = extension_count;
+    create_info.ppEnabledExtensionNames = extensions;
+
+#ifdef __APPLE__
+    create_info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
+
+    if (vk_info.validation_enabled)
+    {
+        create_info.enabledLayerCount = 1;
+        create_info.ppEnabledLayerNames = validation_layers;
+
+        debug_create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debug_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        debug_create_info.pfnUserCallback = vk_debug_callback;
+
+        create_info.pNext = &debug_create_info;
+    }
+
+    VkResult result = vk_info.vkCreateInstance(&create_info, NULL, &vk_info.instance);
+
     if (result != VK_SUCCESS)
     {
-        CANVAS_ERR("failed to create vulkan instance (result: %d)\n", result);
-        canvas_library_close(vk_info.library);
+        CANVAS_ERR("vkCreateInstance failed with code: %d\n", result);
         return result;
     }
 
