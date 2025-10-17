@@ -1506,6 +1506,108 @@ static int vk_create_logical_device()
     return CANVAS_OK;
 }
 
+static int vk_create_surface(int window_id, VkSurfaceKHR *surface)
+{
+    VkResult result;
+
+#ifdef _WIN32
+    VkWin32SurfaceCreateInfoKHR create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    create_info.hwnd = (HWND)canvas_info.canvas[window_id].window;
+    create_info.hinstance = GetModuleHandle(NULL);
+
+    result = vk_info.vkCreateWin32SurfaceKHR(vk_info.instance, &create_info, NULL, surface);
+    VK_CHECK(result, "failed to create Win32 surface");
+
+#elif defined(__linux__)
+    if (_canvas_using_wayland && vk_info.vkCreateWaylandSurfaceKHR)
+    {
+        VkWaylandSurfaceCreateInfoKHR create_info = {0};
+        create_info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+        // TODO: wayland display and surface
+        // create_info.display = wl.display;
+        // create_info.surface = (struct wl_surface*)canvas_info.canvas[window_id].window;
+
+        result = vk_info.vkCreateWaylandSurfaceKHR(vk_info.instance, &create_info, NULL, surface);
+        VK_CHECK(result, "failed to create Wayland surface");
+    }
+    else if (vk_info.vkCreateXlibSurfaceKHR)
+    {
+        VkXlibSurfaceCreateInfoKHR create_info = {0};
+        create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        create_info.dpy = x11.display;
+        create_info.window = (Window)canvas_info.canvas[window_id].window;
+
+        result = vk_info.vkCreateXlibSurfaceKHR(vk_info.instance, &create_info, NULL, surface);
+        VK_CHECK(result, "failed to create Xlib surface");
+    }
+    else
+    {
+        CANVAS_ERR("no surface creation function available for Linux\n");
+        return CANVAS_FAIL;
+    }
+
+#elif defined(__APPLE__)
+    if (!_canvas_data[window_id].layer)
+    {
+        CANVAS_ERR("no Metal layer available for surface creation\n");
+        return CANVAS_FAIL;
+    }
+
+    VkMetalSurfaceCreateInfoEXT create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+    create_info.pLayer = _canvas_data[window_id].layer;
+
+    result = vk_info.vkCreateMetalSurfaceEXT(vk_info.instance, &create_info, NULL, surface);
+    VK_CHECK(result, "failed to create Metal surface");
+
+#else
+    CANVAS_ERR("unsupported platform for Vulkan surface creation\n");
+    return CANVAS_FAIL;
+#endif
+
+    return CANVAS_OK;
+}
+
+static void vk_cleanup_swapchain_support_details(SwapchainSupportDetails *details)
+{
+    if (details->formats)
+        free(details->formats);
+    if (details->present_modes)
+        free(details->present_modes);
+}
+
+static VkSurfaceFormatKHR vk_choose_surface_format(const VkSurfaceFormatKHR *formats, uint32_t format_count)
+{
+    for (uint32_t i = 0; i < format_count; i++)
+    {
+        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            return formats[i];
+    }
+
+    return formats[0];
+}
+
+static VkPresentModeKHR vk_choose_present_mode(const VkPresentModeKHR *present_modes, uint32_t mode_count, bool vsync)
+{
+    if (vsync)
+        return VK_PRESENT_MODE_FIFO_KHR;
+
+    for (uint32_t i = 0; i < mode_count; i++)
+    {
+        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+    }
+
+    for (uint32_t i = 0; i < mode_count; i++)
+    {
+        if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    }
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
 int canvas_backend_vulkan_init()
 {
     if (vk_info.instance)
@@ -1634,158 +1736,27 @@ int canvas_backend_vulkan_init()
     return CANVAS_OK;
 }
 
-static int vk_create_surface(int window_id, VkSurfaceKHR *surface)
-{
-    VkResult result;
-
-#ifdef _WIN32
-    VkWin32SurfaceCreateInfoKHR create_info = {0};
-    create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    create_info.hwnd = (HWND)canvas_info.canvas[window_id].window;
-    create_info.hinstance = GetModuleHandle(NULL);
-
-    result = vk_info.vkCreateWin32SurfaceKHR(vk_info.instance, &create_info, NULL, surface);
-    VK_CHECK(result, "failed to create Win32 surface");
-
-#elif defined(__linux__)
-    if (_canvas_using_wayland && vk_info.vkCreateWaylandSurfaceKHR)
-    {
-        VkWaylandSurfaceCreateInfoKHR create_info = {0};
-        create_info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
-        // TODO: wayland display and surface
-        // create_info.display = wl.display;
-        // create_info.surface = (struct wl_surface*)canvas_info.canvas[window_id].window;
-
-        result = vk_info.vkCreateWaylandSurfaceKHR(vk_info.instance, &create_info, NULL, surface);
-        VK_CHECK(result, "failed to create Wayland surface");
-    }
-    else if (vk_info.vkCreateXlibSurfaceKHR)
-    {
-        VkXlibSurfaceCreateInfoKHR create_info = {0};
-        create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        create_info.dpy = x11.display;
-        create_info.window = (Window)canvas_info.canvas[window_id].window;
-
-        result = vk_info.vkCreateXlibSurfaceKHR(vk_info.instance, &create_info, NULL, surface);
-        VK_CHECK(result, "failed to create Xlib surface");
-    }
-    else
-    {
-        CANVAS_ERR("no surface creation function available for Linux\n");
-        return CANVAS_FAIL;
-    }
-
-#elif defined(__APPLE__)
-    if (!_canvas_data[window_id].layer)
-    {
-        CANVAS_ERR("no Metal layer available for surface creation\n");
-        return CANVAS_FAIL;
-    }
-
-    VkMetalSurfaceCreateInfoEXT create_info = {0};
-    create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-    create_info.pLayer = _canvas_data[window_id].layer;
-
-    result = vk_info.vkCreateMetalSurfaceEXT(vk_info.instance, &create_info, NULL, surface);
-    VK_CHECK(result, "failed to create Metal surface");
-
-#else
-    CANVAS_ERR("unsupported platform for Vulkan surface creation\n");
-    return CANVAS_FAIL;
-#endif
-
-    return CANVAS_OK;
-}
-
-static SwapchainSupportDetails vk_query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface)
-{
-    SwapchainSupportDetails details = {0};
-
-    vk_info.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
-
-    vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &details.format_count, NULL);
-    if (details.format_count > 0)
-    {
-        details.formats = malloc(details.format_count * sizeof(VkSurfaceFormatKHR));
-        vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &details.format_count, details.formats);
-    }
-
-    vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &details.present_mode_count, NULL);
-    if (details.present_mode_count > 0)
-    {
-        details.present_modes = malloc(details.present_mode_count * sizeof(VkPresentModeKHR));
-        vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &details.present_mode_count, details.present_modes);
-    }
-
-    return details;
-}
-
-static void vk_cleanup_swapchain_support_details(SwapchainSupportDetails *details)
-{
-    if (details->formats)
-        free(details->formats);
-    if (details->present_modes)
-        free(details->present_modes);
-}
-
-static VkSurfaceFormatKHR vk_choose_surface_format(const VkSurfaceFormatKHR *formats, uint32_t format_count)
-{
-    for (uint32_t i = 0; i < format_count; i++)
-    {
-        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-            return formats[i];
-    }
-
-    return formats[0];
-}
-
-static VkPresentModeKHR vk_choose_present_mode(const VkPresentModeKHR *present_modes, uint32_t mode_count, bool vsync)
-{
-    if (vsync)
-        return VK_PRESENT_MODE_FIFO_KHR;
-
-    for (uint32_t i = 0; i < mode_count; i++)
-    {
-        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-            return VK_PRESENT_MODE_MAILBOX_KHR;
-    }
-
-    for (uint32_t i = 0; i < mode_count; i++)
-    {
-        if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
-            return VK_PRESENT_MODE_IMMEDIATE_KHR;
-    }
-
-    return VK_PRESENT_MODE_FIFO_KHR;
-}
-
-static VkExtent2D vk_choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilities, int window_id)
-{
-    if (capabilities->currentExtent.width != UINT32_MAX)
-        return capabilities->currentExtent;
-
-    VkExtent2D actual_extent = {.width = (uint32_t)canvas_info.canvas[window_id].width, .height = (uint32_t)canvas_info.canvas[window_id].height};
-
-    if (actual_extent.width < capabilities->minImageExtent.width)
-        actual_extent.width = capabilities->minImageExtent.width;
-
-    else if (actual_extent.width > capabilities->maxImageExtent.width)
-        actual_extent.width = capabilities->maxImageExtent.width;
-
-    if (actual_extent.height < capabilities->minImageExtent.height)
-        actual_extent.height = capabilities->minImageExtent.height;
-
-    else if (actual_extent.height > capabilities->maxImageExtent.height)
-        actual_extent.height = capabilities->maxImageExtent.height;
-
-    return actual_extent;
-}
-
 static int vk_create_swapchain(int window_id)
 {
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
 
-    SwapchainSupportDetails support = vk_query_swapchain_support(vk_info.physical_device, vk_win->surface);
+    SwapchainSupportDetails support = {0};
+
+    vk_info.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk_info.physical_device, vk_win->surface, &support.capabilities);
+
+    vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(vk_info.physical_device, vk_win->surface, &support.format_count, NULL);
+    if (support.format_count > 0)
+    {
+        support.formats = malloc(support.format_count * sizeof(VkSurfaceFormatKHR));
+        vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(vk_info.physical_device, vk_win->surface, &support.format_count, support.formats);
+    }
+
+    vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(vk_info.physical_device, vk_win->surface, &support.present_mode_count, NULL);
+    if (support.present_mode_count > 0)
+    {
+        support.present_modes = malloc(support.present_mode_count * sizeof(VkPresentModeKHR));
+        vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(vk_info.physical_device, vk_win->surface, &support.present_mode_count, support.present_modes);
+    }
 
     if (support.format_count == 0 || support.present_mode_count == 0)
     {
@@ -1796,7 +1767,7 @@ static int vk_create_swapchain(int window_id)
 
     VkSurfaceFormatKHR surface_format = vk_choose_surface_format(support.formats, support.format_count);
     VkPresentModeKHR present_mode = vk_choose_present_mode(support.present_modes, support.present_mode_count, canvas_info.canvas[window_id].vsync);
-    VkExtent2D extent = vk_choose_swap_extent(&support.capabilities, window_id);
+    VkExtent2D extent = {.width = (uint32_t)canvas_info.canvas[window_id].width, .height = (uint32_t)canvas_info.canvas[window_id].height};
 
     uint32_t image_count = support.capabilities.minImageCount + 1;
 
@@ -1851,15 +1822,6 @@ static int vk_create_swapchain(int window_id)
     vk_win->swapchain_format = surface_format.format;
     vk_win->swapchain_extent = extent;
 
-    CANVAS_VERBOSE("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
-
-    return CANVAS_OK;
-}
-
-static int vk_create_image_views(int window_id)
-{
-    canvas_vulkan_window *vk_win = &vk_windows[window_id];
-
     for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
     {
         VkImageViewCreateInfo create_info = {0};
@@ -1888,6 +1850,8 @@ static int vk_create_image_views(int window_id)
             return CANVAS_FAIL;
         }
     }
+
+    CANVAS_VERBOSE("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
 
     return CANVAS_OK;
 }
@@ -2104,18 +2068,7 @@ static void vk_cleanup_swapchain(int window_id)
 
 static int vk_recreate_swapchain(int window_id)
 {
-    return CANVAS_OK; // Temporary, got a crash here
-
-    int width = canvas_info.canvas[window_id].width;
-    int height = canvas_info.canvas[window_id].height;
-
-    while (width == 0 || height == 0)
-    {
-        canvas_sleep(0.01);
-        width = canvas_info.canvas[window_id].width;
-        height = canvas_info.canvas[window_id].height;
-    }
-
+    return 0;
     vk_info.vkDeviceWaitIdle(vk_info.device);
 
     vk_cleanup_swapchain(window_id);
@@ -2125,13 +2078,6 @@ static int vk_recreate_swapchain(int window_id)
     if (result != CANVAS_OK)
     {
         CANVAS_ERR("vk_recreate_swapchain: Failed to create swapchain\n");
-        return result;
-    }
-
-    result = vk_create_image_views(window_id);
-    if (result != CANVAS_OK)
-    {
-        CANVAS_ERR("vk_recreate_swapchain: Failed to create image views\n");
         return result;
     }
 
@@ -5017,10 +4963,6 @@ int _canvas_gpu_new_window(int window_id)
     }
 
     result = vk_create_swapchain(window_id);
-    if (result != CANVAS_OK)
-        goto cleanup;
-
-    result = vk_create_image_views(window_id);
     if (result != CANVAS_OK)
         goto cleanup;
 
