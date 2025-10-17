@@ -89,20 +89,105 @@ typedef struct
     int frame_index;    // Index for frame times
 } canvas_time_data;
 
+// canvas pointer is per "mouse" on the system
+// on touch screens one finger represents a pointer, while a regular mouse/touchpad is one
+#ifndef CANVAS_POINTER_SAMPLE_FRAMES
+#define CANVAS_POINTER_SAMPLE_FRAMES 4
+#endif
+
+// 10 fingers...
+#ifdef CANVAS_POINTER_BUDGET
+#define CANVAS_POINTER_BUDGET 10
+#endif
+
 typedef enum
 {
-    ARROW,
-    TEXT,
-    CROSSHAIR,
-    HAND,
-    SIZE_NS,
-    SIZE_EW,
-    SIZE_NESW,
-    SIZE_NWSE,
-    SIZE_ALL,
-    NOT_ALLOWED,
-    WAIT,
+    CANVAS_CURSOR_HIDDEN,
+    CANVAS_CURSOR_ARROW,
+    CANVAS_CURSOR_TEXT,
+    CANVAS_CURSOR_CROSSHAIR,
+    CANVAS_CURSOR_HAND,
+    CANVAS_CURSOR_SIZE_NS,
+    CANVAS_CURSOR_SIZE_EW,
+    CANVAS_CURSOR_SIZE_NESW,
+    CANVAS_CURSOR_SIZE_NWSE,
+    CANVAS_CURSOR_SIZE_ALL,
+    CANVAS_CURSOR_NOT_ALLOWED,
+    CANVAS_CURSOR_WAIT,
 } canvas_cursor_type;
+
+typedef enum
+{
+    CANVAS_POINTER_NONE = 0,
+    CANVAS_POINTER_MOUSE = 1,
+    CANVAS_POINTER_TOUCH = 2,
+    CANVAS_POINTER_PEN = 3,
+} canvas_pointer_type;
+
+typedef enum
+{
+    CANVAS_BUTTON_LEFT = (1 << 0),
+    CANVAS_BUTTON_RIGHT = (1 << 1),
+    CANVAS_BUTTON_MIDDLE = (1 << 2),
+    CANVAS_BUTTON_X1 = (1 << 3),
+    CANVAS_BUTTON_X2 = (1 << 4),
+} canvas_pointer_button;
+
+typedef struct
+{
+    int x, y;
+    double time;
+} canvas_pointer_sample;
+
+typedef struct
+{
+    // Identity
+    int id;                   // Unique ID (0 for mouse, touch ID for fingers)
+    canvas_pointer_type type; // Mouse, touch, pen
+    int window_id;            // Which window owns this pointer
+
+    // Position
+    int x, y;               // Window-relative coordinates
+    int screen_x, screen_y; // Screen-relative coordinates
+    int display;
+
+    // State
+    uint32_t buttons;          // Bitmask of pressed buttons
+    uint32_t buttons_pressed;  // This frame
+    uint32_t buttons_released; // This frame
+
+    float scroll_x, scroll_y; // Scroll wheel delta (this frame)
+    float pressure;           // 0.0-1.0 (for pen/touch)
+
+    bool active;        // Is pointer currently tracked?
+    bool inside_window; // Is pointer inside window bounds?
+    bool captured;      // Is pointer captured (for drag ops)?
+    bool relative_mode; // FPS-style relative motion
+
+    canvas_pointer_sample _samples[CANVAS_POINTER_SAMPLE_FRAMES];
+    int _sample_index;
+
+    canvas_cursor_type cursor;
+} canvas_pointer;
+
+// Querying pointers
+canvas_pointer *canvas_get_pointer(int id); // 0 = primary mouse
+int canvas_get_active_pointers(canvas_pointer **out);
+
+// Pointer state queries
+bool canvas_pointer_down(canvas_pointer *p, canvas_pointer_button btn);
+bool canvas_pointer_pressed(canvas_pointer *p, canvas_pointer_button btn);
+bool canvas_pointer_released(canvas_pointer *p, canvas_pointer_button btn);
+
+// Derived motion data
+float canvas_pointer_velocity(canvas_pointer *p);               // pixels/sec
+float canvas_pointer_direction(canvas_pointer *p);              // radians or degrees
+void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy); // Movement since last frame
+
+// Capture/lock
+void canvas_pointer_capture(int window_id);
+void canvas_pointer_release();
+void canvas_pointer_set_relative(bool enabled); // FPS mode
 
 int canvas(int x, int y, int width, int height, const char *title);
 int canvas_window(int x, int y, int width, int height, const char *title);
@@ -427,17 +512,17 @@ static inline _MTLClearColor make_clear_color(float r, float g, float b, float a
 }
 
 static const char *_cursor_selector_names[] = {
-    [ARROW] = "arrowCursor",
-    [TEXT] = "IBeamCursor",
-    [CROSSHAIR] = "crosshairCursor",
-    [HAND] = "pointingHandCursor",
-    [SIZE_NS] = "resizeUpDownCursor",
-    [SIZE_EW] = "resizeLeftRightCursor",
-    [SIZE_NESW] = "closedHandCursor",
-    [SIZE_NWSE] = "closedHandCursor",
-    [SIZE_ALL] = "closedHandCursor",
+    [CANVAS_CURSOR_ARROW] = "arrowCursor",
+    [CANVAS_CURSOR_TEXT] = "IBeamCursor",
+    [CANVAS_CURSOR_CROSSHAIR] = "crosshairCursor",
+    [CANVAS_CURSOR_HAND] = "pointingHandCursor",
+    [CANVAS_CURSOR_SIZE_NS] = "resizeUpDownCursor",
+    [CANVAS_CURSOR_SIZE_EW] = "resizeLeftRightCursor",
+    [CANVAS_CURSOR_SIZE_NESW] = "closedHandCursor",
+    [CANVAS_CURSOR_SIZE_NWSE] = "closedHandCursor",
+    [CANVAS_CURSOR_SIZE_ALL] = "closedHandCursor",
     [NOT_ALLOWED] = "operationNotAllowedCursor",
-    [WAIT] = "arrowCursor",
+    [CANVAS_CURSOR_WAIT] = "arrowCursor",
 };
 
 canvas_data _canvas_data[MAX_CANVAS];
@@ -1156,6 +1241,15 @@ typedef struct
     VkPresentModeKHR *present_modes;
     uint32_t present_mode_count;
 } SwapchainSupportDetails;
+
+typedef struct
+{
+    VkFence submit_frame;
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
+    VkSemaphore acquire_semaphore;
+    VkSemaphore present_semaphore;
+} canvas_vk_per_frame;
 
 typedef struct
 {
@@ -2366,7 +2460,7 @@ int canvas_restore(int window_id)
 static objc_id _canvas_get_ns_cursor(canvas_cursor_type cursor)
 {
     if (cursor < 0 || cursor >= sizeof(_cursor_selector_names) / sizeof(_cursor_selector_names[0]))
-        cursor = ARROW;
+        cursor = CANVAS_CURSOR_ARROW;
 
     const char *selector = _cursor_selector_names[cursor];
 
@@ -3212,37 +3306,37 @@ HCURSOR _canvas_get_win32_cursor(canvas_cursor_type cursor)
 
     switch (cursor)
     {
-    case ARROW:
+    case CANVAS_CURSOR_ARROW:
         cursor_name = IDC_ARROW;
         break;
-    case TEXT:
+    case CANVAS_CURSOR_TEXT:
         cursor_name = IDC_IBEAM;
         break;
-    case CROSSHAIR:
+    case CANVAS_CURSOR_CROSSHAIR:
         cursor_name = IDC_CROSS;
         break;
-    case HAND:
+    case CANVAS_CURSOR_HAND:
         cursor_name = IDC_HAND;
         break;
-    case SIZE_NS:
+    case CANVAS_CURSOR_SIZE_NS:
         cursor_name = IDC_SIZENS;
         break;
-    case SIZE_EW:
+    case CANVAS_CURSOR_SIZE_EW:
         cursor_name = IDC_SIZEWE;
         break;
-    case SIZE_NESW:
+    case CANVAS_CURSOR_SIZE_NESW:
         cursor_name = IDC_SIZENESW;
         break;
-    case SIZE_NWSE:
+    case CANVAS_CURSOR_SIZE_NWSE:
         cursor_name = IDC_SIZENWSE;
         break;
-    case SIZE_ALL:
+    case CANVAS_CURSOR_SIZE_ALL:
         cursor_name = IDC_SIZEALL;
         break;
     case NOT_ALLOWED:
         cursor_name = IDC_NO;
         break;
-    case WAIT:
+    case CANVAS_CURSOR_WAIT:
         cursor_name = IDC_WAIT;
         break;
     default:
@@ -4438,27 +4532,27 @@ static unsigned int _canvas_get_x11_cursor_id(canvas_cursor_type cursor)
 {
     switch (cursor)
     {
-    case ARROW:
+    case CANVAS_CURSOR_ARROW:
         return 2; // XC_arrow
-    case TEXT:
+    case CANVAS_CURSOR_TEXT:
         return 152; // XC_xterm
-    case CROSSHAIR:
+    case CANVAS_CURSOR_CROSSHAIR:
         return 34; // XC_crosshair
-    case HAND:
+    case CANVAS_CURSOR_HAND:
         return 58; // XC_hand2
-    case SIZE_NS:
+    case CANVAS_CURSOR_SIZE_NS:
         return 116; // XC_sb_v_double_arrow
-    case SIZE_EW:
+    case CANVAS_CURSOR_SIZE_EW:
         return 108; // XC_sb_h_double_arrow
-    case SIZE_NESW:
+    case CANVAS_CURSOR_SIZE_NESW:
         return 52;
-    case SIZE_NWSE:
+    case CANVAS_CURSOR_SIZE_NWSE:
         return 52;
-    case SIZE_ALL:
+    case CANVAS_CURSOR_SIZE_ALL:
         return 52; // XC_fleur
-    case NOT_ALLOWED:
+    case CANVAS_CURSOR_NOT_ALLOWED:
         return 0; // XC_X_cursor
-    case WAIT:
+    case CANVAS_CURSOR_WAIT:
         return 150; // XC_watch
     default:
         return 2; // XC_arrow
@@ -4621,21 +4715,21 @@ static canvas_cursor_type _canvas_get_resize_cursor(int action)
     switch (action)
     {
     case _NET_WM_MOVERESIZE_SIZE_TOPLEFT:
-        return SIZE_NESW;
+        return CANVAS_CURSOR_SIZE_NESW;
     case _NET_WM_MOVERESIZE_SIZE_TOPRIGHT:
-        return SIZE_NWSE;
+        return CANVAS_CURSOR_SIZE_NWSE;
     case _NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT:
-        return SIZE_NESW;
+        return CANVAS_CURSOR_SIZE_NESW;
     case _NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT:
-        return SIZE_NWSE;
+        return CANVAS_CURSOR_SIZE_NWSE;
     case _NET_WM_MOVERESIZE_SIZE_TOP:
     case _NET_WM_MOVERESIZE_SIZE_BOTTOM:
-        return SIZE_NS;
+        return CANVAS_CURSOR_SIZE_NS;
     case _NET_WM_MOVERESIZE_SIZE_LEFT:
     case _NET_WM_MOVERESIZE_SIZE_RIGHT:
-        return SIZE_EW;
+        return CANVAS_CURSOR_SIZE_EW;
     default:
-        return ARROW;
+        return CANVAS_CURSOR_ARROW;
     }
 }
 
@@ -4797,7 +4891,7 @@ int _canvas_update()
                     }
                     else if (xme->y < 30)
                     {
-                        _canvas_set_active_cursor(window_id, ARROW);
+                        _canvas_set_active_cursor(window_id, CANVAS_CURSOR_ARROW);
                     }
                     else
                     {
@@ -4808,7 +4902,7 @@ int _canvas_update()
                 {
                     if (xme->y < 30)
                     {
-                        _canvas_set_active_cursor(window_id, ARROW);
+                        _canvas_set_active_cursor(window_id, CANVAS_CURSOR_ARROW);
                     }
                     else
                     {
@@ -4831,7 +4925,7 @@ int _canvas_update()
                     canvas_info.canvas[window_id].maximized = is_maximized;
 
                     if (was_maximized != is_maximized)
-                        canvas_info.canvas[window_id].active_cursor = ARROW;
+                        canvas_info.canvas[window_id].active_cursor = CANVAS_CURSOR_ARROW;
                 }
                 break;
             }
@@ -5238,7 +5332,7 @@ int canvas_window(int x, int y, int width, int height, const char *title)
 
     _canvas_get_window_display(result);
 
-    canvas_info.canvas[result].cursor = ARROW;
+    canvas_info.canvas[result].cursor = CANVAS_CURSOR_ARROW;
 
     return result;
 }
