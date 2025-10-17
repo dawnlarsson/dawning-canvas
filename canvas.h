@@ -1039,30 +1039,13 @@ typedef unsigned long VisualID;
         return CANVAS_FAIL;                               \
     }
 
-typedef struct
+static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data)
 {
-    VkSurfaceKHR surface;
-    VkSwapchainKHR swapchain;
-    VkImage swapchain_images[MAX_SWAPCHAIN_IMAGES];
-    VkImageView swapchain_image_views[MAX_SWAPCHAIN_IMAGES];
-    VkFramebuffer framebuffers[MAX_SWAPCHAIN_IMAGES];
-    uint32_t swapchain_image_count;
-    VkFormat swapchain_format;
-    VkExtent2D swapchain_extent;
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        CANVAS_WARN("vulkan validation: %s\n", callback_data->pMessage);
 
-    VkCommandPool command_pool;
-    VkCommandBuffer command_buffers[MAX_SWAPCHAIN_IMAGES];
-
-    VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
-    VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
-    VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
-    VkFence images_in_flight[MAX_SWAPCHAIN_IMAGES];
-    uint32_t current_frame;
-
-    VkRenderPass render_pass;
-    bool needs_resize;
-    bool initialized;
-} canvas_vulkan_window;
+    return VK_FALSE;
+}
 
 static struct
 {
@@ -1174,33 +1157,33 @@ typedef struct
     uint32_t present_mode_count;
 } SwapchainSupportDetails;
 
+typedef struct
+{
+    VkSurfaceKHR surface;
+    VkSwapchainKHR swapchain;
+    VkImage swapchain_images[MAX_SWAPCHAIN_IMAGES];
+    VkImageView swapchain_image_views[MAX_SWAPCHAIN_IMAGES];
+    VkFramebuffer framebuffers[MAX_SWAPCHAIN_IMAGES];
+    uint32_t swapchain_image_count;
+    VkFormat swapchain_format;
+    VkExtent2D swapchain_extent;
+
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffers[MAX_SWAPCHAIN_IMAGES];
+
+    VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
+    VkFence images_in_flight[MAX_SWAPCHAIN_IMAGES];
+    uint32_t current_frame;
+
+    VkRenderPass render_pass;
+    bool needs_resize;
+    bool initialized;
+} canvas_vulkan_window;
+
 static canvas_vulkan_window vk_windows[MAX_CANVAS] = {0};
 const char *vulkan_library_names[canvas_vulkan_names] = canvas_vulkan_library_names;
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data)
-{
-    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-        CANVAS_WARN("vulkan validation: %s\n", callback_data->pMessage);
-
-    return VK_FALSE;
-}
-
-static int vk_setup_debug_messenger()
-{
-    if (!vk_info.validation_enabled || !vk_info.vkCreateDebugUtilsMessengerEXT)
-        return CANVAS_OK;
-
-    VkDebugUtilsMessengerCreateInfoEXT create_info = {0};
-    create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    create_info.pfnUserCallback = vk_debug_callback;
-
-    VkResult result = vk_info.vkCreateDebugUtilsMessengerEXT(vk_info.instance, &create_info, NULL, &vk_info.debug_messenger);
-    VK_CHECK(result, "failed to setup debug messenger");
-
-    return CANVAS_OK;
-}
 
 static bool vk_check_validation_layers()
 {
@@ -1569,45 +1552,6 @@ static int vk_create_surface(int window_id, VkSurfaceKHR *surface)
     return CANVAS_OK;
 }
 
-static void vk_cleanup_swapchain_support_details(SwapchainSupportDetails *details)
-{
-    if (details->formats)
-        free(details->formats);
-    if (details->present_modes)
-        free(details->present_modes);
-}
-
-static VkSurfaceFormatKHR vk_choose_surface_format(const VkSurfaceFormatKHR *formats, uint32_t format_count)
-{
-    for (uint32_t i = 0; i < format_count; i++)
-    {
-        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-            return formats[i];
-    }
-
-    return formats[0];
-}
-
-static VkPresentModeKHR vk_choose_present_mode(const VkPresentModeKHR *present_modes, uint32_t mode_count, bool vsync)
-{
-    if (vsync)
-        return VK_PRESENT_MODE_FIFO_KHR;
-
-    for (uint32_t i = 0; i < mode_count; i++)
-    {
-        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-            return VK_PRESENT_MODE_MAILBOX_KHR;
-    }
-
-    for (uint32_t i = 0; i < mode_count; i++)
-    {
-        if (present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
-            return VK_PRESENT_MODE_IMMEDIATE_KHR;
-    }
-
-    return VK_PRESENT_MODE_FIFO_KHR;
-}
-
 int canvas_backend_vulkan_init()
 {
     if (vk_info.instance)
@@ -1729,11 +1673,26 @@ int canvas_backend_vulkan_init()
         return result;
     }
 
-    vk_setup_debug_messenger();
+    if (!vk_info.validation_enabled || !vk_info.vkCreateDebugUtilsMessengerEXT)
+        return CANVAS_OK;
 
-    CANVAS_INFO("vulkan instance created successfully\n");
+    VkDebugUtilsMessengerCreateInfoEXT create_info_dbg = {0};
+    create_info_dbg.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    create_info_dbg.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    create_info_dbg.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    create_info_dbg.pfnUserCallback = vk_debug_callback;
+
+    vk_info.vkCreateDebugUtilsMessengerEXT(vk_info.instance, &create_info_dbg, NULL, &vk_info.debug_messenger);
 
     return CANVAS_OK;
+}
+
+static void vk_cleanup_swapchain_support_details(SwapchainSupportDetails *details)
+{
+    if (details->formats)
+        free(details->formats);
+    if (details->present_modes)
+        free(details->present_modes);
 }
 
 static int vk_create_swapchain(int window_id)
@@ -1765,8 +1724,20 @@ static int vk_create_swapchain(int window_id)
         return CANVAS_FAIL;
     }
 
-    VkSurfaceFormatKHR surface_format = vk_choose_surface_format(support.formats, support.format_count);
-    VkPresentModeKHR present_mode = vk_choose_present_mode(support.present_modes, support.present_mode_count, canvas_info.canvas[window_id].vsync);
+    VkSurfaceFormatKHR surface_format = support.formats[0];
+    for (uint32_t i = 0; i < support.format_count; i++)
+        if (support.formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && support.formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            surface_format = support.formats[i];
+
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    for (uint32_t i = 0; i < support.present_mode_count; i++)
+        if (support.present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+
+    for (uint32_t i = 0; i < support.present_mode_count; i++)
+        if (support.present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+
     VkExtent2D extent = {.width = (uint32_t)canvas_info.canvas[window_id].width, .height = (uint32_t)canvas_info.canvas[window_id].height};
 
     uint32_t image_count = support.capabilities.minImageCount + 1;
