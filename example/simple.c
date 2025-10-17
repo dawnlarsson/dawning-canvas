@@ -1,5 +1,4 @@
 #include "canvas.h"
-#include <math.h>
 
 void update(int window)
 {

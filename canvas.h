@@ -70,6 +70,7 @@ CANVAS_EXTERN_C_BEGIN
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 typedef void *canvas_library_handle;
 typedef void *canvas_window_handle;
@@ -92,11 +93,11 @@ typedef struct
 // canvas pointer is per "mouse" on the system
 // on touch screens one finger represents a pointer, while a regular mouse/touchpad is one
 #ifndef CANVAS_POINTER_SAMPLE_FRAMES
-#define CANVAS_POINTER_SAMPLE_FRAMES 4
+#define CANVAS_POINTER_SAMPLE_FRAMES 8
 #endif
 
 // 10 fingers...
-#ifdef CANVAS_POINTER_BUDGET
+#ifndef CANVAS_POINTER_BUDGET
 #define CANVAS_POINTER_BUDGET 10
 #endif
 
@@ -270,9 +271,27 @@ typedef struct
     canvas_update_callback update_callback;
     canvas_time_data time;
 
+    int pointer_count;
+    canvas_pointer pointers[CANVAS_POINTER_BUDGET];
+
 } canvas_context_type;
 
 canvas_context_type canvas_info = (canvas_context_type){0};
+
+canvas_pointer *canvas_get_primary_pointer(int window_id)
+{
+    canvas_pointer *p = &canvas_info.pointers[0];
+    if (!p->active)
+    {
+        p->id = 0;
+        p->type = CANVAS_POINTER_MOUSE;
+        p->window_id = window_id;
+        p->active = true;
+        p->_sample_index = 0;
+        canvas_info.pointer_count = 1;
+    }
+    return p;
+}
 
 #if defined(__APPLE__)
 
@@ -561,6 +580,8 @@ typedef struct
     UINT64 fence_value;
     HANDLE fence_event;
     UINT rtvDescriptorSize;
+
+    HMONITOR monitors[MAX_DISPLAYS];
 } _canvas_platform_windows;
 
 typedef struct
@@ -981,6 +1002,166 @@ canvas_data _canvas_data[MAX_CANVAS];
 #define CANVAS_VERBOSE(...)
 #define CANVAS_WARN(...)
 #define CANVAS_DBG(...)
+#endif
+
+#ifndef CANVAS_NO_LOG
+
+#define canvas_pointer_print(id) _canvas_pointer_print_impl(id, __FILE__, __LINE__)
+
+static void _canvas_pointer_print_impl(int id, const char *file, int line)
+{
+    // printf("\033[H");
+    // printf("\033c");
+    puts("\033[H");
+
+    canvas_pointer *p = canvas_get_pointer(id);
+
+    if (!p)
+    {
+        printf("pointer %d: not found or active\n", id);
+        return;
+    }
+
+    printf("Identity:\n");
+    printf("  ID:              %d\n", p->id);
+    printf("  Type:            %s\n",
+           p->type == CANVAS_POINTER_MOUSE ? "MOUSE" : p->type == CANVAS_POINTER_TOUCH ? "TOUCH"
+                                                   : p->type == CANVAS_POINTER_PEN     ? "PEN"
+                                                                                       : "UNKNOWN");
+    printf("  Window ID:       %d\n", p->window_id);
+    printf("  Active:          %s\n", p->active ? "YES" : "NO");
+    printf("\n");
+
+    printf("Position:\n");
+    printf("  Window:          (%d, %d)\n", p->x, p->y);
+    printf("  Screen:          (%d, %d)\n", p->screen_x, p->screen_y);
+    printf("  Display:         %d\n", p->display);
+    printf("  Inside Window:   %s\n", p->inside_window ? "YES" : "NO");
+    printf("\n");
+
+    printf("State:\n");
+    printf("  Captured:        %s\n", p->captured ? "YES" : "NO");
+    printf("  Relative Mode:   %s\n", p->relative_mode ? "YES" : "NO");
+    printf("  Pressure:        %.2f\n", p->pressure);
+    printf("\n");
+
+    printf("Buttons:\n");
+    printf("  Current:         0x%04X [", p->buttons);
+    if (p->buttons & CANVAS_BUTTON_LEFT)
+        printf("L");
+    if (p->buttons & CANVAS_BUTTON_RIGHT)
+        printf("R");
+    if (p->buttons & CANVAS_BUTTON_MIDDLE)
+        printf("M");
+    if (p->buttons & CANVAS_BUTTON_X1)
+        printf("X1");
+    if (p->buttons & CANVAS_BUTTON_X2)
+        printf("X2");
+    printf("]\n");
+
+    printf("  Pressed (frame): 0x%04X [", p->buttons_pressed);
+    if (p->buttons_pressed & CANVAS_BUTTON_LEFT)
+        printf("L");
+    if (p->buttons_pressed & CANVAS_BUTTON_RIGHT)
+        printf("R");
+    if (p->buttons_pressed & CANVAS_BUTTON_MIDDLE)
+        printf("M");
+    if (p->buttons_pressed & CANVAS_BUTTON_X1)
+        printf("X1");
+    if (p->buttons_pressed & CANVAS_BUTTON_X2)
+        printf("X2");
+    printf("]\n");
+
+    printf("  Released (frame): 0x%04X [", p->buttons_released);
+    if (p->buttons_released & CANVAS_BUTTON_LEFT)
+        printf("L");
+    if (p->buttons_released & CANVAS_BUTTON_RIGHT)
+        printf("R");
+    if (p->buttons_released & CANVAS_BUTTON_MIDDLE)
+        printf("M");
+    if (p->buttons_released & CANVAS_BUTTON_X1)
+        printf("X1");
+    if (p->buttons_released & CANVAS_BUTTON_X2)
+        printf("X2");
+    printf("]\n");
+    printf("\n");
+
+    // Scroll
+    printf("Scroll (this frame):\n");
+    printf("  X: %+.2f    Y: %+.2f\n", p->scroll_x, p->scroll_y);
+    printf("\n");
+
+    // Cursor
+    printf("Cursor:\n");
+    printf("  Type:            %s\n",
+           p->cursor == CANVAS_CURSOR_HIDDEN ? "HIDDEN" : p->cursor == CANVAS_CURSOR_ARROW     ? "ARROW"
+                                                      : p->cursor == CANVAS_CURSOR_TEXT        ? "TEXT"
+                                                      : p->cursor == CANVAS_CURSOR_CROSSHAIR   ? "CROSSHAIR"
+                                                      : p->cursor == CANVAS_CURSOR_HAND        ? "HAND"
+                                                      : p->cursor == CANVAS_CURSOR_SIZE_NS     ? "SIZE_NS"
+                                                      : p->cursor == CANVAS_CURSOR_SIZE_EW     ? "SIZE_EW"
+                                                      : p->cursor == CANVAS_CURSOR_SIZE_NESW   ? "SIZE_NESW"
+                                                      : p->cursor == CANVAS_CURSOR_SIZE_NWSE   ? "SIZE_NWSE"
+                                                      : p->cursor == CANVAS_CURSOR_SIZE_ALL    ? "SIZE_ALL"
+                                                      : p->cursor == CANVAS_CURSOR_NOT_ALLOWED ? "NOT_ALLOWED"
+                                                      : p->cursor == CANVAS_CURSOR_WAIT        ? "WAIT"
+                                                                                               : "UNKNOWN");
+    printf("\n");
+
+    int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
+    int oldest = p->_sample_index;
+
+    canvas_pointer_sample *s_new = &p->_samples[newest];
+    canvas_pointer_sample *s_old = &p->_samples[oldest];
+
+    double dt = s_new->time - s_old->time;
+
+    if (dt > 0.001)
+    {
+        int dx = s_new->x - s_old->x;
+        int dy = s_new->y - s_old->y;
+        float distance = sqrtf((float)(dx * dx + dy * dy));
+        float velocity = distance / (float)dt;
+        float direction = atan2f((float)dy, (float)dx) * 180.0f / 3.14159265f;
+
+        printf("  Velocity:        %.1f px/s\n", velocity);
+        printf("  Direction:       %.1f°\n", direction);
+        printf("  Delta:           (%+d, %+d) px\n", dx, dy);
+        printf("  Sample Period:   %.3f ms\n", dt * 1000.0);
+    }
+    else
+    {
+        printf("  (insufficient sample data)\n");
+    }
+    printf("\n");
+
+    // Sample Ring Buffer
+    printf("Sample History (ring buffer):\n");
+    printf("  Current Index:   %d / %d\n", p->_sample_index, CANVAS_POINTER_SAMPLE_FRAMES);
+    printf("  Samples:\n");
+
+    for (int i = 0; i < CANVAS_POINTER_SAMPLE_FRAMES; i++)
+    {
+        int idx = (p->_sample_index + i) % CANVAS_POINTER_SAMPLE_FRAMES;
+        canvas_pointer_sample *s = &p->_samples[idx];
+
+        char marker = (idx == newest) ? '>' : (idx == p->_sample_index) ? 'O'
+                                                                        : ' ';
+
+        if (s->time > 0.0)
+        {
+            printf("  %c [%d] (%4d, %4d) @ %.6fs\n",
+                   marker, idx, s->x, s->y, s->time);
+        }
+        else
+        {
+            printf("    [%d] (empty)\n", idx);
+        }
+    }
+}
+
+#else
+#define canvas_pointer_print(id) ((void)0)
 #endif
 
 #define C_RTLD_NOW 0x00002
@@ -3225,6 +3406,11 @@ int _canvas_refresh_displays()
         if (!EnumDisplaySettingsA(dd.DeviceName, ENUM_CURRENT_SETTINGS, &dm))
             continue;
 
+        POINT pt = {dm.dmPosition.x + 1, dm.dmPosition.y + 1};
+        HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+
+        canvas_win32.monitors[i] = monitor;
+
         canvas_info.display[i].primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
         canvas_info.display[i].x = dm.dmPosition.x;
         canvas_info.display[i].y = dm.dmPosition.y;
@@ -3246,7 +3432,6 @@ int _canvas_refresh_displays()
 
     return canvas_info.display_count;
 }
-
 int _canvas_init_displays()
 {
     canvas_info.display_count = 0;
@@ -3366,6 +3551,158 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
+    case WM_INPUT:
+    {
+        UINT size = 0;
+        GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &size, sizeof(RAWINPUTHEADER));
+
+        RAWINPUT *raw = (RAWINPUT *)alloca(size);
+        if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, raw, &size, sizeof(RAWINPUTHEADER)) != size)
+            break;
+
+        if (raw->header.dwType == RIM_TYPEMOUSE)
+        {
+            canvas_pointer *p = canvas_get_primary_pointer(window_index);
+
+            LARGE_INTEGER counter;
+            QueryPerformanceCounter(&counter);
+            double timestamp = (double)counter.QuadPart / (double)_canvas_qpc_frequency.QuadPart;
+
+            USHORT flags = raw->data.mouse.usButtonFlags;
+            if (flags & RI_MOUSE_LEFT_BUTTON_DOWN)
+            {
+                p->buttons |= CANVAS_BUTTON_LEFT;
+                p->buttons_pressed |= CANVAS_BUTTON_LEFT;
+            }
+            if (flags & RI_MOUSE_LEFT_BUTTON_UP)
+            {
+                p->buttons &= ~CANVAS_BUTTON_LEFT;
+                p->buttons_released |= CANVAS_BUTTON_LEFT;
+            }
+            if (flags & RI_MOUSE_RIGHT_BUTTON_DOWN)
+            {
+                p->buttons |= CANVAS_BUTTON_RIGHT;
+                p->buttons_pressed |= CANVAS_BUTTON_RIGHT;
+            }
+            if (flags & RI_MOUSE_RIGHT_BUTTON_UP)
+            {
+                p->buttons &= ~CANVAS_BUTTON_RIGHT;
+                p->buttons_released |= CANVAS_BUTTON_RIGHT;
+            }
+            if (flags & RI_MOUSE_MIDDLE_BUTTON_DOWN)
+            {
+                p->buttons |= CANVAS_BUTTON_MIDDLE;
+                p->buttons_pressed |= CANVAS_BUTTON_MIDDLE;
+            }
+            if (flags & RI_MOUSE_MIDDLE_BUTTON_UP)
+            {
+                p->buttons &= ~CANVAS_BUTTON_MIDDLE;
+                p->buttons_released |= CANVAS_BUTTON_MIDDLE;
+            }
+            if (flags & RI_MOUSE_BUTTON_4_DOWN)
+            {
+                p->buttons |= CANVAS_BUTTON_X1;
+                p->buttons_pressed |= CANVAS_BUTTON_X1;
+            }
+            if (flags & RI_MOUSE_BUTTON_4_UP)
+            {
+                p->buttons &= ~CANVAS_BUTTON_X1;
+                p->buttons_released |= CANVAS_BUTTON_X1;
+            }
+            if (flags & RI_MOUSE_BUTTON_5_DOWN)
+            {
+                p->buttons |= CANVAS_BUTTON_X2;
+                p->buttons_pressed |= CANVAS_BUTTON_X2;
+            }
+            if (flags & RI_MOUSE_BUTTON_5_UP)
+            {
+                p->buttons &= ~CANVAS_BUTTON_X2;
+                p->buttons_released |= CANVAS_BUTTON_X2;
+            }
+
+            if (flags & RI_MOUSE_WHEEL)
+            {
+                p->scroll_y = (short)raw->data.mouse.usButtonData / 120.0f;
+            }
+            if (flags & 0x0800)
+            {
+                p->scroll_x = (short)raw->data.mouse.usButtonData / 120.0f;
+            }
+
+            p->_samples[p->_sample_index].x = p->x;
+            p->_samples[p->_sample_index].y = p->y;
+            p->_samples[p->_sample_index].time = timestamp;
+            p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
+        }
+
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+        canvas_pointer *p = canvas_get_primary_pointer(window_index);
+
+        p->x = (short)LOWORD(lParam);
+        p->y = (short)HIWORD(lParam);
+
+        POINT abs_screen_pt = {p->x, p->y};
+        ClientToScreen(hwnd, &abs_screen_pt);
+
+        HMONITOR monitor = MonitorFromPoint(abs_screen_pt, MONITOR_DEFAULTTONEAREST);
+        for (int d = 0; d < canvas_info.display_count; d++)
+        {
+            if (canvas_win32.monitors[d] == monitor)
+            {
+                p->display = d;
+                p->screen_x = abs_screen_pt.x - canvas_info.display[d].x;
+                p->screen_y = abs_screen_pt.y - canvas_info.display[d].y;
+                break;
+            }
+        }
+
+        RECT rect;
+        GetClientRect(hwnd, &rect);
+        p->inside_window = (p->x >= 0 && p->x < rect.right && p->y >= 0 && p->y < rect.bottom);
+
+        if (p->inside_window)
+        {
+            TRACKMOUSEEVENT tme = {0};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
+        }
+
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+    {
+        canvas_pointer *p = canvas_get_primary_pointer(window_index);
+        p->inside_window = false;
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL:
+    {
+        canvas_pointer *p = canvas_get_primary_pointer(window_index);
+
+        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        p->scroll_y = (float)delta / 120.0f;
+
+        return 0;
+    }
+
+    case WM_MOUSEHWHEEL:
+    {
+        canvas_pointer *p = canvas_get_primary_pointer(window_index);
+
+        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        p->scroll_x = (float)delta / 120.0f;
+
+        return 0;
+    }
+
     case WM_SETCURSOR:
     {
         if (LOWORD(lParam) == HTCLIENT)
@@ -3566,18 +3903,22 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
 
     canvas_info.canvas[window_id].index = window_id;
 
-    HWND window = CreateWindowA(
-        "CanvasWindowClass",
-        title,
-        style,
-        x, y, width, height,
-        NULL, NULL, canvas_win32.instance, NULL);
+    HWND window = CreateWindowA("CanvasWindowClass", title, style, x, y, width, height, NULL, NULL, canvas_win32.instance, NULL);
 
     if (!window)
     {
         CANVAS_ERR("create win32 window");
         return CANVAS_ERR_GET_WINDOW;
     }
+
+    RAWINPUTDEVICE rid;
+    rid.usUsagePage = 0x01; // HID_USAGE_PAGE_GENERIC
+    rid.usUsage = 0x02;     // HID_USAGE_GENERIC_MOUSE
+    rid.dwFlags = 0;        // 0 = get input only when focused
+    rid.hwndTarget = window;
+
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid)))
+        CANVAS_WARN("failed to register raw input (error: %lu)\n", GetLastError());
 
     canvas_info.canvas[window_id].window = window;
     canvas_info.canvas[window_id].resize = false;
@@ -3592,7 +3933,7 @@ int _canvas_platform()
     canvas_win32.instance = GetModuleHandle(NULL);
 
     WNDCLASSA wc = {0};
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = canvas_win32.instance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -3612,6 +3953,73 @@ int _canvas_platform()
 
 int _canvas_update()
 {
+    for (int i = 0; i < canvas_info.pointer_count; i++)
+    {
+        canvas_pointer *p = &canvas_info.pointers[i];
+
+        uint32_t old_buttons = p->buttons;
+
+        uint32_t new_buttons = 0;
+        if (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+            new_buttons |= CANVAS_BUTTON_LEFT;
+        if (GetAsyncKeyState(VK_RBUTTON) & 0x8000)
+            new_buttons |= CANVAS_BUTTON_RIGHT;
+        if (GetAsyncKeyState(VK_MBUTTON) & 0x8000)
+            new_buttons |= CANVAS_BUTTON_MIDDLE;
+        if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000)
+            new_buttons |= CANVAS_BUTTON_X1;
+        if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000)
+            new_buttons |= CANVAS_BUTTON_X2;
+
+        p->buttons_pressed = new_buttons & ~old_buttons;
+        p->buttons_released = old_buttons & ~new_buttons;
+        p->buttons = new_buttons;
+    }
+
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (!canvas_info.canvas[i]._valid || !canvas_info.canvas[i].window)
+            continue;
+
+        HWND hwnd = (HWND)canvas_info.canvas[i].window;
+        canvas_pointer *p = canvas_get_primary_pointer(i);
+
+        POINT abs_screen_pt;
+        if (GetCursorPos(&abs_screen_pt))
+        {
+            HMONITOR monitor = MonitorFromPoint(abs_screen_pt, MONITOR_DEFAULTTONEAREST);
+
+            for (int d = 0; d < canvas_info.display_count; d++)
+            {
+                if (canvas_win32.monitors[d] == monitor)
+                {
+                    p->display = d;
+                    p->screen_x = abs_screen_pt.x - canvas_info.display[d].x;
+                    p->screen_y = abs_screen_pt.y - canvas_info.display[d].y;
+                    break;
+                }
+            }
+
+            POINT client_pt = abs_screen_pt;
+            ScreenToClient(hwnd, &client_pt);
+            p->x = client_pt.x;
+            p->y = client_pt.y;
+
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+            p->inside_window = (p->x >= 0 && p->x < rect.right && p->y >= 0 && p->y < rect.bottom);
+
+            LARGE_INTEGER counter;
+            QueryPerformanceCounter(&counter);
+            double timestamp = (double)counter.QuadPart / (double)_canvas_qpc_frequency.QuadPart;
+
+            p->_samples[p->_sample_index].x = p->x;
+            p->_samples[p->_sample_index].y = p->y;
+            p->_samples[p->_sample_index].time = timestamp;
+            p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
+        }
+    }
+
     MSG msg;
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
     {
@@ -3972,6 +4380,14 @@ int _canvas_window_resize(int window_id)
 
 int _canvas_post_update()
 {
+    for (int i = 0; i < canvas_info.pointer_count; i++)
+    {
+        canvas_info.pointers[i].buttons_pressed = 0;
+        canvas_info.pointers[i].buttons_released = 0;
+        canvas_info.pointers[i].scroll_x = 0;
+        canvas_info.pointers[i].scroll_y = 0;
+    }
+
     return CANVAS_OK;
 }
 
@@ -5147,6 +5563,55 @@ void canvas_time_init(canvas_time_data *time)
 }
 
 #endif // _linux_
+
+bool canvas_pointer_down(canvas_pointer *p, canvas_pointer_button btn)
+{
+    return (p->buttons & btn) != 0;
+}
+
+bool canvas_pointer_pressed(canvas_pointer *p, canvas_pointer_button btn)
+{
+    return (p->buttons_pressed & btn) != 0;
+}
+
+bool canvas_pointer_released(canvas_pointer *p, canvas_pointer_button btn)
+{
+    return (p->buttons_released & btn) != 0;
+}
+
+canvas_pointer *canvas_get_pointer(int id)
+{
+    if (id < 0 || id >= CANVAS_POINTER_BUDGET)
+        return NULL;
+    return canvas_info.pointers[id].active ? &canvas_info.pointers[id] : NULL;
+}
+
+float canvas_pointer_velocity(canvas_pointer *p)
+{
+    int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
+    int oldest = p->_sample_index;
+
+    canvas_pointer_sample *s_new = &p->_samples[newest];
+    canvas_pointer_sample *s_old = &p->_samples[oldest];
+
+    double dt = s_new->time - s_old->time;
+    if (dt < 0.001)
+        return 0.0f;
+
+    int dx = s_new->x - s_old->x;
+    int dy = s_new->y - s_old->y;
+
+    return sqrtf((float)(dx * dx + dy * dy)) / (float)dt;
+}
+
+void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy)
+{
+    int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
+    int prev = (newest - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
+
+    *dx = p->_samples[newest].x - p->_samples[prev].x;
+    *dy = p->_samples[newest].y - p->_samples[prev].y;
+}
 
 int _canvas_primary_display_index(void)
 {
