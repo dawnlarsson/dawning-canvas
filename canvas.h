@@ -521,7 +521,7 @@ static const char *_cursor_selector_names[] = {
     [CANVAS_CURSOR_SIZE_NESW] = "closedHandCursor",
     [CANVAS_CURSOR_SIZE_NWSE] = "closedHandCursor",
     [CANVAS_CURSOR_SIZE_ALL] = "closedHandCursor",
-    [NOT_ALLOWED] = "operationNotAllowedCursor",
+    [CANVAS_CURSOR_NOT_ALLOWED] = "operationNotAllowedCursor",
     [CANVAS_CURSOR_WAIT] = "arrowCursor",
 };
 
@@ -3333,7 +3333,7 @@ HCURSOR _canvas_get_win32_cursor(canvas_cursor_type cursor)
     case CANVAS_CURSOR_SIZE_ALL:
         cursor_name = IDC_SIZEALL;
         break;
-    case NOT_ALLOWED:
+    case CANVAS_CURSOR_NOT_ALLOWED:
         cursor_name = IDC_NO;
         break;
     case CANVAS_CURSOR_WAIT:
