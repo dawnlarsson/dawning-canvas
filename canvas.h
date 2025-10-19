@@ -981,32 +981,23 @@ canvas_data _canvas_data[MAX_CANVAS];
 
 #endif
 
-#ifndef CANVAS_NO_LOG
+#ifndef CANVAS_LOG
+#define CANVAS_INFO(...)
+#define CANVAS_VERBOSE(...)
+#define CANVAS_WARN(...)
+#define CANVAS_ERR(...)
+#define CANVAS_DBG(...)
+#define canvas_pointer_print(id)
+#else
 #include <stdio.h>
-
 #define CANVAS_INFO(...) printf("[CANVAS - INF] " __VA_ARGS__)
 
-#ifndef CANVAS_LOG_DEBUG
+#ifdef CANVAS_LOG_DEBUG
 #define CANVAS_VERBOSE(...) printf("[CANVAS - INF] " __VA_ARGS__)
 #define CANVAS_WARN(...) printf("[CANVAS - WARN] " __VA_ARGS__)
 #define CANVAS_ERR(...) printf("[CANVAS - ERR] " __VA_ARGS__)
 #define CANVAS_DBG(...) printf("[CANVAS - DBG] " __VA_ARGS__)
-#else
-#define CANVAS_VERBOSE(...)
-#define CANVAS_WARN(...)
-#define CANVAS_ERR(...)
-#define CANVAS_DBG(...)
 #endif
-
-#else
-#define CANVAS_INFO(...)
-#define CANVAS_ERR(...)
-#define CANVAS_VERBOSE(...)
-#define CANVAS_WARN(...)
-#define CANVAS_DBG(...)
-#endif
-
-#ifndef CANVAS_NO_LOG
 
 #define canvas_pointer_print(id) _canvas_pointer_print_impl(id, __FILE__, __LINE__)
 
@@ -1161,9 +1152,6 @@ static void _canvas_pointer_print_impl(int id, const char *file, int line)
         }
     }
 }
-
-#else
-#define canvas_pointer_print(id) ((void)0)
 #endif
 
 #define C_RTLD_NOW 0x00002
