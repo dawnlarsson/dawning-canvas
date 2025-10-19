@@ -3066,7 +3066,6 @@ void _canvas_gpu_draw_all()
         msg_void(cmd, "commit");
     }
 }
-
 int _canvas_update()
 {
     _post_init();
@@ -3080,6 +3079,83 @@ int _canvas_update()
     {
         objc_id tmp = msg_id(poolClass, "alloc");
         framePool = msg_id(tmp, "init");
+    }
+
+    canvas_pointer *p = canvas_get_primary_pointer(0);
+
+    objc_id ns_event_class = cls("NSEvent");
+    typedef _CGRect (*msg_mouse_location)(objc_id, objc_sel);
+    _CGRect mouse_loc = ((msg_mouse_location)objc_msgSend)(ns_event_class, sel_c("mouseLocation"));
+
+    int global_x = (int)mouse_loc.x;
+    int global_y = (int)mouse_loc.y;
+
+    p->display = 0;
+    for (int d = 0; d < canvas_info.display_count; d++)
+    {
+        if (global_x >= canvas_info.display[d].x &&
+            global_x < canvas_info.display[d].x + canvas_info.display[d].width &&
+            global_y >= canvas_info.display[d].y &&
+            global_y < canvas_info.display[d].y + canvas_info.display[d].height)
+        {
+            p->display = d;
+            p->screen_x = global_x - canvas_info.display[d].x;
+            p->screen_y = global_y - canvas_info.display[d].y;
+            break;
+        }
+    }
+
+    uint64_t now = mach_absolute_time();
+    double timestamp = (double)now * (double)canvas_macos.timebase.numer /
+                       (double)canvas_macos.timebase.denom / 1e9;
+
+    p->_samples[p->_sample_index].x = p->screen_x;
+    p->_samples[p->_sample_index].y = p->screen_y;
+    p->_samples[p->_sample_index].time = timestamp;
+    p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
+
+    int active_window = -1;
+    bool found_window = false;
+
+    for (int i = MAX_CANVAS - 1; i >= 0; i--)
+    {
+        if (!canvas_info.canvas[i]._valid || !canvas_info.canvas[i].window)
+            continue;
+
+        objc_id window = canvas_info.canvas[i].window;
+        _CGRect frame = msg_rect(window, "frame");
+
+        int win_x = (int)frame.x;
+        int win_y = (int)frame.y;
+        int win_w = (int)frame.w;
+        int win_h = (int)frame.h;
+
+        bool is_inside = (global_x >= win_x && global_x < win_x + win_w &&
+                          global_y >= win_y && global_y < win_y + win_h);
+
+        if (is_inside && !found_window)
+        {
+            active_window = i;
+            found_window = true;
+
+            p->window_id = i;
+            p->inside_window = true;
+            p->x = global_x - win_x;
+            p->y = global_y - win_y;
+
+            objc_id ns_cursor = _canvas_get_ns_cursor(canvas_info.canvas[i].cursor);
+            if (ns_cursor)
+                msg_void(ns_cursor, "set");
+
+            break;
+        }
+    }
+
+    if (!found_window)
+    {
+        p->inside_window = false;
+        p->x = 0;
+        p->y = 0;
     }
 
     objc_id ns_mode = nsstring_from_cstr("kCFRunLoopDefaultMode");
@@ -3099,15 +3175,95 @@ int _canvas_update()
             int window_idx = _canvas_window_index(eventWindow);
             if (window_idx >= 0)
             {
-                if (eventType == 5) // NSEventTypeMouseMoved
-                {
-                    objc_id ns_cursor = _canvas_get_ns_cursor(canvas_info.canvas[window_idx].cursor);
-                    if (ns_cursor)
-                        msg_void(ns_cursor, "set");
-                }
-
                 switch (eventType)
                 {
+                case 1: // NSEventTypeLeftMouseDown
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    p->buttons |= CANVAS_BUTTON_LEFT;
+                    p->buttons_pressed |= CANVAS_BUTTON_LEFT;
+                    p->window_id = window_idx;
+                    break;
+                }
+
+                case 2: // NSEventTypeLeftMouseUp
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    p->buttons &= ~CANVAS_BUTTON_LEFT;
+                    p->buttons_released |= CANVAS_BUTTON_LEFT;
+                    break;
+                }
+
+                case 3: // NSEventTypeRightMouseDown
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    p->buttons |= CANVAS_BUTTON_RIGHT;
+                    p->buttons_pressed |= CANVAS_BUTTON_RIGHT;
+                    p->window_id = window_idx;
+                    break;
+                }
+
+                case 4: // NSEventTypeRightMouseUp
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    p->buttons &= ~CANVAS_BUTTON_RIGHT;
+                    p->buttons_released |= CANVAS_BUTTON_RIGHT;
+                    break;
+                }
+
+                case 25: // NSEventTypeOtherMouseDown
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    long button_number = msg_ulong(ev, "buttonNumber");
+                    if (button_number == 2)
+                    {
+                        p->buttons |= CANVAS_BUTTON_MIDDLE;
+                        p->buttons_pressed |= CANVAS_BUTTON_MIDDLE;
+                    }
+                    else if (button_number == 3)
+                    {
+                        p->buttons |= CANVAS_BUTTON_X1;
+                        p->buttons_pressed |= CANVAS_BUTTON_X1;
+                    }
+                    else if (button_number == 4)
+                    {
+                        p->buttons |= CANVAS_BUTTON_X2;
+                        p->buttons_pressed |= CANVAS_BUTTON_X2;
+                    }
+                    p->window_id = window_idx;
+                    break;
+                }
+
+                case 26: // NSEventTypeOtherMouseUp
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    long button_number = msg_ulong(ev, "buttonNumber");
+                    if (button_number == 2)
+                    {
+                        p->buttons &= ~CANVAS_BUTTON_MIDDLE;
+                        p->buttons_released |= CANVAS_BUTTON_MIDDLE;
+                    }
+                    else if (button_number == 3)
+                    {
+                        p->buttons &= ~CANVAS_BUTTON_X1;
+                        p->buttons_released |= CANVAS_BUTTON_X1;
+                    }
+                    else if (button_number == 4)
+                    {
+                        p->buttons &= ~CANVAS_BUTTON_X2;
+                        p->buttons_released |= CANVAS_BUTTON_X2;
+                    }
+                    break;
+                }
+
+                case 22: // NSEventTypeScrollWheel
+                {
+                    canvas_pointer *p = canvas_get_primary_pointer(window_idx);
+                    p->scroll_y = (float)msg_dbl(ev, "scrollingDeltaY");
+                    p->scroll_x = (float)msg_dbl(ev, "scrollingDeltaX");
+                    break;
+                }
+
                 case 6:  // NSEventTypeLeftMouseDragged
                 case 7:  // NSEventTypeRightMouseDragged
                 case 27: // NSEventTypeOtherMouseDragged
