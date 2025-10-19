@@ -3066,6 +3066,7 @@ void _canvas_gpu_draw_all()
         msg_void(cmd, "commit");
     }
 }
+
 int _canvas_update()
 {
     _post_init();
@@ -3100,7 +3101,7 @@ int _canvas_update()
         {
             p->display = d;
             p->screen_x = global_x - canvas_info.display[d].x;
-            p->screen_y = global_y - canvas_info.display[d].y;
+            p->screen_y = canvas_info.display[d].height - (global_y - canvas_info.display[d].y);
             break;
         }
     }
@@ -3141,7 +3142,7 @@ int _canvas_update()
             p->window_id = i;
             p->inside_window = true;
             p->x = global_x - win_x;
-            p->y = global_y - win_y;
+            p->y = win_h - (global_y - win_y);
 
             objc_id ns_cursor = _canvas_get_ns_cursor(canvas_info.canvas[i].cursor);
             if (ns_cursor)

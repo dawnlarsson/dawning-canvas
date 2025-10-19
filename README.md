@@ -11,17 +11,26 @@
 
 
 > [!CAUTION]
-> This repo is early & experimental
+> This repo is early, consider this in alpha
 
 Extremely easy to use, cross-platform rendering backend & windowing with reasonable defaults.
 
 This aims to provide all the basics to kickstart engines, frameworks, or other tools or applications with the lowest possible barrier to entry without compromising on speed or bloat.
 
-**Goals:**
-- Single file pure C
-- Zero: build system, dependencies, complex setup or config
-- Multi-window rendering
-- Extremely lightweight & low overhead
+**Features:**
+- **Single file library** - Drop `canvas.h` into your project and go. No config, no setup. no bs.
+- **Zero dependencies** - No 3rd party libraries, direct OS API calls
+- **Rendering backends** - D3D12, Metal, Vulkan automatically selected
+- **Multi-window support** - Create and manage multiple windows simultaneously
+- **Mouse/Touch input** - Multi-monitor Mouse, touch, velocity tracking and history
+- **High-resolution timing** - Frame timing, FPS calculation, fixed timestep support
+- **Display management** - Multi-monitor data & tracking
+
+**Roadmap:**
+- Keyboard Input
+- Unified rendering calls
+- Audio?
+- Bug squash, perf optimizations
 
 ## Platform Status
 
@@ -113,24 +122,116 @@ int canvas_close(int window)
 ```
 Closes the window and destroys any attached rendering backend data (swapchain, etc.).
 
+### Cursor & Pointer System
+
 #### canvas_cursor
 ```c
 int canvas_cursor(int window_id, canvas_cursor_type cursor)
 ```
 Sets the cursor type for a window.
 
-Available cursor types:
-- `ARROW`
-- `TEXT`
-- `CROSSHAIR`
-- `HAND`
-- `SIZE_NS` (north-south resize)
-- `SIZE_EW` (east-west resize)
-- `SIZE_NESW` (diagonal resize)
-- `SIZE_NWSE` (diagonal resize)
-- `SIZE_ALL` (move)
-- `NOT_ALLOWED`
-- `WAIT`
+**Available cursor types:**
+- `CANVAS_CURSOR_HIDDEN` - Hide the cursor completely
+- `CANVAS_CURSOR_ARROW` - Standard arrow pointer
+- `CANVAS_CURSOR_TEXT` - I-beam text cursor
+- `CANVAS_CURSOR_CROSSHAIR` - Crosshair cursor
+- `CANVAS_CURSOR_HAND` - Pointing hand
+- `CANVAS_CURSOR_SIZE_NS` - North-south resize arrows (↕)
+- `CANVAS_CURSOR_SIZE_EW` - East-west resize arrows (↔)
+- `CANVAS_CURSOR_SIZE_NESW` - Diagonal resize (↗↙)
+- `CANVAS_CURSOR_SIZE_NWSE` - Diagonal resize (↖↘)
+- `CANVAS_CURSOR_SIZE_ALL` - Move/drag cursor
+- `CANVAS_CURSOR_NOT_ALLOWED` - Not allowed/prohibited
+- `CANVAS_CURSOR_WAIT` - Wait/busy cursor
+
+**Example:**
+```c
+canvas_cursor(window, CANVAS_CURSOR_HAND);
+```
+
+#### Pointer Tracking
+
+Canvas provides a sophisticated pointer tracking system for mouse, touch, and pen input with velocity calculation and history.
+
+**Get a pointer:**
+```c
+canvas_pointer *canvas_get_pointer(int id); // 0 = primary mouse
+```
+
+**Pointer structure:**
+```c
+typedef struct {
+    // Identity
+    int id;                   // Unique ID (0 for mouse, touch ID for fingers)
+    canvas_pointer_type type; // MOUSE, TOUCH, or PEN
+    int window_id;            // Which window owns this pointer
+    
+    // Position
+    int x, y;                 // Window-relative coordinates
+    int screen_x, screen_y;   // Screen-relative coordinates
+    int display;              // Display index
+    
+    // State
+    uint32_t buttons;          // Bitmask of currently pressed buttons
+    uint32_t buttons_pressed;  // Buttons pressed this frame
+    uint32_t buttons_released; // Buttons released this frame
+    
+    float scroll_x, scroll_y;  // Scroll wheel delta (this frame)
+    float pressure;            // 0.0-1.0 (for pen/touch)
+    
+    bool active;               // Is pointer currently tracked?
+    bool inside_window;        // Is pointer inside window bounds?
+    bool captured;             // Is pointer captured (for drag ops)?
+    bool relative_mode;        // FPS-style relative motion
+    
+    canvas_cursor_type cursor; // Current cursor type
+} canvas_pointer;
+```
+
+**Button state queries:**
+```c
+bool canvas_pointer_down(canvas_pointer *p, canvas_pointer_button btn);
+bool canvas_pointer_pressed(canvas_pointer *p, canvas_pointer_button btn);
+bool canvas_pointer_released(canvas_pointer *p, canvas_pointer_button btn);
+```
+
+**Button flags:**
+- `CANVAS_BUTTON_LEFT`
+- `CANVAS_BUTTON_RIGHT`
+- `CANVAS_BUTTON_MIDDLE`
+- `CANVAS_BUTTON_X1`
+- `CANVAS_BUTTON_X2`
+
+**Motion data:**
+```c
+float canvas_pointer_velocity(canvas_pointer *p);              // pixels/sec
+float canvas_pointer_direction(canvas_pointer *p);             // radians
+void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy); // Movement since last frame
+```
+
+**Example usage:**
+```c
+void update(int window) {
+    canvas_pointer *mouse = canvas_get_pointer(0);
+    
+    if (mouse && mouse->inside_window) {
+        // Check button state
+        if (canvas_pointer_pressed(mouse, CANVAS_BUTTON_LEFT)) {
+            printf("Clicked at (%d, %d)\n", mouse->x, mouse->y);
+        }
+        
+        // Get motion data
+        float velocity = canvas_pointer_velocity(mouse);
+        int dx, dy;
+        canvas_pointer_delta(mouse, &dx, &dy);
+        
+        // Handle scroll
+        if (mouse->scroll_y != 0) {
+            zoom += mouse->scroll_y * 0.1f;
+        }
+    }
+}
+```
 
 ### Main Loop & Updates
 
@@ -263,6 +364,11 @@ Exposed settings you can define before including the header:
 #define MAX_DISPLAYS 8
 #endif
 
+// Maximum number of pointers (mice, touches)
+#ifndef CANVAS_POINTER_BUDGET
+#define CANVAS_POINTER_BUDGET 10
+#endif
+
 // FPS limit for main loop (default: 240)
 extern double canvas_limit_mainloop_fps;
 ```
@@ -288,6 +394,7 @@ typedef struct {
     canvas_window_handle window;  // Native window handle
     canvas_update_callback update; // Per-window callback
     canvas_time_data time;         // Per-window timer
+    canvas_cursor_type cursor;     // Current cursor type
 } canvas_type;
 ```
 
@@ -339,8 +446,22 @@ Define `CANVAS_LOG_DEBUG` to disable verbose/warning/error/debug logs but keep i
 #include "canvas.h"
 
 void update(int window) {
-    // Set clear color to dark blue
-    canvas_color(window, (float[]){0.1f, 0.2f, 0.3f, 1.0f});
+    canvas_pointer *mouse = canvas_get_pointer(0);
+    
+    if (mouse && mouse->inside_window) {
+        // Change color based on mouse position
+        float r = (float)mouse->x / canvas_info.canvas[window].width;
+        float g = (float)mouse->y / canvas_info.canvas[window].height;
+        canvas_color(window, (float[]){r, g, 0.5f, 1.0f});
+        
+        // Change cursor on button press
+        if (canvas_pointer_pressed(mouse, CANVAS_BUTTON_LEFT)) {
+            canvas_cursor(window, CANVAS_CURSOR_HAND);
+        }
+        if (canvas_pointer_released(mouse, CANVAS_BUTTON_LEFT)) {
+            canvas_cursor(window, CANVAS_CURSOR_ARROW);
+        }
+    }
 }
 
 int main() {
