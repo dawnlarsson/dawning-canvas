@@ -683,6 +683,8 @@ static struct
     void *(*XCreateFontCursor)(Display *, unsigned int);
     int (*XDefineCursor)(Display *, Window, unsigned long);
     int (*XFree)(void *);
+    bool (*XQueryPointer)(Display *, Window, Window *, Window *, int *, int *, int *, int *, unsigned int *);
+    bool (*XTranslateCoordinates)(Display *, Window, Window, int, int, int *, int *, Window *);
 
     int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
 
@@ -1011,7 +1013,7 @@ canvas_data _canvas_data[MAX_CANVAS];
 static void _canvas_pointer_print_impl(int id, const char *file, int line)
 {
     // printf("\033[H");
-    // printf("\033c");
+    printf("\033c");
     puts("\033[H");
 
     canvas_pointer *p = canvas_get_pointer(id);
@@ -4380,14 +4382,6 @@ int _canvas_window_resize(int window_id)
 
 int _canvas_post_update()
 {
-    for (int i = 0; i < canvas_info.pointer_count; i++)
-    {
-        canvas_info.pointers[i].buttons_pressed = 0;
-        canvas_info.pointers[i].buttons_released = 0;
-        canvas_info.pointers[i].scroll_x = 0;
-        canvas_info.pointers[i].scroll_y = 0;
-    }
-
     return CANVAS_OK;
 }
 
@@ -5082,6 +5076,8 @@ int _canvas_init_x11()
     LOAD_X11(XCreateFontCursor);
     LOAD_X11(XDefineCursor);
     LOAD_X11(XFree);
+    LOAD_X11(XQueryPointer);
+    LOAD_X11(XTranslateCoordinates);
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
@@ -5201,8 +5197,128 @@ int _canvas_update()
             return CANVAS_ERR_GET_DISPLAY;
         }
 
-        XEvent event;
+        canvas_pointer *p = canvas_get_primary_pointer(0);
 
+        Window root_return, child_return;
+        int root_x, root_y, win_x, win_y;
+        unsigned int mask_return;
+
+        if (x11.XQueryPointer(x11.display, x11.XDefaultRootWindow(x11.display),
+                              &root_return, &child_return,
+                              &root_x, &root_y, &win_x, &win_y, &mask_return))
+        {
+            p->display = 0;
+            for (int d = 0; d < canvas_info.display_count; d++)
+            {
+                if (root_x >= canvas_info.display[d].x &&
+                    root_x < canvas_info.display[d].x + canvas_info.display[d].width &&
+                    root_y >= canvas_info.display[d].y &&
+                    root_y < canvas_info.display[d].y + canvas_info.display[d].height)
+                {
+                    p->display = d;
+                    p->screen_x = root_x - canvas_info.display[d].x;
+                    p->screen_y = root_y - canvas_info.display[d].y;
+                    break;
+                }
+            }
+
+            uint32_t old_buttons = p->buttons;
+            uint32_t new_buttons = 0;
+
+            if (mask_return & (1 << 8))
+                new_buttons |= CANVAS_BUTTON_LEFT;
+            if (mask_return & (1 << 9))
+                new_buttons |= CANVAS_BUTTON_MIDDLE;
+            if (mask_return & (1 << 10))
+                new_buttons |= CANVAS_BUTTON_RIGHT;
+            if (mask_return & (1 << 11))
+                new_buttons |= CANVAS_BUTTON_X1;
+            if (mask_return & (1 << 12))
+                new_buttons |= CANVAS_BUTTON_X2;
+
+            p->buttons_pressed = new_buttons & ~old_buttons;
+            p->buttons_released = old_buttons & ~new_buttons;
+            p->buttons = new_buttons;
+
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            double timestamp = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+
+            p->_samples[p->_sample_index].x = p->screen_x;
+            p->_samples[p->_sample_index].y = p->screen_y;
+            p->_samples[p->_sample_index].time = timestamp;
+            p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
+
+            int active_window = -1;
+            bool found_window = false;
+
+            for (int i = MAX_CANVAS - 1; i >= 0; i--)
+            {
+                if (!canvas_info.canvas[i]._valid || !canvas_info.canvas[i].window)
+                    continue;
+
+                XWindowAttributes attr;
+                if (x11.XGetWindowAttributes(x11.display, (Window)canvas_info.canvas[i].window, &attr))
+                {
+                    Window child;
+                    int wx, wy;
+                    x11.XTranslateCoordinates(x11.display, (Window)canvas_info.canvas[i].window,
+                                              attr.root, 0, 0, &wx, &wy, &child);
+
+                    bool is_inside = (root_x >= wx && root_x < wx + attr.width &&
+                                      root_y >= wy && root_y < wy + attr.height);
+
+                    if (is_inside && !found_window)
+                    {
+                        active_window = i;
+                        found_window = true;
+
+                        p->window_id = i;
+                        p->inside_window = true;
+                        p->x = root_x - wx;
+                        p->y = root_y - wy;
+
+                        if (!canvas_info.canvas[i].maximized)
+                        {
+                            int action = _canvas_get_resize_edge_action(i, p->x, p->y);
+                            if (action >= 0)
+                            {
+                                canvas_cursor_type resize_cursor = _canvas_get_resize_cursor(action);
+                                _canvas_set_active_cursor(i, resize_cursor);
+                            }
+                            else if (p->y < 30)
+                            {
+                                _canvas_set_active_cursor(i, CANVAS_CURSOR_ARROW);
+                            }
+                            else
+                            {
+                                _canvas_set_active_cursor(i, canvas_info.canvas[i].cursor);
+                            }
+                        }
+                        else
+                        {
+                            if (p->y < 30)
+                            {
+                                _canvas_set_active_cursor(i, CANVAS_CURSOR_ARROW);
+                            }
+                            else
+                            {
+                                _canvas_set_active_cursor(i, canvas_info.canvas[i].cursor);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!found_window)
+            {
+                p->inside_window = false;
+                p->x = 0;
+                p->y = 0;
+            }
+        }
+
+        XEvent event;
         while (x11.XPending(x11.display))
         {
             x11.XNextEvent(x11.display, &event);
@@ -5235,7 +5351,8 @@ int _canvas_update()
                 canvas_info.canvas[window_id].x = xce->x;
                 canvas_info.canvas[window_id].y = xce->y;
 
-                if (canvas_info.canvas[window_id].width != xce->width || canvas_info.canvas[window_id].height != xce->height)
+                if (canvas_info.canvas[window_id].width != xce->width ||
+                    canvas_info.canvas[window_id].height != xce->height)
                     canvas_info.canvas[window_id].os_resized = true;
 
                 canvas_info.canvas[window_id].width = xce->width;
@@ -5248,8 +5365,33 @@ int _canvas_update()
             {
                 XButtonEvent *xbe = (XButtonEvent *)&event;
 
+                canvas_pointer *p = canvas_get_primary_pointer(window_id);
+
+                if (xbe->button == 4)
+                {
+                    p->scroll_y = 1.0f;
+                    break;
+                }
+                if (xbe->button == 5)
+                {
+                    p->scroll_y = -1.0f;
+                    break;
+                }
+                if (xbe->button == 6)
+                {
+                    p->scroll_x = -1.0f;
+                    break;
+                }
+                if (xbe->button == 7)
+                {
+                    p->scroll_x = 1.0f;
+                    break;
+                }
+
                 if (xbe->button == 1)
                 {
+                    p->window_id = window_id;
+
                     int time_diff = xbe->time - _canvas_data[window_id].last_button_press_time;
                     int dx = xbe->x - _canvas_data[window_id].last_button_press_x;
                     int dy = xbe->y - _canvas_data[window_id].last_button_press_y;
@@ -5288,42 +5430,6 @@ int _canvas_update()
                     _canvas_data[window_id].last_button_press_time = xbe->time;
                     _canvas_data[window_id].last_button_press_x = xbe->x;
                     _canvas_data[window_id].last_button_press_y = xbe->y;
-                }
-                break;
-            }
-
-            case X11_MotionNotify:
-            {
-                XMotionEvent *xme = (XMotionEvent *)&event;
-
-                if (!canvas_info.canvas[window_id].maximized)
-                {
-                    int action = _canvas_get_resize_edge_action(window_id, xme->x, xme->y);
-
-                    if (action >= 0)
-                    {
-                        canvas_cursor_type resize_cursor = _canvas_get_resize_cursor(action);
-                        _canvas_set_active_cursor(window_id, resize_cursor);
-                    }
-                    else if (xme->y < 30)
-                    {
-                        _canvas_set_active_cursor(window_id, CANVAS_CURSOR_ARROW);
-                    }
-                    else
-                    {
-                        _canvas_set_active_cursor(window_id, canvas_info.canvas[window_id].cursor);
-                    }
-                }
-                else
-                {
-                    if (xme->y < 30)
-                    {
-                        _canvas_set_active_cursor(window_id, CANVAS_CURSOR_ARROW);
-                    }
-                    else
-                    {
-                        _canvas_set_active_cursor(window_id, canvas_info.canvas[window_id].cursor);
-                    }
                 }
 
                 break;
@@ -5368,15 +5474,11 @@ int _canvas_update()
                 canvas_info.canvas[window_id].minimized = false;
                 break;
             }
-
-            case X11_Expose:
-            {
-                break;
-            }
             }
         }
     }
 
+    // Render all windows
     for (int i = 0; i < MAX_CANVAS; i++)
     {
         if (!canvas_info.canvas[i]._valid || !vk_windows[i].initialized)
@@ -5699,6 +5801,14 @@ void canvas_main_loop()
     }
 
     canvas_limit_fps(&canvas_info.time, canvas_info.limit_fps);
+
+    for (int i = 0; i < canvas_info.pointer_count; i++)
+    {
+        canvas_info.pointers[i].buttons_pressed = 0;
+        canvas_info.pointers[i].buttons_released = 0;
+        canvas_info.pointers[i].scroll_x = 0;
+        canvas_info.pointers[i].scroll_y = 0;
+    }
 }
 
 int canvas_exit()
