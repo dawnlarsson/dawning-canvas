@@ -71,10 +71,7 @@ int main()
                 int start_x = 400 + (int)(100.0f * cosf(angle));
                 int start_y = 300 + (int)(100.0f * sinf(angle));
 
-                char title[32];
-                snprintf(title, sizeof(title), "Orbit %d", i + 1);
-
-                canvas(start_x, start_y, WINDOW_SIZE, WINDOW_SIZE, title);
+                canvas(start_x, start_y, WINDOW_SIZE, WINDOW_SIZE, "orbit");
         }
 
         return canvas_run(update);
