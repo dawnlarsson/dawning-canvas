@@ -3553,155 +3553,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
-    case WM_INPUT:
-    {
-        UINT size = 0;
-        GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &size, sizeof(RAWINPUTHEADER));
-
-        RAWINPUT *raw = (RAWINPUT *)alloca(size);
-        if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, raw, &size, sizeof(RAWINPUTHEADER)) != size)
-            break;
-
-        if (raw->header.dwType == RIM_TYPEMOUSE)
-        {
-            canvas_pointer *p = canvas_get_primary_pointer(window_index);
-
-            LARGE_INTEGER counter;
-            QueryPerformanceCounter(&counter);
-            double timestamp = (double)counter.QuadPart / (double)_canvas_qpc_frequency.QuadPart;
-
-            USHORT flags = raw->data.mouse.usButtonFlags;
-            if (flags & RI_MOUSE_LEFT_BUTTON_DOWN)
-            {
-                p->buttons |= CANVAS_BUTTON_LEFT;
-                p->buttons_pressed |= CANVAS_BUTTON_LEFT;
-            }
-            if (flags & RI_MOUSE_LEFT_BUTTON_UP)
-            {
-                p->buttons &= ~CANVAS_BUTTON_LEFT;
-                p->buttons_released |= CANVAS_BUTTON_LEFT;
-            }
-            if (flags & RI_MOUSE_RIGHT_BUTTON_DOWN)
-            {
-                p->buttons |= CANVAS_BUTTON_RIGHT;
-                p->buttons_pressed |= CANVAS_BUTTON_RIGHT;
-            }
-            if (flags & RI_MOUSE_RIGHT_BUTTON_UP)
-            {
-                p->buttons &= ~CANVAS_BUTTON_RIGHT;
-                p->buttons_released |= CANVAS_BUTTON_RIGHT;
-            }
-            if (flags & RI_MOUSE_MIDDLE_BUTTON_DOWN)
-            {
-                p->buttons |= CANVAS_BUTTON_MIDDLE;
-                p->buttons_pressed |= CANVAS_BUTTON_MIDDLE;
-            }
-            if (flags & RI_MOUSE_MIDDLE_BUTTON_UP)
-            {
-                p->buttons &= ~CANVAS_BUTTON_MIDDLE;
-                p->buttons_released |= CANVAS_BUTTON_MIDDLE;
-            }
-            if (flags & RI_MOUSE_BUTTON_4_DOWN)
-            {
-                p->buttons |= CANVAS_BUTTON_X1;
-                p->buttons_pressed |= CANVAS_BUTTON_X1;
-            }
-            if (flags & RI_MOUSE_BUTTON_4_UP)
-            {
-                p->buttons &= ~CANVAS_BUTTON_X1;
-                p->buttons_released |= CANVAS_BUTTON_X1;
-            }
-            if (flags & RI_MOUSE_BUTTON_5_DOWN)
-            {
-                p->buttons |= CANVAS_BUTTON_X2;
-                p->buttons_pressed |= CANVAS_BUTTON_X2;
-            }
-            if (flags & RI_MOUSE_BUTTON_5_UP)
-            {
-                p->buttons &= ~CANVAS_BUTTON_X2;
-                p->buttons_released |= CANVAS_BUTTON_X2;
-            }
-
-            if (flags & RI_MOUSE_WHEEL)
-            {
-                p->scroll_y = (short)raw->data.mouse.usButtonData / 120.0f;
-            }
-            if (flags & 0x0800)
-            {
-                p->scroll_x = (short)raw->data.mouse.usButtonData / 120.0f;
-            }
-
-            p->_samples[p->_sample_index].x = p->x;
-            p->_samples[p->_sample_index].y = p->y;
-            p->_samples[p->_sample_index].time = timestamp;
-            p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
-        }
-
-        return 0;
-    }
-
-    case WM_MOUSEMOVE:
-    {
-        canvas_pointer *p = canvas_get_primary_pointer(window_index);
-
-        p->x = (short)LOWORD(lParam);
-        p->y = (short)HIWORD(lParam);
-
-        POINT abs_screen_pt = {p->x, p->y};
-        ClientToScreen(hwnd, &abs_screen_pt);
-
-        HMONITOR monitor = MonitorFromPoint(abs_screen_pt, MONITOR_DEFAULTTONEAREST);
-        for (int d = 0; d < canvas_info.display_count; d++)
-        {
-            if (canvas_win32.monitors[d] == monitor)
-            {
-                p->display = d;
-                p->screen_x = abs_screen_pt.x - canvas_info.display[d].x;
-                p->screen_y = abs_screen_pt.y - canvas_info.display[d].y;
-                break;
-            }
-        }
-
-        RECT rect;
-        GetClientRect(hwnd, &rect);
-        p->inside_window = (p->x >= 0 && p->x < rect.right && p->y >= 0 && p->y < rect.bottom);
-
-        if (p->inside_window)
-        {
-            TRACKMOUSEEVENT tme = {0};
-            tme.cbSize = sizeof(tme);
-            tme.dwFlags = TME_LEAVE;
-            tme.hwndTrack = hwnd;
-            TrackMouseEvent(&tme);
-        }
-
-        return 0;
-    }
-
-    case WM_MOUSELEAVE:
-    {
-        canvas_pointer *p = canvas_get_primary_pointer(window_index);
-        p->inside_window = false;
-        return 0;
-    }
-
     case WM_MOUSEWHEEL:
     {
         canvas_pointer *p = canvas_get_primary_pointer(window_index);
-
         short delta = GET_WHEEL_DELTA_WPARAM(wParam);
         p->scroll_y = (float)delta / 120.0f;
-
         return 0;
     }
 
     case WM_MOUSEHWHEEL:
     {
         canvas_pointer *p = canvas_get_primary_pointer(window_index);
-
         short delta = GET_WHEEL_DELTA_WPARAM(wParam);
         p->scroll_x = (float)delta / 120.0f;
-
         return 0;
     }
 
@@ -3952,16 +3816,30 @@ int _canvas_platform()
 
     return CANVAS_OK;
 }
-
 int _canvas_update()
 {
-    for (int i = 0; i < canvas_info.pointer_count; i++)
+    canvas_pointer *p = canvas_get_primary_pointer(0);
+
+    POINT abs_screen_pt;
+    if (GetCursorPos(&abs_screen_pt))
     {
-        canvas_pointer *p = &canvas_info.pointers[i];
+        HMONITOR monitor = MonitorFromPoint(abs_screen_pt, MONITOR_DEFAULTTONEAREST);
+        p->display = 0;
+
+        for (int d = 0; d < canvas_info.display_count; d++)
+        {
+            if (canvas_win32.monitors[d] == monitor)
+            {
+                p->display = d;
+                p->screen_x = abs_screen_pt.x - canvas_info.display[d].x;
+                p->screen_y = abs_screen_pt.y - canvas_info.display[d].y;
+                break;
+            }
+        }
 
         uint32_t old_buttons = p->buttons;
-
         uint32_t new_buttons = 0;
+
         if (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
             new_buttons |= CANVAS_BUTTON_LEFT;
         if (GetAsyncKeyState(VK_RBUTTON) & 0x8000)
@@ -3976,49 +3854,49 @@ int _canvas_update()
         p->buttons_pressed = new_buttons & ~old_buttons;
         p->buttons_released = old_buttons & ~new_buttons;
         p->buttons = new_buttons;
-    }
 
-    for (int i = 0; i < MAX_CANVAS; i++)
-    {
-        if (!canvas_info.canvas[i]._valid || !canvas_info.canvas[i].window)
-            continue;
+        LARGE_INTEGER counter;
+        QueryPerformanceCounter(&counter);
+        double timestamp = (double)counter.QuadPart / (double)_canvas_qpc_frequency.QuadPart;
 
-        HWND hwnd = (HWND)canvas_info.canvas[i].window;
-        canvas_pointer *p = canvas_get_primary_pointer(i);
+        p->_samples[p->_sample_index].x = p->screen_x;
+        p->_samples[p->_sample_index].y = p->screen_y;
+        p->_samples[p->_sample_index].time = timestamp;
+        p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
 
-        POINT abs_screen_pt;
-        if (GetCursorPos(&abs_screen_pt))
+        HWND hwnd_at_point = WindowFromPoint(abs_screen_pt);
+        int active_window = -1;
+        bool found_window = false;
+
+        for (int i = 0; i < MAX_CANVAS; i++)
         {
-            HMONITOR monitor = MonitorFromPoint(abs_screen_pt, MONITOR_DEFAULTTONEAREST);
+            if (!canvas_info.canvas[i]._valid || !canvas_info.canvas[i].window)
+                continue;
 
-            for (int d = 0; d < canvas_info.display_count; d++)
+            HWND hwnd = (HWND)canvas_info.canvas[i].window;
+
+            if (hwnd == hwnd_at_point || IsChild(hwnd, hwnd_at_point))
             {
-                if (canvas_win32.monitors[d] == monitor)
-                {
-                    p->display = d;
-                    p->screen_x = abs_screen_pt.x - canvas_info.display[d].x;
-                    p->screen_y = abs_screen_pt.y - canvas_info.display[d].y;
-                    break;
-                }
+                active_window = i;
+                found_window = true;
+
+                POINT client_pt = abs_screen_pt;
+                ScreenToClient(hwnd, &client_pt);
+
+                p->window_id = i;
+                p->inside_window = true;
+                p->x = client_pt.x;
+                p->y = client_pt.y;
+
+                break;
             }
+        }
 
-            POINT client_pt = abs_screen_pt;
-            ScreenToClient(hwnd, &client_pt);
-            p->x = client_pt.x;
-            p->y = client_pt.y;
-
-            RECT rect;
-            GetClientRect(hwnd, &rect);
-            p->inside_window = (p->x >= 0 && p->x < rect.right && p->y >= 0 && p->y < rect.bottom);
-
-            LARGE_INTEGER counter;
-            QueryPerformanceCounter(&counter);
-            double timestamp = (double)counter.QuadPart / (double)_canvas_qpc_frequency.QuadPart;
-
-            p->_samples[p->_sample_index].x = p->x;
-            p->_samples[p->_sample_index].y = p->y;
-            p->_samples[p->_sample_index].time = timestamp;
-            p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
+        if (!found_window)
+        {
+            p->inside_window = false;
+            p->x = 0;
+            p->y = 0;
         }
     }
 
