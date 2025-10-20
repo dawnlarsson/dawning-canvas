@@ -38,7 +38,7 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
 
 | Platform | Window | Canvas | Backend   | Required Compiler Flags |
 |----------|--------|--------|-----------|------------------------|
-| Windows  | \      | \      | DirectX12 | `-lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12` |
+| Windows  | \      | \      | DirectX12 | `-lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12 -lwinmm` |
 | macOS    | \      | \      | Metal     | `-framework Cocoa -framework QuartzCore -framework Metal -framework IOKit` |
 | Linux    | \      | ~      | Vulkan    | `-ldl -lm` |
 | iOS      | ~      | ~      | Metal     | |

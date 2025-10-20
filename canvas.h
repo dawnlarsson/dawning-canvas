@@ -18,7 +18,7 @@
         ~ not implemented, x - implemented, \ partially implemented (or wip)
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
-        Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
+        Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12 -lwinmm
         MacOS                   \       \       Metal       -framework Cocoa -framework QuartzCore -framework Metal -framework IOKit
         Linux                   \       ~       Vulkan      -ldl -lm
         iOS                     ~       ~       Metal
@@ -521,26 +521,46 @@ typedef struct
 
 canvas_keyboard_state canvas_keyboard = {0};
 
-bool canvas_key_down(int key)
+inline bool canvas_key_down(int key)
 {
     if (key < 0 || key >= 256)
         return false;
     return canvas_keyboard.keys[key];
 }
 
-bool canvas_key_pressed(int key)
+inline bool canvas_key_pressed(int key)
 {
     if (key < 0 || key >= 256)
         return false;
     return canvas_keyboard.keys_pressed[key];
 }
 
-bool canvas_key_released(int key)
+inline bool canvas_key_released(int key)
 {
     if (key < 0 || key >= 256)
         return false;
     return canvas_keyboard.keys_released[key];
 }
+
+// Compatibility
+#ifndef CANVAS_NO_EASY_API
+
+inline bool key_down(int key)
+{
+    return canvas_key_released(key);
+}
+
+inline bool key_press(int key)
+{
+    return canvas_key_released(key);
+}
+
+inline bool key_up(int key)
+{
+    return canvas_key_released(key);
+}
+
+#endif
 
 #ifndef CANVAS_HEADER_ONLY
 
@@ -844,9 +864,11 @@ canvas_platform_macos canvas_macos;
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
+
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "winmm.lib")
 
 static LARGE_INTEGER _canvas_qpc_frequency = {0};
 static LARGE_INTEGER _canvas_start_counter = {0};
@@ -4079,8 +4101,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             enum DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_MAINWINDOW;
             DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-
-            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
         }
         return CANVAS_OK;
     }
@@ -4192,7 +4212,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             break;
 
         canvas_info.os_timed = true;
-        SetTimer(hwnd, 1, 0, NULL); // 60 fps hard cap due to Windows...
+        timeBeginPeriod(1);
+        SetTimer(hwnd, 1, 0, NULL);
         return CANVAS_OK;
     }
 
@@ -4203,6 +4224,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         canvas_info.os_timed = false;
         KillTimer(hwnd, 1);
+        timeEndPeriod(1);
         return CANVAS_OK;
     }
 
@@ -4297,7 +4319,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (hid > 0 && hid < 256 && canvas_keyboard.keys[hid])
         {
             canvas_keyboard.keys[hid] = false;
-            canvas_keyboard.keys_pressed[hid] = true;
+            canvas_keyboard.keys_released[hid] = true;
         }
         return 0;
     }
@@ -4308,7 +4330,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         canvas_info.os_timed = false;
 
         if (canvas_info.os_timed)
+        {
             KillTimer(hwnd, 1);
+            timeEndPeriod(1);
+        }
 
         return 0;
     }
