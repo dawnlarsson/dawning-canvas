@@ -496,6 +496,22 @@ typedef enum KEY
     KEY_RIGHT_GUI = 231,
 } KEY;
 
+static const unsigned char win32_to_hid[256] = {
+    0, 41, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 45, 46, 42, 43, 20, 26, 8, 21, 23, 28, 24, 12, 18, 19, 47, 48, 40, 224, 4, 22, 7,
+    9, 10, 11, 13, 14, 15, 51, 52, 53, 225, 49, 29, 27, 6, 25, 5, 17, 16, 54, 55, 56, 229, 85, 226, 44, 57, 58, 59, 60, 61, 62, 63, 64,
+    65, 66, 67, 83, 71, 95, 96, 97, 86, 92, 93, 94, 87, 89, 90, 91, 98, 99, 0, 0, 0, 68, 69,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+static const unsigned char x11_to_hid[248] = {
+    0, 41, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 45, 46, 42, 43, 20, 26, 8, 21, 23, 28, 24, 12, 18, 19, 47, 48, 158, 224, 4, 22,
+    7, 9, 10, 11, 13, 14, 15, 51, 52, 53, 225, 49, 29, 27, 6, 25, 5, 17, 16, 54, 55, 56, 229, 226, 44, 57, 58, 59, 60, 61, 62,
+    63, 64, 65, 66, 67, 83, 71, 95, 96, 97, 86, 92, 93, 94, 87, 89, 90, 91, 98, 99, 0, 0, 68, 69, 0, 0, 135, 0, 0, 0, 0, 0,
+    70, 104, 111, 107, 113, 106, 105, 108, 109, 110, 112, 118, 115, 0, 117, 102, 0, 119, 0, 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
 typedef struct
 {
     bool keys[256];
@@ -4214,6 +4230,78 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
     }
 
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+    {
+        int scancode = (lParam >> 16) & 0xFF;
+        bool extended = (lParam >> 24) & 1;
+
+        if (extended)
+        {
+            if (scancode == 0x1D)
+                scancode = 0xE01D;
+            else if (scancode == 0x38)
+                scancode = 0xE038;
+            else
+                scancode |= 0xE000;
+        }
+
+        int hid = 0;
+        if (scancode < 128)
+            hid = win32_to_hid[scancode];
+        else if (scancode == 0xE01D)
+            hid = 228;
+        else if (scancode == 0xE038)
+            hid = 230;
+        else if (scancode == 0xE05B)
+            hid = 227;
+        else if (scancode == 0xE05C)
+            hid = 231;
+
+        if (hid > 0 && hid < 256 && !canvas_keyboard.keys[hid])
+        {
+            canvas_keyboard.keys[hid] = true;
+            canvas_keyboard.keys_pressed[hid] = true;
+        }
+        return 0;
+    }
+
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+    {
+        int scancode = (lParam >> 16) & 0xFF;
+        bool extended = (lParam >> 24) & 1;
+
+        if (extended)
+        {
+            if (scancode == 0x1D)
+                scancode = 0xE01D;
+            else if (scancode == 0x38)
+                scancode = 0xE038;
+            else
+                scancode |= 0xE000;
+        }
+
+        int hid = 0;
+        if (scancode < 128)
+            hid = win32_to_hid[scancode];
+        else if (scancode == 0xE01D)
+            hid = 228;
+        else if (scancode == 0xE038)
+            hid = 230;
+        else if (scancode == 0xE05B)
+            hid = 227;
+        else if (scancode == 0xE05C)
+            hid = 231;
+
+        if (hid > 0 && hid < 256 && canvas_keyboard.keys[hid])
+        {
+            canvas_keyboard.keys[hid] = false;
+            canvas_keyboard.keys_pressed[hid] = true;
+        }
+        return 0;
+    }
+
     case WM_CLOSE:
     {
         canvas_info.canvas[window_index].close = true;
@@ -4291,6 +4379,7 @@ int _canvas_platform()
 
     return CANVAS_OK;
 }
+
 int _canvas_update()
 {
     canvas_pointer *p = canvas_get_primary_pointer(0);
