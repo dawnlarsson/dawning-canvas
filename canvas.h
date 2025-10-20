@@ -1063,6 +1063,25 @@ typedef struct
     unsigned long modeFlags;
 } XRRModeInfo;
 
+typedef struct
+{
+    int type;
+    unsigned long serial;
+    bool send_event;
+    Display *display;
+    Window window;
+    Window root;
+    Window subwindow;
+    unsigned long time;
+    int x, y;
+    int x_root, y_root;
+    unsigned int state;
+    unsigned int keycode;
+    bool same_screen;
+} XKeyEvent;
+typedef XKeyEvent XKeyPressedEvent;
+typedef XKeyEvent XKeyReleasedEvent;
+
 static struct
 {
     canvas_library_handle library;
@@ -5933,6 +5952,42 @@ int _canvas_update()
             {
                 canvas_info.canvas[window_id].minimized = true;
                 canvas_info.canvas[window_id].maximized = false;
+                break;
+            }
+
+            case 2:
+            {
+                XKeyEvent *xke = (XKeyEvent *)&event;
+                unsigned int keycode = xke->keycode;
+
+                if (keycode >= 8 && keycode < 256)
+                {
+                    keycode -= 8;
+                    int hid = x11_to_hid[keycode];
+                    if (hid > 0 && hid < 256 && !canvas_keyboard.keys[hid])
+                    {
+                        canvas_keyboard.keys[hid] = true;
+                        canvas_keyboard.keys_pressed[hid] = true;
+                    }
+                }
+                break;
+            }
+
+            case 3:
+            {
+                XKeyEvent *xke = (XKeyEvent *)&event;
+                unsigned int keycode = xke->keycode;
+
+                if (keycode >= 8 && keycode < 256)
+                {
+                    keycode -= 8;
+                    int hid = x11_to_hid[keycode];
+                    if (hid > 0 && hid < 256 && canvas_keyboard.keys[hid])
+                    {
+                        canvas_keyboard.keys[hid] = false;
+                        canvas_keyboard.keys_released[hid] = true;
+                    }
+                }
                 break;
             }
 
