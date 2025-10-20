@@ -19,7 +19,7 @@
 
         Platform:               Window  Canvas  Backend     Required Compiler Flags
         Windows                 \       \       DirectX12   -lgdi32 -luser32 -mwindows -ldwmapi -ldxgi -ld3d12
-        MacOS                   \       \       Metal       -framework Cocoa -framework QuartzCore -framework Metal
+        MacOS                   \       \       Metal       -framework Cocoa -framework QuartzCore -framework Metal -framework IOKit
         Linux                   \       ~       Vulkan      -ldl -lm
         iOS                     ~       ~       Metal
         Android                 ~       ~       Vulkan
@@ -258,6 +258,274 @@ typedef struct
 #define CANVAS_ERR_GET_GPU -35
 #define CANVAS_ERR_GET_PLATFORM -36
 
+typedef enum KEY
+{
+    KEY_ERROR_ROLLOVER = 1,
+    KEY_POST_FAIL = 2,
+    KEY_ERROR_UNDEFINED = 3,
+
+    KEY_A = 4,
+    KEY_B = 5,
+    KEY_C = 6,
+    KEY_D = 7,
+    KEY_E = 8,
+    KEY_F = 9,
+    KEY_G = 10,
+    KEY_H = 11,
+    KEY_I = 12,
+    KEY_J = 13,
+    KEY_K = 14,
+    KEY_L = 15,
+    KEY_M = 16,
+    KEY_N = 17,
+    KEY_O = 18,
+    KEY_P = 19,
+    KEY_Q = 20,
+    KEY_R = 21,
+    KEY_S = 22,
+    KEY_T = 23,
+    KEY_U = 24,
+    KEY_V = 25,
+    KEY_W = 26,
+    KEY_X = 27,
+    KEY_Y = 28,
+    KEY_Z = 29,
+
+    KEY_1_EXCLAMATION = 30,
+    KEY_2_AT = 31,
+    KEY_3_HASH = 32,
+    KEY_4_DOLLAR = 33,
+    KEY_5_PERCENT = 34,
+    KEY_6_CARET = 35,
+    KEY_7_AMPERSAND = 36,
+    KEY_8_ASTERISK = 37,
+    KEY_9_LEFT_PAREN = 38,
+    KEY_0_RIGHT_PAREN = 39,
+
+    KEY_RETURN_ENTER = 40,
+    KEY_ESCAPE = 41,
+    KEY_DELETE_BACKSPACE = 42,
+    KEY_TAB = 43,
+    KEY_SPACEBAR = 44,
+    KEY_MINUS_UNDERSCORE = 45,
+    KEY_EQUAL_PLUS = 46,
+    KEY_LEFT_BRACKET_BRACE = 47,
+    KEY_RIGHT_BRACKET_BRACE = 48,
+    KEY_BACKSLASH_PIPE = 49,
+    KEY_NON_US_HASH_TILDE = 50,
+    KEY_SEMICOLON_COLON = 51,
+    KEY_APOSTROPHE_DOUBLE_QUOTE = 52,
+    KEY_GRAVE_ACCENT_TILDE = 53,
+    KEY_COMMA_LESS = 54,
+    KEY_PERIOD_GREATER = 55,
+    KEY_SLASH_QUESTION = 56,
+
+    KEY_CAPS_LOCK = 57,
+
+    KEY_F1 = 58,
+    KEY_F2 = 59,
+    KEY_F3 = 60,
+    KEY_F4 = 61,
+    KEY_F5 = 62,
+    KEY_F6 = 63,
+    KEY_F7 = 64,
+    KEY_F8 = 65,
+    KEY_F9 = 66,
+    KEY_F10 = 67,
+    KEY_F11 = 68,
+    KEY_F12 = 69,
+
+    KEY_PRINT_SCREEN = 70,
+    KEY_SCROLL_LOCK = 71,
+    KEY_PAUSE = 72,
+    KEY_INSERT = 73,
+    KEY_HOME = 74,
+    KEY_PAGE_UP = 75,
+    KEY_DELETE_FORWARD = 76,
+    KEY_END = 77,
+    KEY_PAGE_DOWN = 78,
+    KEY_RIGHT_ARROW = 79,
+    KEY_LEFT_ARROW = 80,
+    KEY_DOWN_ARROW = 81,
+    KEY_UP_ARROW = 82,
+
+    KEYPAD_NUM_LOCK_CLEAR = 83,
+    KEYPAD_SLASH = 84,
+    KEYPAD_ASTERISK = 85,
+    KEYPAD_MINUS = 86,
+    KEYPAD_PLUS = 87,
+    KEYPAD_ENTER = 88,
+    KEYPAD_1_END = 89,
+    KEYPAD_2_DOWN = 90,
+    KEYPAD_3_PAGEDOWN = 91,
+    KEYPAD_4_LEFT = 92,
+    KEYPAD_5 = 93,
+    KEYPAD_6_RIGHT = 94,
+    KEYPAD_7_HOME = 95,
+    KEYPAD_8_UP = 96,
+    KEYPAD_9_PAGEUP = 97,
+    KEYPAD_0_INSERT = 98,
+    KEYPAD_DOT_DELETE = 99,
+
+    KEY_NON_US_BACKSLASH_PIPE = 100,
+    KEY_APPLICATION = 101,
+    KEY_POWER = 102,
+    KEYPAD_EQUAL = 103,
+    KEY_F13 = 104,
+    KEY_F14 = 105,
+    KEY_F15 = 106,
+    KEY_F16 = 107,
+    KEY_F17 = 108,
+    KEY_F18 = 109,
+    KEY_F19 = 110,
+    KEY_F20 = 111,
+    KEY_F21 = 112,
+    KEY_F22 = 113,
+    KEY_F23 = 114,
+    KEY_F24 = 115,
+
+    KEY_EXECUTE = 116,
+    KEY_HELP = 117,
+    KEY_MENU = 118,
+    KEY_SELECT = 119,
+    KEY_STOP = 120,
+    KEY_AGAIN = 121,
+    KEY_UNDO = 122,
+    KEY_CUT = 123,
+    KEY_COPY = 124,
+    KEY_PASTE = 125,
+    KEY_FIND = 126,
+    KEY_MUTE = 127,
+    KEY_VOLUME_UP = 128,
+    KEY_VOLUME_DOWN = 129,
+
+    KEY_LOCKING_CAPS_LOCK = 130,
+    KEY_LOCKING_NUM_LOCK = 131,
+    KEY_LOCKING_SCROLL_LOCK = 132,
+
+    KEYPAD_COMMA = 133,
+    KEYPAD_EQUAL_SIGN = 134,
+
+    KEY_INTERNATIONAL1 = 135,
+    KEY_INTERNATIONAL2 = 136,
+    KEY_INTERNATIONAL3 = 137,
+    KEY_INTERNATIONAL5_1 = 138,
+    KEY_INTERNATIONAL5_2 = 139,
+    KEY_INTERNATIONAL6 = 140,
+    KEY_INTERNATIONAL7 = 141,
+    KEY_INTERNATIONAL8 = 142,
+    KEY_INTERNATIONAL9 = 143,
+
+    KEY_LANG1 = 144,
+    KEY_LANG2 = 145,
+    KEY_LANG3 = 146,
+    KEY_LANG4 = 147,
+    KEY_LANG5 = 148,
+    KEY_LANG6 = 149,
+    KEY_LANG7 = 150,
+    KEY_LANG8 = 151,
+    KEY_LANG9 = 152,
+
+    KEY_ALTERNATE_ERASE = 153,
+    KEY_SYSREQ_ATTENTION = 154,
+    KEY_CANCEL = 155,
+    KEY_CLEAR = 156,
+    KEY_PRIOR = 157,
+    KEY_RETURN = 158,
+    KEY_SEPARATOR = 159,
+    KEY_OUT = 160,
+    KEY_OPER = 161,
+    KEY_CLEAR_AGAIN = 162,
+    KEY_CRSEL_PROPS = 163,
+    KEY_EXSEL = 164,
+
+    KEYPAD_00 = 176,
+    KEYPAD_000 = 177,
+    KEYPAD_THOUSANDS_SEPARATOR = 178,
+    KEYPAD_DECIMAL_SEPARATOR = 179,
+    KEYPAD_CURRENCY_UNIT = 180,
+    KEYPAD_CURRENCY_SUB_UNIT = 181,
+    KEYPAD_LEFT_PAREN = 182,
+    KEYPAD_RIGHT_PAREN = 183,
+    KEYPAD_LEFT_BRACE = 184,
+    KEYPAD_RIGHT_BRACE = 185,
+    KEYPAD_TAB = 186,
+    KEYPAD_BACKSPACE = 187,
+    KEYPAD_A = 188,
+    KEYPAD_B = 189,
+    KEYPAD_C = 190,
+    KEYPAD_D = 191,
+    KEYPAD_E = 192,
+    KEYPAD_F = 193,
+    KEYPAD_XOR = 194,
+    KEYPAD_LOGICAL_AND = 195,
+    KEYPAD_PERCENT = 196,
+    KEYPAD_LESS = 197,
+    KEYPAD_GREATER = 198,
+    KEYPAD_AMPERSAND = 199,
+    KEYPAD_DOUBLE_AMPERSAND = 200,
+    KEYPAD_PIPE = 201,
+    KEYPAD_DOUBLE_PIPE = 202,
+    KEYPAD_COLON = 203,
+    KEYPAD_HASH = 204,
+    KEYPAD_SPACE = 205,
+    KEYPAD_AT = 206,
+    KEYPAD_EXCLAMATION = 207,
+    KEYPAD_MEMORY_STORE = 208,
+    KEYPAD_MEMORY_RECALL = 209,
+    KEYPAD_MEMORY_CLEAR = 210,
+    KEYPAD_MEMORY_ADD = 211,
+    KEYPAD_MEMORY_SUBTRACT = 212,
+    KEYPAD_MEMORY_MULTIPLY = 213,
+    KEYPAD_MEMORY_DIVIDE = 214,
+    KEYPAD_PLUS_MINUS = 215,
+    KEYPAD_CLEAR = 216,
+    KEYPAD_CLEAR_ENTRY = 217,
+    KEYPAD_BINARY = 218,
+    KEYPAD_OCTAL = 219,
+    KEYPAD_DECIMAL = 220,
+    KEYPAD_HEXADECIMAL = 221,
+
+    KEY_LEFT_CONTROL = 224,
+    KEY_LEFT_SHIFT = 225,
+    KEY_LEFT_ALT = 226,
+    KEY_LEFT_GUI = 227,
+    KEY_RIGHT_CONTROL = 228,
+    KEY_RIGHT_SHIFT = 229,
+    KEY_RIGHT_ALT = 230,
+    KEY_RIGHT_GUI = 231,
+} KEY;
+
+typedef struct
+{
+    bool keys[256];
+    bool keys_pressed[256];
+    bool keys_released[256];
+} canvas_keyboard_state;
+
+canvas_keyboard_state canvas_keyboard = {0};
+
+bool canvas_key_down(int key)
+{
+    if (key < 0 || key >= 256)
+        return false;
+    return canvas_keyboard.keys[key];
+}
+
+bool canvas_key_pressed(int key)
+{
+    if (key < 0 || key >= 256)
+        return false;
+    return canvas_keyboard.keys_pressed[key];
+}
+
+bool canvas_key_released(int key)
+{
+    if (key < 0 || key >= 256)
+        return false;
+    return canvas_keyboard.keys_released[key];
+}
+
 #ifndef CANVAS_HEADER_ONLY
 
 typedef struct
@@ -302,6 +570,8 @@ canvas_pointer *canvas_get_primary_pointer(int window_id)
 #include <mach/mach_time.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hid/IOHIDManager.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
 
 typedef void *objc_id;
@@ -2846,6 +3116,61 @@ void _post_init()
     mach_timebase_info(&canvas_macos.timebase);
 }
 
+static void hid_input_cb(void *ctx, IOReturn res, void *sender, IOHIDValueRef value)
+{
+    IOHIDElementRef elem = IOHIDValueGetElement(value);
+    uint32_t page = IOHIDElementGetUsagePage(elem);
+    uint32_t usage = IOHIDElementGetUsage(elem);
+
+    if (page == 0x07) // USB HID Keyboard/Keypad page id
+    {
+        bool pressed = IOHIDValueGetIntegerValue(value) != 0;
+        int hid_key = (int)usage;
+
+        if (hid_key > 0 && hid_key < 256)
+        {
+            bool was_down = canvas_keyboard.keys[hid_key];
+            canvas_keyboard.keys[hid_key] = pressed;
+
+            if (pressed && !was_down)
+            {
+                canvas_keyboard.keys_pressed[hid_key] = true;
+            }
+            else if (!pressed && was_down)
+            {
+                canvas_keyboard.keys_released[hid_key] = true;
+            }
+        }
+    }
+}
+
+static IOHIDManagerRef start_hid()
+{
+    IOHIDManagerRef m = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+
+    const uint32_t devPage = 0x01, devUsage = 0x06;
+    CFMutableDictionaryRef match = CFDictionaryCreateMutable(NULL, 0,
+                                                             &kCFCopyStringDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFNumberRef nPage = CFNumberCreate(NULL, kCFNumberIntType, &devPage);
+    CFNumberRef nUsage = CFNumberCreate(NULL, kCFNumberIntType, &devUsage);
+    CFDictionarySetValue(match, CFSTR(kIOHIDDeviceUsagePageKey), nPage);
+    CFDictionarySetValue(match, CFSTR(kIOHIDDeviceUsageKey), nUsage);
+    CFRelease(nPage);
+    CFRelease(nUsage);
+
+    IOHIDManagerSetDeviceMatching(m, match);
+    CFRelease(match);
+
+    IOHIDManagerRegisterInputValueCallback(m, hid_input_cb, NULL);
+    IOHIDManagerScheduleWithRunLoop(m, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+
+    IOReturn r = IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
+    if (r != kIOReturnSuccess)
+    {
+    }
+    return m;
+}
+
 int _canvas_platform()
 {
     _post_init();
@@ -3252,6 +3577,11 @@ int _canvas_update()
                     p->scroll_x = (float)msg_dbl(ev, "scrollingDeltaX");
                     break;
                 }
+
+                case 10: // NSEventTypeKeyDown
+                case 11: // NSEventTypeKeyUp
+                case 12: // NSEventTypeFlagsChanged
+                    break;
 
                 case 6:  // NSEventTypeLeftMouseDragged
                 case 7:  // NSEventTypeRightMouseDragged
@@ -5831,6 +6161,12 @@ void canvas_main_loop()
         canvas_info.pointers[i].buttons_released = 0;
         canvas_info.pointers[i].scroll_x = 0;
         canvas_info.pointers[i].scroll_y = 0;
+    }
+
+    for (int i = 0; i < 256; i++)
+    {
+        canvas_keyboard.keys_pressed[i] = false;
+        canvas_keyboard.keys_released[i] = false;
     }
 }
 
