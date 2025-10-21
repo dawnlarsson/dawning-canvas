@@ -2756,6 +2756,8 @@ static int vk_draw_frame(int window_id)
     uint32_t image_index;
     VkResult result = vk_info.vkAcquireNextImageKHR(vk_info.device, vk_win->swapchain, UINT64_MAX, vk_win->image_available_semaphores[vk_win->current_frame], VK_NULL_HANDLE, &image_index);
 
+    VkResult present_result = vk_info.vkQueuePresentKHR(vk_info.present_queue, &presentInfo);
+
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR)
     {
         vk_win->needs_resize = true;
