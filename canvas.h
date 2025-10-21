@@ -188,7 +188,6 @@ void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy); // Movement sinc
 // Capture/lock
 void canvas_pointer_capture(int window_id);
 void canvas_pointer_release();
-void canvas_pointer_set_relative(bool enabled); // FPS mode
 
 int canvas(int x, int y, int width, int height, const char *title);
 int canvas_window(int x, int y, int width, int height, const char *title);
@@ -558,6 +557,31 @@ inline bool key_press(int key)
 inline bool key_up(int key)
 {
     return canvas_key_released(key);
+}
+
+inline bool pointer_down(canvas_pointer *p, canvas_pointer_button btn)
+{
+    return canvas_pointer_down(p, btn);
+}
+
+inline bool pointer_press(canvas_pointer *p, canvas_pointer_button btn)
+{
+    return canvas_pointer_pressed(p, btn);
+}
+
+inline bool pointer_up(canvas_pointer *p, canvas_pointer_button btn)
+{
+    return canvas_pointer_released(p, btn);
+}
+
+inline float pointer_vel(canvas_pointer *p)
+{
+    return canvas_pointer_velocity(p);
+}
+
+inline float pointer_dir(canvas_pointer *p)
+{
+    return canvas_pointer_direction(p);
 }
 
 #endif
@@ -1324,6 +1348,11 @@ canvas_data _canvas_data[MAX_CANVAS];
 #define CANVAS_WARN(...) printf("[CANVAS - WARN] " __VA_ARGS__)
 #define CANVAS_ERR(...) printf("[CANVAS - ERR] " __VA_ARGS__)
 #define CANVAS_DBG(...) printf("[CANVAS - DBG] " __VA_ARGS__)
+#else
+#define CANVAS_VERBOSE(...)
+#define CANVAS_WARN(...)
+#define CANVAS_ERR(...)
+#define CANVAS_DBG(...)
 #endif
 
 #define canvas_pointer_print(id) _canvas_pointer_print_impl(id, __FILE__, __LINE__)
@@ -2727,14 +2756,14 @@ static int vk_draw_frame(int window_id)
     uint32_t image_index;
     VkResult result = vk_info.vkAcquireNextImageKHR(vk_info.device, vk_win->swapchain, UINT64_MAX, vk_win->image_available_semaphores[vk_win->current_frame], VK_NULL_HANDLE, &image_index);
 
-    if (result == VK_ERROR_OUT_OF_DATE_KHR)
+    if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR)
     {
-        int recreate_result = vk_recreate_swapchain(window_id);
-        return recreate_result;
+        vk_win->needs_resize = true;
+        return CANVAS_OK;
     }
-    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    else if (present_result != VK_SUCCESS)
     {
-        CANVAS_ERR("failed to acquire swapchain image\n");
+        CANVAS_ERR("present swapchain failed\n");
         return CANVAS_FAIL;
     }
 
@@ -4346,12 +4375,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CLOSE:
     {
         canvas_info.canvas[window_index].close = true;
-        canvas_info.os_timed = false;
 
         if (canvas_info.os_timed)
         {
             KillTimer(hwnd, 1);
             timeEndPeriod(1);
+            canvas_info.os_timed = false;
         }
 
         return 0;
@@ -6237,6 +6266,81 @@ void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy)
     *dy = p->_samples[newest].y - p->_samples[prev].y;
 }
 
+int canvas_get_active_pointers(canvas_pointer **out)
+{
+    if (!out)
+        return 0;
+
+    int count = 0;
+    for (int i = 0; i < canvas_info.pointer_count; i++)
+    {
+        if (canvas_info.pointers[i].active)
+        {
+            out[count++] = &canvas_info.pointers[i];
+        }
+    }
+    return count;
+}
+
+float canvas_pointer_direction(canvas_pointer *p)
+{
+    if (!p)
+        return 0.0f;
+
+    int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
+    int oldest = p->_sample_index;
+
+    canvas_pointer_sample *s_new = &p->_samples[newest];
+    canvas_pointer_sample *s_old = &p->_samples[oldest];
+
+    int dx = s_new->x - s_old->x;
+    int dy = s_new->y - s_old->y;
+
+    return atan2f((float)dy, (float)dx);
+}
+
+void canvas_pointer_capture(int window_id)
+{
+    if (!canvas_info.canvas[window_id]._valid)
+        return;
+
+    canvas_pointer *p = canvas_get_primary_pointer(window_id);
+    p->captured = true;
+
+#if defined(_WIN32)
+    // SetCapture((HWND)canvas_info.canvas[window_id].window);
+#elif defined(__linux__)
+    if (!_canvas_using_wayland && x11.display)
+    {
+        x11.XGrabPointer(x11.display,
+                         (Window)canvas_info.canvas[window_id].window,
+                         True,
+                         ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                         GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+    }
+#endif
+}
+
+void canvas_pointer_release()
+{
+    for (int i = 0; i < canvas_info.pointer_count; i++)
+    {
+        if (canvas_info.pointers[i].captured)
+        {
+            canvas_info.pointers[i].captured = false;
+        }
+    }
+
+#if defined(_WIN32)
+    // ReleaseCapture();
+#elif defined(__linux__)
+    if (!_canvas_using_wayland && x11.display)
+    {
+        x11.XUngrabPointer(x11.display, CurrentTime);
+    }
+#endif
+}
+
 int _canvas_primary_display_index(void)
 {
     for (int i = 0; i < canvas_info.display_count; ++i)
@@ -6284,6 +6388,7 @@ int canvas_startup()
 
     return CANVAS_OK;
 }
+
 void canvas_main_loop()
 {
     canvas_time_update(&canvas_info.time);
@@ -6365,9 +6470,9 @@ int canvas_run(canvas_update_callback default_callback)
 // display:     -1 = primary display
 // x:           -1 = centered
 // y:           -1 = centered
-// width:       window width in pixels
-// height:      window height in pixels
-// title:       window title string
+// width:       -1 = keep size, window width in pixels
+// height:      -1 = keep size, window height in pixels
+// title:       NULL = keep title, window title string
 int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
 {
     CANVAS_VALID(window_id);
@@ -6384,8 +6489,12 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     }
 
     canvas_info.canvas[window_id].display = display;
-    canvas_info.canvas[window_id].width = width;
-    canvas_info.canvas[window_id].height = height;
+
+    if (width != -1)
+        canvas_info.canvas[window_id].width = width;
+
+    if (height != -1)
+        canvas_info.canvas[window_id].height = height;
 
     canvas_info.canvas[window_id].os_moved = false;
     canvas_info.canvas[window_id].os_resized = false;
@@ -6395,17 +6504,36 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 
     CANVAS_DISPLAY_BOUNDS(display);
 
-    int target_x = (x == -1) ? canvas_info.display[display].width / 2 - width / 2 : x;
-    int target_y = (y == -1) ? canvas_info.display[display].height / 2 - height / 2 : y;
+    int target_x = x;
+    int target_y = y;
 
-    if (title && strlen(title) > 0)
+    if (x == -1)
     {
-        strncpy(canvas_info.canvas[window_id].title, title, MAX_CANVAS_TITLE - 1);
-        canvas_info.canvas[window_id].title[MAX_CANVAS_TITLE - 1] = '\0';
+        int display_half = canvas_info.display[display].width / 2;
+        int window_half = width / 2;
+        target_x = display_half > window_half ? display_half - window_half : 0;
     }
-    else
+
+    if (y == -1)
     {
-        canvas_info.canvas[window_id].title[0] = '\0';
+        int display_half = canvas_info.display[display].height / 2;
+        int window_half = height / 2;
+        target_y = display_half > window_half ? display_half - window_half : 0;
+    }
+
+    if (title)
+    {
+        size_t len = strnlen(title, MAX_CANVAS_TITLE);
+        if (len > 0)
+        {
+            size_t copy_len = len < MAX_CANVAS_TITLE ? len : MAX_CANVAS_TITLE - 1;
+            memcpy(canvas_info.canvas[window_id].title, title, copy_len);
+            canvas_info.canvas[window_id].title[copy_len] = '\0';
+        }
+        else
+        {
+            canvas_info.canvas[window_id].title[0] = '\0';
+        }
     }
 
     return _canvas_set(window_id, display, target_x, target_y, width, height, title);

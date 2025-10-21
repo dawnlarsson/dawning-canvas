@@ -436,7 +436,7 @@ extern int _canvas_highest_refresh_rate;
 
 ## Logging
 
-Define `CANVAS_LOG` to disable all logging.
+Define `CANVAS_LOG` enable logging.
 
 Define `CANVAS_LOG_DEBUG` to enable verbose/warning/error/debug logs but keep info logs.
 
