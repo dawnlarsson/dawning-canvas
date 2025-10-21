@@ -608,6 +608,9 @@ canvas_context_type canvas_info = (canvas_context_type){0};
 
 canvas_pointer *canvas_get_primary_pointer(int window_id)
 {
+    if (canvas_info.pointer_count == 0)
+        canvas_info.pointer_count = 1;
+
     canvas_pointer *p = &canvas_info.pointers[0];
     if (!p->active)
     {
@@ -616,7 +619,6 @@ canvas_pointer *canvas_get_primary_pointer(int window_id)
         p->window_id = window_id;
         p->active = true;
         p->_sample_index = 0;
-        canvas_info.pointer_count = 1;
     }
     return p;
 }
@@ -6246,6 +6248,9 @@ canvas_pointer *canvas_get_pointer(int id)
 
 float canvas_pointer_velocity(canvas_pointer *p)
 {
+    if (!p)
+        return 0.0f;
+
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
     int oldest = p->_sample_index;
 
@@ -6264,6 +6269,9 @@ float canvas_pointer_velocity(canvas_pointer *p)
 
 void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy)
 {
+    if (!p)
+        return 0.0f;
+
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
     int prev = (newest - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
 
@@ -6310,6 +6318,10 @@ void canvas_pointer_capture(int window_id)
         return;
 
     canvas_pointer *p = canvas_get_primary_pointer(window_id);
+
+    if (!p)
+        return;
+
     p->captured = true;
 
 #if defined(_WIN32)
@@ -6515,14 +6527,14 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     if (x == -1)
     {
         int display_half = canvas_info.display[display].width / 2;
-        int window_half = width / 2;
+        int window_half = canvas_info.canvas[window_id].width / 2;
         target_x = display_half > window_half ? display_half - window_half : 0;
     }
 
     if (y == -1)
     {
         int display_half = canvas_info.display[display].height / 2;
-        int window_half = height / 2;
+        int window_half = canvas_info.canvas[window_id].height / 2;
         target_y = display_half > window_half ? display_half - window_half : 0;
     }
 
