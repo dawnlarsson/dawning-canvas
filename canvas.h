@@ -1119,6 +1119,11 @@ static struct
     unsigned long (*XRRGetOutputPrimary)(Display *, Window);
 } xrandr;
 
+#define None 0L
+#define ButtonPressMask (1L << 2)
+#define ButtonReleaseMask (1L << 3)
+#define PointerMotionMask (1L << 6)
+
 #define XA_CARDINAL ((Atom)6)
 #define PropModeReplace 0
 
@@ -2756,16 +2761,14 @@ static int vk_draw_frame(int window_id)
     uint32_t image_index;
     VkResult result = vk_info.vkAcquireNextImageKHR(vk_info.device, vk_win->swapchain, UINT64_MAX, vk_win->image_available_semaphores[vk_win->current_frame], VK_NULL_HANDLE, &image_index);
 
-    VkResult present_result = vk_info.vkQueuePresentKHR(vk_info.present_queue, &presentInfo);
-
-    if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR)
+    if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
-        vk_win->needs_resize = true;
-        return CANVAS_OK;
+        int recreate_result = vk_recreate_swapchain(window_id);
+        return recreate_result;
     }
-    else if (present_result != VK_SUCCESS)
+    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
-        CANVAS_ERR("present swapchain failed\n");
+        CANVAS_ERR("failed to acquire swapchain image\n");
         return CANVAS_FAIL;
     }
 
@@ -6316,9 +6319,9 @@ void canvas_pointer_capture(int window_id)
     {
         x11.XGrabPointer(x11.display,
                          (Window)canvas_info.canvas[window_id].window,
-                         True,
+                         true,
                          ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-                         GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+                         X11_GrabModeAsync, X11_GrabModeAsync, None, None, X11_CurrentTime);
     }
 #endif
 }
@@ -6338,7 +6341,7 @@ void canvas_pointer_release()
 #elif defined(__linux__)
     if (!_canvas_using_wayland && x11.display)
     {
-        x11.XUngrabPointer(x11.display, CurrentTime);
+        x11.XUngrabPointer(x11.display, X11_CurrentTime);
     }
 #endif
 }
