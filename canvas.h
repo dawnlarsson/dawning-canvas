@@ -6270,7 +6270,7 @@ float canvas_pointer_velocity(canvas_pointer *p)
 void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy)
 {
     if (!p)
-        return 0.0f;
+        return;
 
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
     int prev = (newest - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
