@@ -1,14 +1,4 @@
 <img width="1280" height="225" alt="Slide 16_9 - 25 (1)-min" src="https://github.com/user-attachments/assets/415053c3-17b1-4de2-8083-b78bdc06adcc" />
-<div align="center">
-  <a href="https://github.com/sponsors/dawnlarsson"><img src="https://github.com/user-attachments/assets/356d35b2-63b1-4b76-a588-5b9264381189"></a>
-  <a href="https://discord.gg/cxRvzUyzG8"><img src="https://github.com/user-attachments/assets/38bedda1-7578-4483-aa5b-f58b2422405e"></a>
-</div>
-<br>
-
-![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Platforms: Win/macOS/Linux](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-orange)
-![Backends: D3D12/Metal/Vulkan](https://img.shields.io/badge/backends-D3D12%20%7C%20Metal%20%7C%20Vulkan-purple)
-
 
 > [!CAUTION]
 > This repo is early, consider this in alpha
@@ -478,14 +468,6 @@ int main() {
     return 0;
 }
 ```
-
-## Support
-Did you know this effort has gone 100% out of my pocket?
-If you think this project speaks for itself, consider supporting on github sponsors to continue making
-projects like these a reality, open & free.
-
-Supporter or not, you can **always** reach me on <a href="https://discord.gg/cxRvzUyzG8">My Discord Server, my primary communication channel</a>
-Questions, feedback or support related to any of my projects, or if you need consulting.
 
 ## License
 Logos, Branding, Trademarks - Copyright Dawn Larsson 2022
