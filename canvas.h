@@ -547,12 +547,12 @@ inline bool canvas_key_released(int key)
 
 inline bool key_down(int key)
 {
-    return canvas_key_released(key);
+    return canvas_key_down(key);
 }
 
 inline bool key_press(int key)
 {
-    return canvas_key_released(key);
+    return canvas_key_pressed(key);
 }
 
 inline bool key_up(int key)
@@ -6332,11 +6332,8 @@ void canvas_main_loop()
         canvas_info.pointers[i].scroll_y = 0;
     }
 
-    for (int i = 0; i < 256; i++)
-    {
-        canvas_keyboard.keys_pressed[i] = false;
-        canvas_keyboard.keys_released[i] = false;
-    }
+    memset(canvas_keyboard.keys_pressed, 0, 256);
+    memset(canvas_keyboard.keys_released, 0, 256);
 }
 
 int canvas_exit()
