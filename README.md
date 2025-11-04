@@ -48,12 +48,12 @@ zig cc example/simple.c -I. -s -O3 -Qn -ldwmapi -ldxgi -ld3d12 && .\a.exe
 
 **MacOS**
 ```sh
-clang example/simple.c -framework Cocoa -framework QuartzCore -framework Metal
+clang example/simple.c -framework Cocoa -framework QuartzCore -framework Metal -I./
 ```
 
 **Linux**
 ```sh
-gcc example/simple.c -ldl -lm -o simple && ./simple
+gcc example/simple.c -ldl -lm -o simple -I./ && ./simple
 ```
 
 ## API Reference
