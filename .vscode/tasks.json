@@ -1,0 +1,31 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build-debug",
+            "type": "shell",
+            "command": "gcc",
+            "args": [
+                "example/simple.c",
+                "-ldl",
+                "-lm",
+                "-DCANVAS_LOG",
+                "-DCANVAS_LOG_DEBUG",
+                "-g",
+                "-O0",
+                "-ggdb",
+                "-o",
+                "simple",
+                "-I./"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "detail": "Build with debug symbols for GDB"
+        }
+    ]
+}

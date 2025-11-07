@@ -5112,7 +5112,7 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     {
         Window window = (Window)canvas_info.canvas[window_id].window;
 
-        if (title)
+        if (title && strcmp(canvas_info.canvas[window_id].title, title) != 0)
         {
             x11.XStoreName(x11.display, window, title);
             Atom net_wm_name = x11.XInternAtom(x11.display, "_NET_WM_NAME", 0);
