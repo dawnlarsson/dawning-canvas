@@ -980,6 +980,17 @@ static struct
     struct xdg_wm_base *xdg_wm_base;
 } wl;
 
+typedef struct
+{
+    int type;
+    Display *display;
+    unsigned long serial;
+    unsigned char error_code;
+    unsigned char request_code;
+    unsigned char minor_code;
+    XID resourceid;
+} XErrorEvent;
+
 static struct
 {
     canvas_library_handle library;
@@ -988,6 +999,9 @@ static struct
     unsigned long cursors[11];
 
     Display *(*XOpenDisplay)(const char *);
+    void (*XSetErrorHandler)(int (*)(Display *, XErrorEvent *));
+    void (*XGetErrorText)(Display *, int, char *, int);
+
     int (*XCloseDisplay)(Display *);
     Window (*XCreateSimpleWindow)(Display *, Window, int, int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long);
     int (*XDestroyWindow)(Display *, Window);
@@ -1799,14 +1813,15 @@ typedef struct
     VkCommandPool command_pool;
     VkCommandBuffer command_buffers[MAX_SWAPCHAIN_IMAGES];
 
-    VkSemaphore image_available_semaphores[MAX_FRAMES_IN_FLIGHT];
-    VkSemaphore render_finished_semaphores[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore image_available_semaphores[MAX_SWAPCHAIN_IMAGES];
+    VkSemaphore render_finished_semaphores[MAX_SWAPCHAIN_IMAGES];
     VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
     VkFence images_in_flight[MAX_SWAPCHAIN_IMAGES];
     uint32_t current_frame;
 
     VkRenderPass render_pass;
     bool needs_resize;
+    bool recreating_swapchain;
     bool initialized;
 } canvas_vulkan_window;
 
@@ -2575,32 +2590,36 @@ static int vk_create_sync_objects(int window_id)
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++)
     {
         VkResult result;
 
-        result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL, &vk_win->image_available_semaphores[i]);
+        result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL,
+                                           &vk_win->image_available_semaphores[i]);
         if (result != VK_SUCCESS)
         {
-            CANVAS_ERR("failed to create image available semaphore %d (result=%d)\n", i, result);
-            goto cleanup;
+            CANVAS_ERR("failed to create image available semaphore %u (result=%d)\n", i, result);
+            goto cleanup_semaphores;
         }
 
-        result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL, &vk_win->render_finished_semaphores[i]);
+        result = vk_info.vkCreateSemaphore(vk_info.device, &semaphore_info, NULL,
+                                           &vk_win->render_finished_semaphores[i]);
         if (result != VK_SUCCESS)
         {
-            CANVAS_ERR("failed to create render finished semaphore %d (result=%d)\n", i, result);
+            CANVAS_ERR("failed to create render finished semaphore %u (result=%d)\n", i, result);
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
-            goto cleanup;
+            goto cleanup_semaphores;
         }
+    }
 
-        result = vk_info.vkCreateFence(vk_info.device, &fence_info, NULL, &vk_win->in_flight_fences[i]);
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkResult result = vk_info.vkCreateFence(vk_info.device, &fence_info, NULL,
+                                                &vk_win->in_flight_fences[i]);
         if (result != VK_SUCCESS)
         {
             CANVAS_ERR("failed to create fence %d (result=%d)\n", i, result);
-            vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
-            vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
-            goto cleanup;
+            goto cleanup_fences;
         }
     }
 
@@ -2609,17 +2628,20 @@ static int vk_create_sync_objects(int window_id)
 
     return CANVAS_OK;
 
-cleanup:
+cleanup_fences:
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        if (vk_win->in_flight_fences[i])
+            vk_info.vkDestroyFence(vk_info.device, vk_win->in_flight_fences[i], NULL);
+    }
+
+cleanup_semaphores:
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++)
     {
         if (vk_win->image_available_semaphores[i])
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
-
         if (vk_win->render_finished_semaphores[i])
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
-
-        if (vk_win->in_flight_fences[i])
-            vk_info.vkDestroyFence(vk_info.device, vk_win->in_flight_fences[i], NULL);
     }
     return CANVAS_FAIL;
 }
@@ -2631,11 +2653,10 @@ static void vk_cleanup_swapchain(int window_id)
     if (!vk_win->initialized)
         return;
 
-    vk_info.vkDeviceWaitIdle(vk_info.device);
-
     if (vk_win->command_pool && vk_win->swapchain_image_count > 0)
     {
-        vk_info.vkFreeCommandBuffers(vk_info.device, vk_win->command_pool, vk_win->swapchain_image_count, vk_win->command_buffers);
+        vk_info.vkFreeCommandBuffers(vk_info.device, vk_win->command_pool,
+                                     vk_win->swapchain_image_count, vk_win->command_buffers);
 
         for (uint32_t i = 0; i < vk_win->swapchain_image_count; i++)
             vk_win->command_buffers[i] = VK_NULL_HANDLE;
@@ -2667,8 +2688,18 @@ static void vk_cleanup_swapchain(int window_id)
 
 static int vk_recreate_swapchain(int window_id)
 {
-    return 0;
-    vk_info.vkDeviceWaitIdle(vk_info.device);
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        if (vk_win->in_flight_fences[i] != VK_NULL_HANDLE)
+        {
+            vk_info.vkWaitForFences(vk_info.device, 1, &vk_win->in_flight_fences[i], VK_TRUE, UINT64_MAX);
+        }
+    }
+
+    vk_info.vkQueueWaitIdle(vk_info.graphics_queue);
+    vk_info.vkQueueWaitIdle(vk_info.present_queue);
 
     vk_cleanup_swapchain(window_id);
 
@@ -2694,7 +2725,8 @@ static int vk_recreate_swapchain(int window_id)
         return result;
     }
 
-    vk_windows[window_id].needs_resize = false;
+    vk_win->needs_resize = false;
+    vk_win->current_frame = 0;
 
     return CANVAS_OK;
 }
@@ -2750,10 +2782,8 @@ static int vk_draw_frame(int window_id)
     if (!vk_win->initialized)
         return CANVAS_OK;
 
-    if (vk_win->current_frame >= MAX_FRAMES_IN_FLIGHT)
-        vk_win->current_frame = 0;
-
-    VkFence current_fence = vk_win->in_flight_fences[vk_win->current_frame];
+    uint32_t frame_index = vk_win->current_frame % MAX_FRAMES_IN_FLIGHT;
+    VkFence current_fence = vk_win->in_flight_fences[frame_index];
 
     if (current_fence == VK_NULL_HANDLE)
         return CANVAS_FAIL;
@@ -2761,7 +2791,11 @@ static int vk_draw_frame(int window_id)
     vk_info.vkWaitForFences(vk_info.device, 1, &current_fence, VK_TRUE, UINT64_MAX);
 
     uint32_t image_index;
-    VkResult result = vk_info.vkAcquireNextImageKHR(vk_info.device, vk_win->swapchain, UINT64_MAX, vk_win->image_available_semaphores[vk_win->current_frame], VK_NULL_HANDLE, &image_index);
+
+    VkResult result = vk_info.vkAcquireNextImageKHR(
+        vk_info.device, vk_win->swapchain, UINT64_MAX,
+        vk_win->image_available_semaphores[frame_index],
+        VK_NULL_HANDLE, &image_index);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR)
     {
@@ -2782,17 +2816,21 @@ static int vk_draw_frame(int window_id)
         vk_info.vkWaitForFences(vk_info.device, 1, &vk_win->images_in_flight[image_index], VK_TRUE, UINT64_MAX);
     }
 
+    vk_info.vkResetFences(vk_info.device, 1, &current_fence);
     vk_win->images_in_flight[image_index] = current_fence;
 
     int record_result = vk_record_command_buffer(window_id, image_index);
 
     if (record_result != CANVAS_OK)
+    {
+        vk_win->images_in_flight[image_index] = VK_NULL_HANDLE;
         return record_result;
+    }
 
     VkSubmitInfo submit_info = {0};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore wait_semaphores[] = {vk_win->image_available_semaphores[vk_win->current_frame]};
+    VkSemaphore wait_semaphores[] = {vk_win->image_available_semaphores[frame_index]};
     VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     submit_info.waitSemaphoreCount = 1;
     submit_info.pWaitSemaphores = wait_semaphores;
@@ -2800,16 +2838,15 @@ static int vk_draw_frame(int window_id)
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &vk_win->command_buffers[image_index];
 
-    VkSemaphore signal_semaphores[] = {vk_win->render_finished_semaphores[vk_win->current_frame]};
+    VkSemaphore signal_semaphores[] = {vk_win->render_finished_semaphores[image_index]};
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = signal_semaphores;
 
-    vk_info.vkResetFences(vk_info.device, 1, &vk_win->in_flight_fences[vk_win->current_frame]);
-
-    result = vk_info.vkQueueSubmit(vk_info.graphics_queue, 1, &submit_info, vk_win->in_flight_fences[vk_win->current_frame]);
+    result = vk_info.vkQueueSubmit(vk_info.graphics_queue, 1, &submit_info, current_fence);
     if (result != VK_SUCCESS)
     {
         CANVAS_ERR("failed to submit draw command buffer\n");
+        vk_win->images_in_flight[image_index] = VK_NULL_HANDLE;
         return CANVAS_FAIL;
     }
 
@@ -2825,6 +2862,8 @@ static int vk_draw_frame(int window_id)
 
     result = vk_info.vkQueuePresentKHR(vk_info.present_queue, &present_info);
 
+    vk_win->current_frame = (vk_win->current_frame + 1);
+
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || vk_win->needs_resize)
     {
         vk_win->needs_resize = false;
@@ -2836,8 +2875,6 @@ static int vk_draw_frame(int window_id)
         CANVAS_ERR("failed to present swapchain image\n");
         return CANVAS_FAIL;
     }
-
-    vk_win->current_frame = (vk_win->current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
     return CANVAS_OK;
 }
@@ -2851,14 +2888,17 @@ static void vk_cleanup_window(int window_id)
 
     vk_info.vkDeviceWaitIdle(vk_info.device);
 
-    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++)
     {
         if (vk_win->image_available_semaphores[i])
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->image_available_semaphores[i], NULL);
 
         if (vk_win->render_finished_semaphores[i])
             vk_info.vkDestroySemaphore(vk_info.device, vk_win->render_finished_semaphores[i], NULL);
+    }
 
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
         if (vk_win->in_flight_fences[i])
             vk_info.vkDestroyFence(vk_info.device, vk_win->in_flight_fences[i], NULL);
     }
@@ -5105,6 +5145,12 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
     CANVAS_VALID(window_id);
     CANVAS_DISPLAY_BOUNDS(display);
 
+    if (width <= 0 || height <= 0)
+    {
+        CANVAS_ERR("invalid window dimensions: %dx%d\n", width, height);
+        return CANVAS_FAIL;
+    }
+
     if (_canvas_using_wayland)
     {
     }
@@ -5117,7 +5163,8 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
             x11.XStoreName(x11.display, window, title);
             Atom net_wm_name = x11.XInternAtom(x11.display, "_NET_WM_NAME", 0);
             Atom utf8_string = x11.XInternAtom(x11.display, "UTF8_STRING", 0);
-            x11.XChangeProperty(x11.display, window, net_wm_name, utf8_string, 8, 0, (unsigned char *)title, strlen(title));
+            x11.XChangeProperty(x11.display, window, net_wm_name, utf8_string, 8, 0,
+                                (unsigned char *)title, strlen(title));
         }
 
         _canvas_data[window_id].client_set = true;
@@ -5125,7 +5172,15 @@ int _canvas_set(int window_id, int display, int x, int y, int width, int height,
         int global_x = canvas_info.display[display].x + x;
         int global_y = canvas_info.display[display].y + y;
 
+        if (global_x < -32768 || global_x > 32767 || global_y < -32768 || global_y > 32767)
+        {
+            CANVAS_ERR("window position out of range: %d,%d\n", global_x, global_y);
+            return CANVAS_FAIL;
+        }
+
         x11.XMoveResizeWindow(x11.display, window, global_x, global_y, width, height);
+
+        x11.XFlush(x11.display);
     }
 
     canvas_info.canvas[window_id].os_moved = false;
@@ -5546,6 +5601,19 @@ static void _canvas_set_active_cursor(int window_id, canvas_cursor_type cursor)
     x11.XFlush(x11.display);
 }
 
+static int x11_error_handler(Display *display, XErrorEvent *error)
+{
+    char error_text[256];
+    x11.XGetErrorText(display, error->error_code, error_text, sizeof(error_text));
+
+    CANVAS_ERR("X11 Error: %s\n", error_text);
+    CANVAS_ERR("  Request code: %d\n", error->request_code);
+    CANVAS_ERR("  Minor code: %d\n", error->minor_code);
+    CANVAS_ERR("  Resource ID: %lu\n", error->resourceid);
+
+    return 0;
+}
+
 int _canvas_init_x11()
 {
 
@@ -5567,6 +5635,11 @@ int _canvas_init_x11()
         CANVAS_ERR("open x11 display\n");
         return CANVAS_ERR_GET_DISPLAY;
     }
+
+    LOAD_X11(XSetErrorHandler);
+    LOAD_X11(XGetErrorText);
+
+    x11.XSetErrorHandler(x11_error_handler);
 
     LOAD_X11(XCloseDisplay);
     LOAD_X11(XCreateSimpleWindow);

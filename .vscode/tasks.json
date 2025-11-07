@@ -11,9 +11,18 @@
                 "-lm",
                 "-DCANVAS_LOG",
                 "-DCANVAS_LOG_DEBUG",
-                "-g",
+                "-g3",
                 "-O0",
                 "-ggdb",
+                "-fno-omit-frame-pointer",
+                "-fsanitize=address",
+                "-fsanitize=undefined",
+                "-fsanitize=leak",
+                "-fstack-protector-all",
+                "-D_FORTIFY_SOURCE=2",
+                "-Wall",
+                "-Wextra",
+                "-pedantic",
                 "-o",
                 "simple",
                 "-I./"
@@ -25,7 +34,7 @@
             "problemMatcher": [
                 "$gcc"
             ],
-            "detail": "Build with debug symbols for GDB"
+            "detail": "Aggressive debug build with sanitizers"
         }
     ]
 }
