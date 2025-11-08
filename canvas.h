@@ -198,6 +198,7 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
 
 int canvas_minimize(int window);
 int canvas_maximize(int window);
+int canvas_fullscreen(int window);
 int canvas_restore(int window);
 int canvas_close(int window);
 
@@ -238,7 +239,7 @@ typedef struct
 {
     int index, x, y, width, height, display;
     bool resize, close, titlebar, os_moved, os_resized;
-    bool minimized, maximized, vsync, _valid;
+    bool minimized, maximized, fullscreen, vsync, _valid;
     float clear[4];
     char title[MAX_CANVAS_TITLE];
     canvas_window_handle window;
@@ -677,6 +678,8 @@ typedef struct
     objc_id view;
     objc_id layer;
     double scale;
+    int saved_x, saved_y, saved_width, saved_height;
+    unsigned long saved_style_mask;
 } canvas_data;
 
 typedef struct
@@ -937,6 +940,8 @@ typedef struct
     IDXGISwapChain3 *swapChain;
     ID3D12Resource *backBuffers[2];
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
+    int saved_x, saved_y, saved_width, saved_height;
+    DWORD saved_style;
 } canvas_data;
 
 canvas_data _canvas_data[MAX_CANVAS];
@@ -1266,6 +1271,7 @@ typedef struct
     int last_button_press_y;
 
     bool client_set;
+    int saved_x, saved_y, saved_width, saved_height;
 } canvas_data;
 
 typedef struct
@@ -3076,6 +3082,44 @@ int canvas_restore(int window_id)
     {
         msg_void_id(window, sel_c("zoom:"), NULL);
     }
+    else if (canvas_info.canvas[window_id].fullscreen)
+    {
+        msg_void_id(window, sel_c("toggleFullScreen:"), NULL);
+    }
+
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].fullscreen = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_fullscreen(int window_id)
+{
+    CANVAS_VALID(window_id);
+
+    objc_id window = canvas_info.canvas[window_id].window;
+    if (!window)
+    {
+        CANVAS_ERR("no window for fullscreen: %d\n", window_id);
+        return CANVAS_ERR_GET_WINDOW;
+    }
+
+    unsigned long style_mask = msg_ulong(window, "styleMask");
+    bool is_fullscreen = (style_mask & (1 << 14)) != 0; // NSWindowStyleMaskFullScreen
+
+    if (!is_fullscreen)
+    {
+        _CGRect frame = msg_rect(window, "frame");
+        _canvas_data[window_id].saved_x = (int)frame.x;
+        _canvas_data[window_id].saved_y = (int)frame.y;
+        _canvas_data[window_id].saved_width = (int)frame.w;
+        _canvas_data[window_id].saved_height = (int)frame.h;
+        _canvas_data[window_id].saved_style_mask = style_mask;
+
+        msg_void_id(window, sel_c("toggleFullScreen:"), NULL);
+        canvas_info.canvas[window_id].fullscreen = true;
+    }
 
     canvas_info.canvas[window_id].minimized = false;
     canvas_info.canvas[window_id].maximized = false;
@@ -3425,6 +3469,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     canvas_info.canvas[window_id].window = window;
     canvas_info.canvas[window_id].resize = false;
     canvas_info.canvas[window_id].index = window_id;
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].fullscreen = false;
     canvas_info.canvas[window_id]._valid = true;
 
     return window_id;
@@ -4061,7 +4108,66 @@ int canvas_restore(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    ShowWindow(window, SW_RESTORE);
+    if (canvas_info.canvas[window_id].fullscreen)
+    {
+        SetWindowLong(window, GWL_STYLE, _canvas_data[window_id].saved_style);
+        SetWindowPos(window, NULL,
+                     _canvas_data[window_id].saved_x,
+                     _canvas_data[window_id].saved_y,
+                     _canvas_data[window_id].saved_width,
+                     _canvas_data[window_id].saved_height,
+                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowWindow(window, SW_NORMAL);
+    }
+    else
+    {
+        ShowWindow(window, SW_RESTORE);
+    }
+
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].fullscreen = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_fullscreen(int window_id)
+{
+    CANVAS_VALID(window_id);
+
+    HWND window = (HWND)canvas_info.canvas[window_id].window;
+    if (!window)
+    {
+        CANVAS_ERR("no window for fullscreen: %d\n", window_id);
+        return CANVAS_ERR_GET_WINDOW;
+    }
+
+    if (!canvas_info.canvas[window_id].fullscreen)
+    {
+        RECT rect;
+        GetWindowRect(window, &rect);
+        _canvas_data[window_id].saved_x = rect.left;
+        _canvas_data[window_id].saved_y = rect.top;
+        _canvas_data[window_id].saved_width = rect.right - rect.left;
+        _canvas_data[window_id].saved_height = rect.bottom - rect.top;
+        _canvas_data[window_id].saved_style = GetWindowLong(window, GWL_STYLE);
+
+        HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = {sizeof(mi)};
+        GetMonitorInfo(monitor, &mi);
+
+        SetWindowLong(window, GWL_STYLE, WS_VISIBLE | WS_POPUP);
+        SetWindowPos(window, HWND_TOP,
+                     mi.rcMonitor.left,
+                     mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        ShowWindow(window, SW_MAXIMIZE);
+
+        canvas_info.canvas[window_id].fullscreen = true;
+    }
+
     canvas_info.canvas[window_id].minimized = false;
     canvas_info.canvas[window_id].maximized = false;
 
@@ -4646,6 +4752,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     canvas_info.canvas[window_id].window = window;
     canvas_info.canvas[window_id].resize = false;
     canvas_info.canvas[window_id].titlebar = false;
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].fullscreen = false;
     canvas_info.canvas[window_id]._valid = true;
 
     return window_id;
@@ -5317,8 +5426,93 @@ int canvas_restore(int window_id)
             x11.XSendEvent(x11.display, x11.XRootWindow(x11.display, screen),
                            0, (1L << 20) | (1L << 19), (XEvent *)&ev);
         }
+        else if (canvas_info.canvas[window_id].fullscreen)
+        {
+            Atom wm_state = x11.XInternAtom(x11.display, "_NET_WM_STATE", 0);
+            Atom fullscreen = x11.XInternAtom(x11.display, "_NET_WM_STATE_FULLSCREEN", 0);
+
+            XClientMessageEvent ev = {0};
+            ev.type = 33;
+            ev.window = window;
+            ev.message_type = wm_state;
+            ev.format = 32;
+            ev.data.l[0] = 0; // _NET_WM_STATE_REMOVE
+            ev.data.l[1] = fullscreen;
+            ev.data.l[2] = 0;
+            ev.data.l[3] = 1;
+
+            x11.XSendEvent(x11.display, x11.XRootWindow(x11.display, screen), 0, (1L << 20) | (1L << 19), (XEvent *)&ev);
+
+            x11.XMoveResizeWindow(x11.display, window,
+                                  _canvas_data[window_id].saved_x,
+                                  _canvas_data[window_id].saved_y,
+                                  _canvas_data[window_id].saved_width,
+                                  _canvas_data[window_id].saved_height);
+        }
 
         x11.XFlush(x11.display);
+    }
+
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].fullscreen = false;
+
+    return CANVAS_OK;
+}
+
+int canvas_fullscreen(int window_id)
+{
+    CANVAS_VALID(window_id);
+
+    if (_canvas_using_wayland)
+    {
+        // TODO: Wayland fullscreen support
+        CANVAS_WARN("Wayland fullscreen not yet implemented\n");
+        return CANVAS_OK;
+    }
+    else
+    {
+        if (!x11.display)
+        {
+            CANVAS_ERR("no display connection\n");
+            return CANVAS_ERR_GET_DISPLAY;
+        }
+
+        Window window = (Window)canvas_info.canvas[window_id].window;
+        if (!window)
+        {
+            CANVAS_ERR("no window for fullscreen: %d\n", window_id);
+            return CANVAS_ERR_GET_WINDOW;
+        }
+
+        if (!canvas_info.canvas[window_id].fullscreen)
+        {
+            XWindowAttributes attrs;
+            x11.XGetWindowAttributes(x11.display, window, &attrs);
+            _canvas_data[window_id].saved_x = attrs.x;
+            _canvas_data[window_id].saved_y = attrs.y;
+            _canvas_data[window_id].saved_width = attrs.width;
+            _canvas_data[window_id].saved_height = attrs.height;
+
+            int screen = x11.XDefaultScreen(x11.display);
+            Atom wm_state = x11.XInternAtom(x11.display, "_NET_WM_STATE", 0);
+            Atom fullscreen = x11.XInternAtom(x11.display, "_NET_WM_STATE_FULLSCREEN", 0);
+
+            XClientMessageEvent ev = {0};
+            ev.type = 33;
+            ev.window = window;
+            ev.message_type = wm_state;
+            ev.format = 32;
+            ev.data.l[0] = 1; // _NET_WM_STATE_ADD
+            ev.data.l[1] = fullscreen;
+            ev.data.l[2] = 0;
+            ev.data.l[3] = 1;
+
+            x11.XSendEvent(x11.display, x11.XRootWindow(x11.display, screen), 0, (1L << 20) | (1L << 19), (XEvent *)&ev);
+            x11.XFlush(x11.display);
+
+            canvas_info.canvas[window_id].fullscreen = true;
+        }
     }
 
     canvas_info.canvas[window_id].minimized = false;
@@ -5667,6 +5861,9 @@ int _canvas_window(int x, int y, int width, int height, const char *title)
     canvas_info.canvas[window_id].resize = false;
     canvas_info.canvas[window_id].index = window_id;
     canvas_info.canvas[window_id].titlebar = false;
+    canvas_info.canvas[window_id].minimized = false;
+    canvas_info.canvas[window_id].maximized = false;
+    canvas_info.canvas[window_id].fullscreen = false;
     canvas_info.canvas[window_id]._valid = true;
 
     return window_id;
