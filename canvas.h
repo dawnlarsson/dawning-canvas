@@ -226,6 +226,16 @@ int _canvas_primary_display_index();
 
 typedef struct
 {
+    float m[16];
+} canvas_mat4; // Column-major 4x4 matrix
+
+typedef struct
+{
+    float x, y, z;
+} canvas_vec3;
+
+typedef struct
+{
     int index, x, y, width, height, display;
     bool resize, close, titlebar, os_moved, os_resized;
     bool minimized, maximized, vsync, _valid;
@@ -235,6 +245,10 @@ typedef struct
     canvas_update_callback update;
     canvas_time_data time;
     canvas_cursor_type cursor, active_cursor;
+
+    canvas_mat4 view_matrix;
+    canvas_mat4 projection_matrix;
+    void *depth_texture;
 } canvas_type;
 
 typedef struct
@@ -3445,7 +3459,7 @@ int _canvas_gpu_new_window(int window_id)
 
     msg_void_id(layer, "setDevice:", canvas_macos.device);
     msg_void_long(layer, "setPixelFormat:", MTLPixelFormatBGRA8Unorm);
-    msg_void_bool(layer, "setFramebufferOnly:", true);
+    msg_void_bool(layer, "setFramebufferOnly:", false); // false for depth
     msg_void_bool(layer, "setAllowsNextDrawableTimeout:", false);
 
     double scale = 1.0;
@@ -3460,6 +3474,34 @@ int _canvas_gpu_new_window(int window_id)
     _canvas_data[window_id].view = view;
     _canvas_data[window_id].layer = layer;
     _canvas_data[window_id].scale = scale;
+
+    // depth texture
+    _CGRect bounds = msg_rect(view, "bounds");
+    int width = (int)(bounds.w * scale);
+    int height = (int)(bounds.h * scale);
+
+    objc_id depthDescriptor = msg_id(cls("MTLTextureDescriptor"), "alloc");
+    depthDescriptor = msg_id(depthDescriptor, "init");
+
+    msg_void_long(depthDescriptor, "setTextureType:", 2);   // MTLTextureType2D
+    msg_void_long(depthDescriptor, "setPixelFormat:", 252); // MTLPixelFormatDepth32Float
+    msg_void_long(depthDescriptor, "setWidth:", (long)width);
+    msg_void_long(depthDescriptor, "setHeight:", (long)height);
+    msg_void_long(depthDescriptor, "setDepth:", 1);
+    msg_void_long(depthDescriptor, "setMipmapLevelCount:", 1);
+    msg_void_long(depthDescriptor, "setUsage:", 4);       // MTLTextureUsageRenderTarget
+    msg_void_long(depthDescriptor, "setStorageMode:", 2); // MTLStorageModePrivate
+
+    objc_id depthTexture = msg_id_id(canvas_macos.device, "newTextureWithDescriptor:", depthDescriptor);
+    msg_void(depthDescriptor, "release");
+
+    if (!depthTexture)
+    {
+        CANVAS_ERR("failed to create depth texture for window: %d\n", window_id);
+        return CANVAS_ERR_GET_GPU;
+    }
+
+    canvas_info.canvas[window_id].depth_texture = depthTexture;
 
     return CANVAS_OK;
 }
@@ -4838,7 +4880,6 @@ int _canvas_gpu_new_window(int window_id)
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     canvas_win32.rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(canvas_win32.rtvHeap, &rtvHandle);
-
     rtvHandle.ptr += window_id * 2 * canvas_win32.rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
@@ -4863,6 +4904,43 @@ int _canvas_gpu_new_window(int window_id)
             rtvHandle);
         rtvHandle.ptr += canvas_win32.rtvDescriptorSize;
     }
+
+    // Create depth stencil texture
+    D3D12_HEAP_PROPERTIES depthHeapProps = {0};
+    depthHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC depthDesc = {0};
+    depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    depthDesc.Width = rect.right - rect.left;
+    depthDesc.Height = rect.bottom - rect.top;
+    depthDesc.DepthOrArraySize = 1;
+    depthDesc.MipLevels = 1;
+    depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE depthClearValue = {0};
+    depthClearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    depthClearValue.DepthStencil.Depth = 1.0f;
+
+    ID3D12Resource *depthTexture;
+    result = canvas_win32.device->lpVtbl->CreateCommittedResource(
+        canvas_win32.device,
+        &depthHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &depthDesc,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        &depthClearValue,
+        &IID_ID3D12Resource,
+        (void **)&depthTexture);
+
+    if (FAILED(result))
+    {
+        CANVAS_ERR("failed to create depth texture (HRESULT: 0x%08lX)\n", result);
+        return CANVAS_ERR_GET_GPU;
+    }
+
+    canvas_info.canvas[window_id].depth_texture = depthTexture;
 
     return CANVAS_OK;
 }
