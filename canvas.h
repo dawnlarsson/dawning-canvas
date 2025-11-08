@@ -136,7 +136,7 @@ typedef enum
 
 typedef struct
 {
-    int x, y;
+    int64_t x, y;
     double time;
 } canvas_pointer_sample;
 
@@ -148,8 +148,8 @@ typedef struct
     int window_id;            // Which window owns this pointer
 
     // Position
-    int x, y;               // Window-relative coordinates
-    int screen_x, screen_y; // Screen-relative coordinates
+    int64_t x, y;               // Window-relative coordinates
+    int64_t screen_x, screen_y; // Screen-relative coordinates
     int display;
 
     // State
@@ -189,12 +189,12 @@ void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy); // Movement sinc
 void canvas_pointer_capture(int window_id);
 void canvas_pointer_release();
 
-int canvas(int x, int y, int width, int height, const char *title);
-int canvas_window(int x, int y, int width, int height, const char *title);
+int canvas(int64_t x, int64_t y, int64_t width, int64_t height, const char *title);
+int canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title);
 
 int canvas_startup();
 int canvas_color(int window, const float color[4]);
-int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title);
+int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title);
 
 int canvas_minimize(int window);
 int canvas_maximize(int window);
@@ -219,7 +219,7 @@ int canvas_cursor(int window_id, canvas_cursor_type cursor);
 void canvas_main_loop();
 int _canvas_platform();
 int _canvas_update();
-int _canvas_window(int x, int y, int width, int height, const char *title);
+int _canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title);
 int _canvas_gpu_init();
 int _canvas_gpu_new_window(int window_id);
 int _canvas_window_resize(int window_id);
@@ -237,9 +237,12 @@ typedef struct
 
 typedef struct
 {
-    int index, x, y, width, height, display;
+    int index, display;
+    int64_t x, y, width, height;
+
     bool resize, close, titlebar, os_moved, os_resized;
     bool minimized, maximized, fullscreen, vsync, _valid;
+
     float clear[4];
     char title[MAX_CANVAS_TITLE];
     canvas_window_handle window;
@@ -255,7 +258,8 @@ typedef struct
 typedef struct
 {
     bool primary;
-    int x, y, width, height, scale;
+    int64_t x, y, width, height;
+    float scale;
     int refresh_rate;
 } canvas_display;
 
@@ -271,6 +275,7 @@ typedef struct
 #define CANVAS_ERR_GET_WINDOW -34
 #define CANVAS_ERR_GET_GPU -35
 #define CANVAS_ERR_GET_PLATFORM -36
+#define CANVAS_ERR_INVALID_SIZE -37
 
 typedef enum KEY
 {
@@ -3200,7 +3205,7 @@ int _canvas_close(int window_id)
     return CANVAS_OK;
 }
 
-int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     CANVAS_BOUNDS(window_id);
 
@@ -3443,7 +3448,7 @@ int _canvas_platform()
     return CANVAS_OK;
 }
 
-int _canvas_window(int x, int y, int width, int height, const char *title)
+int _canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     _post_init();
     canvas_startup();
@@ -4177,7 +4182,7 @@ int _canvas_close(int window_id)
     return CANVAS_OK;
 }
 
-int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     CANVAS_BOUNDS(window_id);
 
@@ -4700,7 +4705,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-int _canvas_window(int x, int y, int width, int height, const char *title)
+int _canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     canvas_startup();
 
@@ -5525,7 +5530,7 @@ int _canvas_close(int window_id)
     return CANVAS_OK;
 }
 
-int _canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     CANVAS_VALID(window_id);
     CANVAS_DISPLAY_BOUNDS(display);
@@ -5755,7 +5760,7 @@ void _canvas_start_wm_move_resize(int window_id, int x_root, int y_root, int act
     x11.XFlush(x11.display);
 }
 
-int _canvas_window(int x, int y, int width, int height, const char *title)
+int _canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     canvas_startup();
 
@@ -6972,7 +6977,7 @@ int canvas_run(canvas_update_callback default_callback)
 // width:       -1 = keep size, window width in pixels
 // height:      -1 = keep size, window height in pixels
 // title:       NULL = keep title, window title string
-int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     CANVAS_VALID(window_id);
 
@@ -6985,6 +6990,12 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     if (display < 0 || display >= canvas_info.display_count)
     {
         display = _canvas_primary_display_index();
+    }
+
+    if (width == 0 || height == 0)
+    {
+        CANVAS_WARN("invalid window size\n");
+        return CANVAS_ERR_INVALID_SIZE;
     }
 
     canvas_info.canvas[window_id].display = display;
@@ -7038,7 +7049,7 @@ int canvas_set(int window_id, int display, int x, int y, int width, int height, 
     return _canvas_set(window_id, display, target_x, target_y, width, height, title);
 }
 
-int canvas_window(int x, int y, int width, int height, const char *title)
+int canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     int result = _canvas_window(x, y, width, height, title);
 
@@ -7064,7 +7075,7 @@ int canvas_window(int x, int y, int width, int height, const char *title)
     return result;
 }
 
-int canvas(int x, int y, int width, int height, const char *title)
+int canvas(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     int result = _canvas_gpu_init();
     if (result != CANVAS_OK)

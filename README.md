@@ -62,7 +62,7 @@ gcc example/simple.c -ldl -lm -o simple -I./ && ./simple
 
 #### canvas
 ```c
-int canvas(int x, int y, int width, int height, const char *title)
+int canvas(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 ```
 Creates a canvas with full rendering backend setup. Returns the window ID.
 - The platform's rendering backend is automatically initialized on first canvas creation
@@ -70,7 +70,7 @@ Creates a canvas with full rendering backend setup. Returns the window ID.
 
 #### canvas_window
 ```c
-int canvas_window(int x, int y, int width, int height, const char *title)
+int canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 ```
 Creates a raw OS window without any rendering setup. Returns the window ID.
 - Use this if you don't need the built-in rendering backend
@@ -80,7 +80,7 @@ Creates a raw OS window without any rendering setup. Returns the window ID.
 
 #### canvas_set
 ```c
-int canvas_set(int window_id, int display, int x, int y, int width, int height, const char *title)
+int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 ```
 Changes window position, size, display, and title.
 - `display = -1` → primary display
@@ -157,8 +157,8 @@ typedef struct {
     int window_id;            // Which window owns this pointer
     
     // Position
-    int x, y;                 // Window-relative coordinates
-    int screen_x, screen_y;   // Screen-relative coordinates
+    int64_t x, y;                 // Window-relative coordinates
+    int64_t screen_x, screen_y;   // Screen-relative coordinates
     int display;              // Display index
     
     // State
@@ -369,8 +369,8 @@ Each window tracks its state in the `canvas_type` structure:
 ```c
 typedef struct {
     int index;           // Window ID
-    int x, y;           // Position
-    int width, height;  // Size
+    int64_t x, y;           // Position
+    int64_t width, height;  // Size
     int display;        // Display index
     bool resize;        // Needs resize
     bool close;         // Close requested
@@ -399,8 +399,8 @@ Query display information:
 ```c
 typedef struct {
     bool primary;
-    int x, y;
-    int width, height;
+    int64_t x, y;
+    int64_t width, height;
     int refresh_rate;
 } canvas_display;
 
