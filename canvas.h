@@ -885,6 +885,7 @@ static inline _MTLClearColor make_clear_color(float r, float g, float b, float a
 }
 
 static const char *_cursor_selector_names[] = {
+    [CANVAS_CURSOR_HIDDEN] = NULL,
     [CANVAS_CURSOR_ARROW] = "arrowCursor",
     [CANVAS_CURSOR_TEXT] = "IBeamCursor",
     [CANVAS_CURSOR_CROSSHAIR] = "crosshairCursor",
@@ -1893,6 +1894,7 @@ static bool vk_check_validation_layers()
     if (!available_layers)
     {
         CANVAS_WARN("failed to allocate memory for layer properties\n");
+        free(available_layers);
         return false;
     }
 
@@ -3198,6 +3200,12 @@ int _canvas_close(int window_id)
     _canvas_data[window_id].layer = NULL;
     _canvas_data[window_id].view = NULL;
     _canvas_data[window_id].scale = 0.0;
+
+    if (_canvas_data[window_id].layer)
+    {
+        msg_void(_canvas_data[window_id].layer, "release");
+        _canvas_data[window_id].layer = NULL;
+    }
 
     msg_void(window, "close");
     msg_void(window, "release");
@@ -5526,6 +5534,10 @@ int _canvas_close(int window_id)
         x11.XDestroyWindow(x11.display, window);
         x11.XFlush(x11.display);
     }
+
+    _canvas_data[window_id].last_button_press_time = 0;
+    _canvas_data[window_id].last_button_press_x = 0;
+    _canvas_data[window_id].last_button_press_y = 0;
 
     return CANVAS_OK;
 }
