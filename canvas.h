@@ -181,9 +181,9 @@ bool canvas_pointer_pressed(canvas_pointer *p, canvas_pointer_button btn);
 bool canvas_pointer_released(canvas_pointer *p, canvas_pointer_button btn);
 
 // Derived motion data
-float canvas_pointer_velocity(canvas_pointer *p);               // pixels/sec
-float canvas_pointer_direction(canvas_pointer *p);              // radians or degrees
-void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy); // Movement since last frame
+float canvas_pointer_velocity(canvas_pointer *p);                       // pixels/sec
+float canvas_pointer_direction(canvas_pointer *p);                      // radians or degrees
+void canvas_pointer_delta(canvas_pointer *p, int64_t *dx, int64_t *dy); // Movement since last frame
 
 // Capture/lock
 void canvas_pointer_capture(int window_id);
@@ -4097,10 +4097,10 @@ int canvas_restore(int window_id)
     {
         SetWindowLong(window, GWL_STYLE, _canvas_data[window_id].saved_style);
         SetWindowPos(window, NULL,
-                     _canvas_data[window_id].saved_x,
-                     _canvas_data[window_id].saved_y,
-                     _canvas_data[window_id].saved_width,
-                     _canvas_data[window_id].saved_height,
+                     (int)_canvas_data[window_id].saved_x,
+                     (int)_canvas_data[window_id].saved_y,
+                     (unsigned int)_canvas_data[window_id].saved_width,
+                     (unsigned int)_canvas_data[window_id].saved_height,
                      SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
         ShowWindow(window, SW_NORMAL);
     }
@@ -5429,10 +5429,10 @@ int canvas_restore(int window_id)
             x11.XSendEvent(x11.display, x11.XRootWindow(x11.display, screen), 0, (1L << 20) | (1L << 19), (XEvent *)&ev);
 
             x11.XMoveResizeWindow(x11.display, window,
-                                  _canvas_data[window_id].saved_x,
-                                  _canvas_data[window_id].saved_y,
-                                  _canvas_data[window_id].saved_width,
-                                  _canvas_data[window_id].saved_height);
+                                  (int)_canvas_data[window_id].saved_x,
+                                  (int)_canvas_data[window_id].saved_y,
+                                  (unsigned int)_canvas_data[window_id].saved_width,
+                                  (unsigned int)_canvas_data[window_id].saved_height);
         }
 
         x11.XFlush(x11.display);
@@ -5568,7 +5568,9 @@ int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width,
             return CANVAS_FAIL;
         }
 
-        x11.XMoveResizeWindow(x11.display, window, global_x, global_y, width, height);
+        x11.XMoveResizeWindow(x11.display, window,
+                              (int)global_x, (int)global_y,
+                              (unsigned int)width, (unsigned int)height);
 
         x11.XFlush(x11.display);
     }
@@ -6745,16 +6747,17 @@ float canvas_pointer_velocity(canvas_pointer *p)
     canvas_pointer_sample *s_old = &p->_samples[oldest];
 
     double dt = s_new->time - s_old->time;
+
     if (dt < 0.001)
         return 0.0f;
 
-    int dx = s_new->x - s_old->x;
-    int dy = s_new->y - s_old->y;
+    int64_t dx = s_new->x - s_old->x;
+    int64_t dy = s_new->y - s_old->y;
 
-    return sqrtf((float)(dx * dx + dy * dy)) / (float)dt;
+    return (float)(sqrt((double)(dx * dx + dy * dy)) / dt);
 }
 
-void canvas_pointer_delta(canvas_pointer *p, int *dx, int *dy)
+void canvas_pointer_delta(canvas_pointer *p, int64_t *dx, int64_t *dy)
 {
     if (!p)
         return;
