@@ -2380,6 +2380,30 @@ static void vk_cleanup_swapchain_support_details(SwapchainSupportDetails *detail
         free(details->present_modes);
 }
 
+static VkExtent2D vk_choose_swap_extent(const VkSurfaceCapabilitiesKHR *capabilities, int window_id)
+{
+    if (capabilities->currentExtent.width != UINT32_MAX)
+        return capabilities->currentExtent;
+
+    VkExtent2D actual_extent = {
+        .width = (uint32_t)canvas_info.canvas[window_id].width,
+        .height = (uint32_t)canvas_info.canvas[window_id].height};
+
+    actual_extent.width = actual_extent.width < capabilities->minImageExtent.width
+                              ? capabilities->minImageExtent.width
+                              : (actual_extent.width > capabilities->maxImageExtent.width
+                                     ? capabilities->maxImageExtent.width
+                                     : actual_extent.width);
+
+    actual_extent.height = actual_extent.height < capabilities->minImageExtent.height
+                               ? capabilities->minImageExtent.height
+                               : (actual_extent.height > capabilities->maxImageExtent.height
+                                      ? capabilities->maxImageExtent.height
+                                      : actual_extent.height);
+
+    return actual_extent;
+}
+
 static int vk_create_swapchain(int window_id)
 {
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
@@ -2423,7 +2447,9 @@ static int vk_create_swapchain(int window_id)
         if (support.present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
             present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 
-    VkExtent2D extent = {.width = (uint32_t)canvas_info.canvas[window_id].width, .height = (uint32_t)canvas_info.canvas[window_id].height};
+    VkExtent2D extent = vk_choose_swap_extent(&support.capabilities, window_id);
+    canvas_info.canvas[window_id].width = (int)extent.width;
+    canvas_info.canvas[window_id].height = (int)extent.height;
 
     uint32_t image_count = support.capabilities.minImageCount + 1;
 
@@ -6308,12 +6334,33 @@ int _canvas_update()
                 canvas_info.canvas[window_id].x = xce->x;
                 canvas_info.canvas[window_id].y = xce->y;
 
-                if (canvas_info.canvas[window_id].width != xce->width ||
-                    canvas_info.canvas[window_id].height != xce->height)
+                bool size_changed = (canvas_info.canvas[window_id].width != xce->width ||
+                                     canvas_info.canvas[window_id].height != xce->height);
+
+                if (size_changed)
+                {
+                    canvas_info.canvas[window_id].width = xce->width;
+                    canvas_info.canvas[window_id].height = xce->height;
+                    canvas_info.canvas[window_id].resize = true;
                     canvas_info.canvas[window_id].os_resized = true;
 
-                canvas_info.canvas[window_id].width = xce->width;
-                canvas_info.canvas[window_id].height = xce->height;
+                    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+                    if (vk_win->initialized)
+                    {
+                        vk_win->needs_resize = true;
+
+                        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+                        {
+                            if (vk_win->in_flight_fences[i] != VK_NULL_HANDLE)
+                            {
+                                vk_info.vkWaitForFences(vk_info.device, 1,
+                                                        &vk_win->in_flight_fences[i], VK_TRUE, UINT64_MAX);
+                            }
+                        }
+
+                        vk_recreate_swapchain(window_id);
+                    }
+                }
 
                 break;
             }
