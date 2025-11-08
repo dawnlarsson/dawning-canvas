@@ -1787,6 +1787,15 @@ static struct
     PFN_vkCmdEndRenderPass vkCmdEndRenderPass;
     PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier;
 
+    PFN_vkCreateImage vkCreateImage;
+    PFN_vkDestroyImage vkDestroyImage;
+    PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements;
+
+    PFN_vkAllocateMemory vkAllocateMemory;
+    PFN_vkFreeMemory vkFreeMemory;
+    PFN_vkBindImageMemory vkBindImageMemory;
+    PFN_vkMapMemory vkMapMemory;
+
     // Debug utils (optional, for validation)
     PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
     PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
@@ -1832,6 +1841,10 @@ typedef struct
     VkFence in_flight_fences[MAX_FRAMES_IN_FLIGHT];
     VkFence images_in_flight[MAX_SWAPCHAIN_IMAGES];
     uint32_t current_frame;
+
+    VkImage depth_image;
+    VkDeviceMemory depth_memory;
+    VkImageView depth_view;
 
     VkRenderPass render_pass;
     bool needs_resize;
@@ -1972,6 +1985,15 @@ static int vk_load_device_functions()
     VK_LOAD_DEVICE_FUNC(vkCmdEndRenderPass);
     VK_LOAD_DEVICE_FUNC(vkCmdPipelineBarrier);
     VK_LOAD_DEVICE_FUNC(vkResetCommandPool);
+
+    VK_LOAD_DEVICE_FUNC(vkCreateImage);
+    VK_LOAD_DEVICE_FUNC(vkDestroyImage);
+    VK_LOAD_DEVICE_FUNC(vkGetImageMemoryRequirements);
+
+    VK_LOAD_DEVICE_FUNC(vkAllocateMemory);
+    VK_LOAD_DEVICE_FUNC(vkFreeMemory);
+    VK_LOAD_DEVICE_FUNC(vkBindImageMemory);
+    VK_LOAD_DEVICE_FUNC(vkMapMemory);
 
     return CANVAS_OK;
 }
@@ -2902,6 +2924,22 @@ static void vk_cleanup_window(int window_id)
 
     vk_info.vkDeviceWaitIdle(vk_info.device);
 
+    if (vk_win->depth_view)
+    {
+        vk_info.vkDestroyImageView(vk_info.device, vk_win->depth_view, NULL);
+        vk_win->depth_view = VK_NULL_HANDLE;
+    }
+    if (vk_win->depth_image)
+    {
+        vk_info.vkDestroyImage(vk_info.device, vk_win->depth_image, NULL);
+        vk_win->depth_image = VK_NULL_HANDLE;
+    }
+    if (vk_win->depth_memory)
+    {
+        vk_info.vkFreeMemory(vk_info.device, vk_win->depth_memory, NULL);
+        vk_win->depth_memory = VK_NULL_HANDLE;
+    }
+
     for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++)
     {
         if (vk_win->image_available_semaphores[i])
@@ -3437,71 +3475,165 @@ int _canvas_gpu_new_window(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
-    objc_id window = canvas_info.canvas[window_id].window;
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+    memset(vk_win, 0, sizeof(canvas_vulkan_window));
 
-    objc_id view = msg_id(cls("NSView"), "alloc");
-    view = msg_id_rect(view, "initWithFrame:", make_rect(0, 0, 800, 600));
-    if (!view)
+    int result;
+
+    result = vk_create_surface(window_id, &vk_win->surface);
+    if (result != CANVAS_OK)
     {
-        CANVAS_ERR("failed to create NSView for window: %d\n", window_id);
-        return CANVAS_ERR_GET_WINDOW;
+        CANVAS_ERR("failed to create surface for window %d\n", window_id);
+        return result;
     }
 
-    msg_void_bool(view, "setWantsLayer:", true);
-
-    objc_id layer = msg_id(cls("CAMetalLayer"), "alloc");
-    layer = msg_id(layer, "init");
-    if (!layer)
+    if (!vk_info.device)
     {
-        CANVAS_ERR("failed to create CAMetalLayer for window: %d\n", window_id);
-        return CANVAS_ERR_GET_GPU;
+        VkResult vk_result = vk_select_physical_device(vk_win->surface);
+        if (vk_result != VK_SUCCESS)
+        {
+            CANVAS_ERR("failed to select physical device\n");
+            vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+            return CANVAS_ERR_GET_GPU;
+        }
+
+        result = vk_create_logical_device();
+        if (result != CANVAS_OK)
+        {
+            vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+            return result;
+        }
+
+        result = vk_load_device_functions();
+        if (result != CANVAS_OK)
+        {
+            vk_info.vkDestroyDevice(vk_info.device, NULL);
+            vk_info.vkDestroySurfaceKHR(vk_info.instance, vk_win->surface, NULL);
+            return result;
+        }
     }
 
-    msg_void_id(layer, "setDevice:", canvas_macos.device);
-    msg_void_long(layer, "setPixelFormat:", MTLPixelFormatBGRA8Unorm);
-    msg_void_bool(layer, "setFramebufferOnly:", false); // false for depth
-    msg_void_bool(layer, "setAllowsNextDrawableTimeout:", false);
+    result = vk_create_swapchain(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    double scale = 1.0;
-    objc_id screen = msg_id(window, "screen");
-    if (screen)
-        scale = msg_dbl(screen, "backingScaleFactor");
-    msg_void_double(layer, "setContentsScale:", scale);
+    // Create depth image
+    result = vk_create_depth_resources(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    msg_void_id(view, "setLayer:", layer);
-    msg_void_id(window, "setContentView:", view);
+    result = vk_create_render_pass(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    _canvas_data[window_id].view = view;
-    _canvas_data[window_id].layer = layer;
-    _canvas_data[window_id].scale = scale;
+    result = vk_create_framebuffers(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    // depth texture
-    _CGRect bounds = msg_rect(view, "bounds");
-    int width = (int)(bounds.w * scale);
-    int height = (int)(bounds.h * scale);
+    result = vk_create_command_pool(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    objc_id depthDescriptor = msg_id(cls("MTLTextureDescriptor"), "alloc");
-    depthDescriptor = msg_id(depthDescriptor, "init");
+    result = vk_create_command_buffers(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    msg_void_long(depthDescriptor, "setTextureType:", 2);   // MTLTextureType2D
-    msg_void_long(depthDescriptor, "setPixelFormat:", 252); // MTLPixelFormatDepth32Float
-    msg_void_long(depthDescriptor, "setWidth:", (long)width);
-    msg_void_long(depthDescriptor, "setHeight:", (long)height);
-    msg_void_long(depthDescriptor, "setDepth:", 1);
-    msg_void_long(depthDescriptor, "setMipmapLevelCount:", 1);
-    msg_void_long(depthDescriptor, "setUsage:", 4);       // MTLTextureUsageRenderTarget
-    msg_void_long(depthDescriptor, "setStorageMode:", 2); // MTLStorageModePrivate
+    result = vk_create_sync_objects(window_id);
+    if (result != CANVAS_OK)
+        goto cleanup;
 
-    objc_id depthTexture = msg_id_id(canvas_macos.device, "newTextureWithDescriptor:", depthDescriptor);
-    msg_void(depthDescriptor, "release");
+    vk_win->initialized = true;
+    vk_win->current_frame = 0;
 
-    if (!depthTexture)
+    CANVAS_VERBOSE("vulkan setup complete for window %d\n", window_id);
+    return CANVAS_OK;
+
+cleanup:
+    vk_cleanup_window(window_id);
+    return result;
+}
+
+static int vk_create_depth_resources(int window_id)
+{
+    canvas_vulkan_window *vk_win = &vk_windows[window_id];
+
+    VkImageCreateInfo imageInfo = {0};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = vk_win->swapchain_extent.width;
+    imageInfo.extent.height = vk_win->swapchain_extent.height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_D32_SFLOAT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkResult result = vk_info.vkCreateImage(vk_info.device, &imageInfo, NULL, &vk_win->depth_image);
+    VK_CHECK(result, "failed to create depth image");
+
+    VkMemoryRequirements memRequirements;
+    vk_info.vkGetImageMemoryRequirements(vk_info.device, vk_win->depth_image, &memRequirements);
+
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vk_info.vkGetPhysicalDeviceMemoryProperties(vk_info.physical_device, &memProperties);
+
+    uint32_t memoryTypeIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
     {
-        CANVAS_ERR("failed to create depth texture for window: %d\n", window_id);
-        return CANVAS_ERR_GET_GPU;
+        if ((memRequirements.memoryTypeBits & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        {
+            memoryTypeIndex = i;
+            break;
+        }
     }
 
-    canvas_info.canvas[window_id].depth_texture = depthTexture;
+    if (memoryTypeIndex == UINT32_MAX)
+    {
+        CANVAS_ERR("failed to find suitable memory type for depth image\n");
+        vk_info.vkDestroyImage(vk_info.device, vk_win->depth_image, NULL);
+        return CANVAS_FAIL;
+    }
+
+    // Allocate memory
+    VkMemoryAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+    result = vk_info.vkAllocateMemory(vk_info.device, &allocInfo, NULL, &vk_win->depth_memory);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("failed to allocate depth image memory\n");
+        vk_info.vkDestroyImage(vk_info.device, vk_win->depth_image, NULL);
+        return CANVAS_FAIL;
+    }
+
+    result = vk_info.vkBindImageMemory(vk_info.device, vk_win->depth_image, vk_win->depth_memory, 0);
+    VK_CHECK(result, "failed to bind depth image memory");
+
+    VkImageViewCreateInfo viewInfo = {0};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = vk_win->depth_image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_D32_SFLOAT;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    result = vk_info.vkCreateImageView(vk_info.device, &viewInfo, NULL, &vk_win->depth_view);
+    VK_CHECK(result, "failed to create depth image view");
+
+    canvas_info.canvas[window_id].depth_texture = (void*)(uintptr_t)vk_win->depth_image;
+
+    CANVAS_VERBOSE("depth resources created for window %d (%ux%u)\n", 
+                   window_id, vk_win->swapchain_extent.width, vk_win->swapchain_extent.height);
 
     return CANVAS_OK;
 }
@@ -4880,6 +5012,7 @@ int _canvas_gpu_new_window(int window_id)
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     canvas_win32.rtvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(canvas_win32.rtvHeap, &rtvHandle);
+
     rtvHandle.ptr += window_id * 2 * canvas_win32.rtvDescriptorSize;
 
     for (int i = 0; i < 2; i++)
