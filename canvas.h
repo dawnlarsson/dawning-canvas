@@ -947,6 +947,7 @@ typedef struct
     ID3D12Resource *backBuffers[2];
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[2];
     int saved_x, saved_y, saved_width, saved_height;
+    HWND saved_z_order;
     DWORD saved_style;
 } canvas_data;
 
@@ -4104,12 +4105,15 @@ int canvas_restore(int window_id)
     if (canvas_info.canvas[window_id].fullscreen)
     {
         SetWindowLong(window, GWL_STYLE, _canvas_data[window_id].saved_style);
-        SetWindowPos(window, NULL,
+
+        HWND insertAfter = _canvas_data[window_id].saved_z_order ? _canvas_data[window_id].saved_z_order : HWND_NOTOPMOST;
+        SetWindowPos(window, insertAfter,
                      (int)_canvas_data[window_id].saved_x,
                      (int)_canvas_data[window_id].saved_y,
                      (unsigned int)_canvas_data[window_id].saved_width,
                      (unsigned int)_canvas_data[window_id].saved_height,
-                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+
         ShowWindow(window, SW_NORMAL);
     }
     else
@@ -4144,6 +4148,7 @@ int canvas_fullscreen(int window_id)
         _canvas_data[window_id].saved_width = rect.right - rect.left;
         _canvas_data[window_id].saved_height = rect.bottom - rect.top;
         _canvas_data[window_id].saved_style = GetWindowLong(window, GWL_STYLE);
+        _canvas_data[window_id].saved_z_order = GetWindow(window, GW_HWNDPREV);
 
         HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi = {sizeof(mi)};
