@@ -4150,13 +4150,18 @@ int canvas_fullscreen(int window_id)
         GetMonitorInfo(monitor, &mi);
 
         SetWindowLong(window, GWL_STYLE, WS_VISIBLE | WS_POPUP);
-        SetWindowPos(window, HWND_TOP,
+        SetWindowPos(window, HWND_TOPMOST,
                      mi.rcMonitor.left,
                      mi.rcMonitor.top,
                      mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top,
-                     SWP_FRAMECHANGED | SWP_NOACTIVATE);
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+
         ShowWindow(window, SW_MAXIMIZE);
+        UpdateWindow(window);
+
+        canvas_info.canvas[window_id].resize = true;
+        _canvas_window_resize(window_id);
 
         canvas_info.canvas[window_id].fullscreen = true;
     }
@@ -4475,6 +4480,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCCALCSIZE:
     {
+        if (canvas_info.canvas[window_index].fullscreen)
+            break;
+
         if (wParam == true && !canvas_info.canvas[window_index].titlebar)
         {
             NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
@@ -4490,6 +4498,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCHITTEST:
     {
+        if (canvas_info.canvas[window_index].fullscreen)
+            break;
+
         if (!canvas_info.canvas[window_index].titlebar)
         {
             LRESULT hit = DefWindowProc(hwnd, msg, wParam, lParam);
