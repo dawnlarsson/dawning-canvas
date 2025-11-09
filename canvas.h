@@ -7007,6 +7007,9 @@ int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, 
 {
     CANVAS_VALID(window_id);
 
+    if (canvas_info.canvas[window_id].fullscreen) // todo: allow changing display in fullscreen
+        return CANVAS_OK;
+
     if (canvas_info.display_count <= 0)
     {
         CANVAS_ERR("no displays available\n");
