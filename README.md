@@ -15,6 +15,7 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
 - **Mouse/Touch input** - Multi-monitor Mouse, touch, velocity tracking and history
 - **High-resolution timing** - Frame timing, FPS calculation, fixed timestep support
 - **Display management** - Multi-monitor data & tracking
+- **Unified GPU Buffers**
 
 **Roadmap:**
 - Keyboard Input
@@ -263,6 +264,52 @@ Sets the window's clear color (RGBA, values 0.0 to 1.0).
 Example:
 ```c
 canvas_color(window, (float[]){0.2f, 0.3f, 0.4f, 1.0f});
+```
+
+#### GPU Buffers
+
+```c
+typedef enum
+{
+    CANVAS_BUFFER_VERTEX,
+    CANVAS_BUFFER_INDEX,
+    CANVAS_BUFFER_UNIFORM,
+    CANVAS_BUFFER_STORAGE,
+} canvas_buffer_type;
+
+typedef enum
+{
+    CANVAS_BUFFER_STATIC,  // Write once, read many
+    CANVAS_BUFFER_DYNAMIC, // Write every frame, persistently mapped
+    CANVAS_BUFFER_STAGING, // CPU->GPU transfer
+} canvas_buffer_usage;
+
+typedef struct
+{
+    void *platform_handle; // ID3D12Resource*, VkBuffer, or MTLBuffer
+    void *mapped;          // Persistently mapped pointer (dynamic only)
+    size_t size;
+    canvas_buffer_type type;
+    canvas_buffer_usage usage;
+    int window_id;
+
+    VkDeviceMemory memory; // Vulkan separate memory handle
+} canvas_buffer;
+
+canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data);
+void canvas_buffer_destroy(canvas_buffer *buf);
+
+// Update buffer (dynamic buffers)
+void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t offset);
+
+// Get mapped pointer (dynamic buffers)
+void *canvas_buffer_map(canvas_buffer *buf);
+void canvas_buffer_unmap(canvas_buffer *buf);
+
+// Bind for rendering (draw calls)
+void canvas_buffer_bind_vertex(canvas_buffer *buf, uint32_t binding);
+void canvas_buffer_bind_index(canvas_buffer *buf);
+void canvas_buffer_bind_storage(canvas_buffer *buf, uint32_t binding);
 ```
 
 ### Time Management

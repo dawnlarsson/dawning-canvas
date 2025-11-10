@@ -215,6 +215,50 @@ double canvas_get_time(canvas_time_data *time);
 int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps);
 int canvas_cursor(int window_id, canvas_cursor_type cursor);
 
+typedef enum
+{
+    CANVAS_BUFFER_VERTEX,
+    CANVAS_BUFFER_INDEX,
+    CANVAS_BUFFER_UNIFORM,
+    CANVAS_BUFFER_STORAGE,
+} canvas_buffer_type;
+
+typedef enum
+{
+    CANVAS_BUFFER_STATIC,  // Write once, read many
+    CANVAS_BUFFER_DYNAMIC, // Write every frame, persistently mapped
+    CANVAS_BUFFER_STAGING, // CPU->GPU transfer
+} canvas_buffer_usage;
+
+typedef struct
+{
+    void *platform_handle; // ID3D12Resource*, VkBuffer, or MTLBuffer
+    void *mapped;          // Persistently mapped pointer (dynamic only)
+    size_t size;
+    canvas_buffer_type type;
+    canvas_buffer_usage usage;
+    int window_id;
+
+#ifdef CANVAS_VULKAN
+    VkDeviceMemory memory; // Vulkan needs separate memory handle
+#endif
+} canvas_buffer;
+
+canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data);
+void canvas_buffer_destroy(canvas_buffer *buf);
+
+// Update buffer (dynamic buffers)
+void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t offset);
+
+// Get mapped pointer (dynamic buffers)
+void *canvas_buffer_map(canvas_buffer *buf);
+void canvas_buffer_unmap(canvas_buffer *buf);
+
+// Bind for rendering (draw calls)
+void canvas_buffer_bind_vertex(canvas_buffer *buf, uint32_t binding);
+void canvas_buffer_bind_index(canvas_buffer *buf);
+void canvas_buffer_bind_storage(canvas_buffer *buf, uint32_t binding);
+
 // internal api
 void canvas_main_loop();
 int _canvas_platform();
@@ -1582,6 +1626,15 @@ static void _canvas_pointer_print_impl(int id, const char *file, int line)
         CANVAS_ERR("window %d is not valid\n", window_id); \
         return CANVAS_INVALID;                             \
     }
+
+#define CANVAS_VALID_PTR(window_id)                   \
+    do                                                \
+    {                                                 \
+        if (window_id < 0 || window_id >= MAX_CANVAS) \
+            return NULL;                              \
+        if (!canvas_info.canvas[window_id]._valid)    \
+            return NULL;                              \
+    } while (0)
 
 int _canvas_get_free()
 {
@@ -2955,6 +3008,320 @@ static int vk_draw_frame(int window_id)
     return CANVAS_OK;
 }
 
+static int _vulkan_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
+{
+    VkBufferCreateInfo staging_info = {0};
+    staging_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    staging_info.size = size;
+    staging_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    staging_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer staging_buffer;
+    VkResult result = vk_info.vkCreateBuffer(vk_info.device, &staging_info, NULL, &staging_buffer);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("Failed to create staging buffer\n");
+        return CANVAS_FAIL;
+    }
+
+    VkMemoryRequirements mem_reqs;
+    vk_info.vkGetBufferMemoryRequirements(vk_info.device, staging_buffer, &mem_reqs);
+
+    VkMemoryAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = mem_reqs.size;
+    alloc_info.memoryTypeIndex = vk_find_memory_type(
+        mem_reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    VkDeviceMemory staging_memory;
+    result = vk_info.vkAllocateMemory(vk_info.device, &alloc_info,
+                                      NULL, &staging_memory);
+    if (result != VK_SUCCESS)
+    {
+        vk_info.vkDestroyBuffer(vk_info.device, staging_buffer, NULL);
+        CANVAS_ERR("Failed to allocate staging memory\n");
+        return CANVAS_FAIL;
+    }
+
+    vk_info.vkBindBufferMemory(vk_info.device, staging_buffer, staging_memory, 0);
+
+    // Copy data to staging
+    void *mapped;
+    result = vk_info.vkMapMemory(vk_info.device, staging_memory, 0, size, 0, &mapped);
+    if (result != VK_SUCCESS)
+    {
+        vk_info.vkFreeMemory(vk_info.device, staging_memory, NULL);
+        vk_info.vkDestroyBuffer(vk_info.device, staging_buffer, NULL);
+        CANVAS_ERR("Failed to map staging memory\n");
+        return CANVAS_FAIL;
+    }
+
+    memcpy(mapped, data, size);
+    vk_info.vkUnmapMemory(vk_info.device, staging_memory);
+
+    // Create one-time command buffer
+    canvas_vulkan_window *vk_win = &vk_windows[buf->window_id];
+
+    VkCommandBufferAllocateInfo cmd_alloc_info = {0};
+    cmd_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_alloc_info.commandPool = vk_win->command_pool;
+    cmd_alloc_info.commandBufferCount = 1;
+
+    VkCommandBuffer cmd_buffer;
+    vk_info.vkAllocateCommandBuffers(vk_info.device, &cmd_alloc_info, &cmd_buffer);
+
+    // Begin recording
+    VkCommandBufferBeginInfo begin_info = {0};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vk_info.vkBeginCommandBuffer(cmd_buffer, &begin_info);
+
+    // Copy command
+    VkBufferCopy copy_region = {0};
+    copy_region.srcOffset = 0;
+    copy_region.dstOffset = 0;
+    copy_region.size = size;
+
+    vk_info.vkCmdCopyBuffer(cmd_buffer, staging_buffer,
+                            (VkBuffer)buf->platform_handle, 1, &copy_region);
+
+    vk_info.vkEndCommandBuffer(cmd_buffer);
+
+    // Submit and wait
+    VkSubmitInfo submit_info = {0};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &cmd_buffer;
+
+    vk_info.vkQueueSubmit(vk_info.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+    vk_info.vkQueueWaitIdle(vk_info.graphics_queue);
+
+    // Cleanup
+    vk_info.vkFreeCommandBuffers(vk_info.device, vk_win->command_pool, 1, &cmd_buffer);
+    vk_info.vkFreeMemory(vk_info.device, staging_memory, NULL);
+    vk_info.vkDestroyBuffer(vk_info.device, staging_buffer, NULL);
+
+    return CANVAS_OK;
+}
+
+static uint32_t vk_find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vk_info.vkGetPhysicalDeviceMemoryProperties(vk_info.physical_device, &mem_props);
+
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
+    {
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
+            return i;
+    }
+
+    CANVAS_ERR("Failed to find suitable memory type\n");
+    return 0;
+}
+
+canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data)
+{
+    CANVAS_VALID_PTR(window_id);
+
+    if (!vk_info.device)
+    {
+        CANVAS_ERR("GPU not initialized\n");
+        return NULL;
+    }
+
+    canvas_buffer *buf = calloc(1, sizeof(canvas_buffer));
+    if (!buf)
+        return NULL;
+
+    buf->size = size;
+    buf->type = type;
+    buf->usage = usage;
+    buf->window_id = window_id;
+
+    // Determine usage flags
+    VkBufferUsageFlags usage_flags;
+    switch (type)
+    {
+    case CANVAS_BUFFER_VERTEX:
+        usage_flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        break;
+    case CANVAS_BUFFER_INDEX:
+        usage_flags = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        break;
+    case CANVAS_BUFFER_UNIFORM:
+        usage_flags = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        break;
+    case CANVAS_BUFFER_STORAGE:
+        usage_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        break;
+    default:
+        usage_flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    }
+
+    if (initial_data)
+        usage_flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+    // Create buffer
+    VkBufferCreateInfo buffer_info = {0};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = usage_flags;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer vk_buffer;
+    VkResult result = vk_info.vkCreateBuffer(vk_info.device, &buffer_info,
+                                             NULL, &vk_buffer);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("Failed to create Vulkan buffer\n");
+        free(buf);
+        return NULL;
+    }
+
+    // Get memory requirements
+    VkMemoryRequirements mem_reqs;
+    vk_info.vkGetBufferMemoryRequirements(vk_info.device, vk_buffer, &mem_reqs);
+
+    // Determine memory properties
+    VkMemoryPropertyFlags mem_props;
+    if (usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    }
+    else
+    {
+        mem_props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    }
+
+    // Allocate memory
+    VkMemoryAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = mem_reqs.size;
+    alloc_info.memoryTypeIndex = vk_find_memory_type(mem_reqs.memoryTypeBits, mem_props);
+
+    VkDeviceMemory memory;
+    result = vk_info.vkAllocateMemory(vk_info.device, &alloc_info, NULL, &memory);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("Failed to allocate Vulkan buffer memory\n");
+        vk_info.vkDestroyBuffer(vk_info.device, vk_buffer, NULL);
+        free(buf);
+        return NULL;
+    }
+
+    // Bind memory
+    vk_info.vkBindBufferMemory(vk_info.device, vk_buffer, memory, 0);
+
+    buf->platform_handle = vk_buffer;
+    buf->memory = memory;
+
+    if (usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        result = vk_info.vkMapMemory(vk_info.device, memory, 0, size,
+                                     0, &buf->mapped);
+        if (result != VK_SUCCESS)
+        {
+            CANVAS_ERR("Failed to map Vulkan buffer\n");
+            vk_info.vkFreeMemory(vk_info.device, memory, NULL);
+            vk_info.vkDestroyBuffer(vk_info.device, vk_buffer, NULL);
+            free(buf);
+            return NULL;
+        }
+
+        if (initial_data)
+        {
+            memcpy(buf->mapped, initial_data, size);
+        }
+    }
+    else if (initial_data)
+    {
+        if (_vulkan_upload_buffer_data(buf, initial_data, size) != CANVAS_OK)
+        {
+            CANVAS_ERR("Failed to upload device-local buffer data\n");
+            vk_info.vkFreeMemory(vk_info.device, memory, NULL);
+            vk_info.vkDestroyBuffer(vk_info.device, vk_buffer, NULL);
+            free(buf);
+            return NULL;
+        }
+    }
+
+    return buf;
+}
+
+void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t offset)
+{
+    if (!buf || !data)
+        return;
+
+    if (buf->usage != CANVAS_BUFFER_DYNAMIC)
+    {
+        CANVAS_WARN("Can only update dynamic buffers\n");
+        return;
+    }
+
+    if (offset + size > buf->size)
+    {
+        CANVAS_ERR("Buffer update out of bounds\n");
+        return;
+    }
+
+    memcpy((uint8_t *)buf->mapped + offset, data, size);
+}
+
+void *canvas_buffer_map(canvas_buffer *buf)
+{
+    if (!buf)
+        return NULL;
+
+    if (buf->usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        return buf->mapped; // Already mapped
+    }
+
+    // Map device-local buffers on demand (not recommended)
+    void *mapped = NULL;
+    VkResult result = vk_info.vkMapMemory(vk_info.device, buf->memory, 0, buf->size, 0, &mapped);
+    if (result != VK_SUCCESS)
+    {
+        CANVAS_ERR("Failed to map Vulkan buffer\n");
+        return NULL;
+    }
+
+    return mapped;
+}
+
+void canvas_buffer_unmap(canvas_buffer *buf)
+{
+    if (!buf)
+        return;
+
+    if (buf->usage == CANVAS_BUFFER_DYNAMIC)
+        return; // Persistently mapped
+
+    vk_info.vkUnmapMemory(vk_info.device, buf->memory);
+}
+
+void canvas_buffer_destroy(canvas_buffer *buf)
+{
+    if (!buf)
+        return;
+
+    VkBuffer vk_buffer = (VkBuffer)buf->platform_handle;
+
+    if (buf->mapped && buf->usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        vk_info.vkUnmapMemory(vk_info.device, buf->memory);
+    }
+
+    vk_info.vkDestroyBuffer(vk_info.device, vk_buffer, NULL);
+    vk_info.vkFreeMemory(vk_info.device, buf->memory, NULL);
+
+    free(buf);
+}
+
 static void vk_cleanup_window(int window_id)
 {
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
@@ -3726,6 +4093,188 @@ void _canvas_gpu_draw_all()
         msg_void_id(cmd, "presentDrawable:", drawable);
         msg_void(cmd, "commit");
     }
+}
+
+static int _metal_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
+{
+    typedef objc_id (*msg_new_buffer)(objc_id, objc_sel, unsigned long, unsigned long);
+    objc_id staging = ((msg_new_buffer)objc_msgSend)(
+        canvas_macos.device,
+        sel_c("newBufferWithLength:options:"),
+        (unsigned long)size,
+        0 // MTLResourceStorageModeShared
+    );
+
+    if (!staging)
+    {
+        CANVAS_ERR("Failed to create staging buffer\n");
+        return CANVAS_FAIL;
+    }
+
+    void *staging_ptr = msg_id(staging, "contents");
+    memcpy(staging_ptr, data, size);
+
+    objc_id cmd_buffer = msg_id(canvas_macos.queue, "commandBuffer");
+    if (!cmd_buffer)
+    {
+        msg_void(staging, "release");
+        CANVAS_ERR("Failed to create command buffer\n");
+        return CANVAS_FAIL;
+    }
+
+    objc_id blit_encoder = msg_id(cmd_buffer, "blitCommandEncoder");
+    if (!blit_encoder)
+    {
+        msg_void(staging, "release");
+        CANVAS_ERR("Failed to create blit encoder\n");
+        return CANVAS_FAIL;
+    }
+
+    typedef void (*msg_copy_buffer)(objc_id, objc_sel, objc_id, unsigned long, objc_id, unsigned long, unsigned long);
+    ((msg_copy_buffer)objc_msgSend)(
+        blit_encoder,
+        sel_c("copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:"),
+        staging,
+        0UL,
+        buf->platform_handle,
+        0UL,
+        (unsigned long)size);
+
+    msg_void(blit_encoder, "endEncoding");
+
+    msg_void(cmd_buffer, "commit");
+    msg_void(cmd_buffer, "waitUntilCompleted");
+
+    msg_void(staging, "release");
+
+    return CANVAS_OK;
+}
+
+canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data)
+{
+    CANVAS_VALID_PTR(window_id);
+
+    if (!canvas_macos.device)
+    {
+        CANVAS_ERR("GPU not initialized\n");
+        return NULL;
+    }
+
+    canvas_buffer *buf = calloc(1, sizeof(canvas_buffer));
+    if (!buf)
+        return NULL;
+
+    buf->size = size;
+    buf->type = type;
+    buf->usage = usage;
+    buf->window_id = window_id;
+
+    unsigned long storage_mode;
+
+    if (usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        storage_mode = 0; // MTLResourceStorageModeShared
+    }
+    else
+    {
+        storage_mode = 2; // MTLResourceStorageModePrivate
+    }
+
+    typedef objc_id (*msg_new_buffer)(objc_id, objc_sel, unsigned long, unsigned long);
+    objc_id metal_buffer = ((msg_new_buffer)objc_msgSend)(
+        canvas_macos.device,
+        sel_c("newBufferWithLength:options:"),
+        (unsigned long)size,
+        storage_mode);
+
+    if (!metal_buffer)
+    {
+        CANVAS_ERR("Failed to create Metal buffer\n");
+        free(buf);
+        return NULL;
+    }
+
+    buf->platform_handle = metal_buffer;
+
+    if (usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        buf->mapped = msg_id(metal_buffer, "contents");
+        if (initial_data)
+        {
+            memcpy(buf->mapped, initial_data, size);
+        }
+    }
+    else if (initial_data)
+    {
+        if (_metal_upload_buffer_data(buf, initial_data, size) != CANVAS_OK)
+        {
+            CANVAS_ERR("Failed to upload private buffer data\n");
+            msg_void(metal_buffer, "release");
+            free(buf);
+            return NULL;
+        }
+    }
+
+    return buf;
+}
+
+void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t offset)
+{
+    if (!buf || !data)
+        return;
+
+    if (buf->usage != CANVAS_BUFFER_DYNAMIC)
+    {
+        CANVAS_WARN("Can only update dynamic buffers\n");
+        return;
+    }
+
+    if (offset + size > buf->size)
+    {
+        CANVAS_ERR("Buffer update out of bounds\n");
+        return;
+    }
+
+    memcpy((uint8_t *)buf->mapped + offset, data, size);
+
+    // Synchronize shared memory (if needed on older hardware)
+    typedef void (*msg_did_modify)(objc_id, objc_sel, unsigned long, unsigned long);
+    ((msg_did_modify)objc_msgSend)(
+        buf->platform_handle,
+        sel_c("didModifyRange:"),
+        offset,
+        size);
+}
+
+void *canvas_buffer_map(canvas_buffer *buf)
+{
+    if (!buf)
+        return NULL;
+
+    if (buf->usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        return buf->mapped; // Already mapped
+    }
+
+    CANVAS_WARN("Cannot map private Metal buffer\n");
+    return NULL;
+}
+
+void canvas_buffer_unmap(canvas_buffer *buf)
+{
+    // Metal shared buffers are persistently mapped
+    (void)buf;
+}
+
+void canvas_buffer_destroy(canvas_buffer *buf)
+{
+    if (!buf)
+        return;
+
+    objc_id metal_buffer = (objc_id)buf->platform_handle;
+    msg_void(metal_buffer, "release");
+
+    free(buf);
 }
 
 int _canvas_update()
@@ -5269,6 +5818,289 @@ int _canvas_window_resize(int window_id)
     }
 
     return CANVAS_OK;
+}
+
+static int _d3d12_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
+{
+    D3D12_HEAP_PROPERTIES upload_heap = {0};
+    upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC staging_desc = {0};
+    staging_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    staging_desc.Width = size;
+    staging_desc.Height = 1;
+    staging_desc.DepthOrArraySize = 1;
+    staging_desc.MipLevels = 1;
+    staging_desc.Format = DXGI_FORMAT_UNKNOWN;
+    staging_desc.SampleDesc.Count = 1;
+    staging_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource *staging = NULL;
+    HRESULT hr = canvas_win32.device->lpVtbl->CreateCommittedResource(
+        canvas_win32.device,
+        &upload_heap,
+        D3D12_HEAP_FLAG_NONE,
+        &staging_desc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        NULL,
+        &IID_ID3D12Resource,
+        (void **)&staging);
+
+    if (FAILED(hr))
+    {
+        CANVAS_ERR("Failed to create staging buffer\n");
+        return CANVAS_FAIL;
+    }
+
+    // Map and copy data to staging
+    void *mapped = NULL;
+    D3D12_RANGE read_range = {0, 0};
+    hr = staging->lpVtbl->Map(staging, 0, &read_range, &mapped);
+    if (FAILED(hr))
+    {
+        staging->lpVtbl->Release(staging);
+        return CANVAS_FAIL;
+    }
+
+    memcpy(mapped, data, size);
+    staging->lpVtbl->Unmap(staging, 0, NULL);
+
+    // Reset command allocator and list
+    canvas_win32.cmdAllocator->lpVtbl->Reset(canvas_win32.cmdAllocator);
+    canvas_win32.cmdList->lpVtbl->Reset(canvas_win32.cmdList,
+                                        canvas_win32.cmdAllocator, NULL);
+
+    // Transition destination buffer to COPY_DEST
+    ID3D12Resource *dst = (ID3D12Resource *)buf->platform_handle;
+
+    D3D12_RESOURCE_BARRIER barrier = {0};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = dst;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    canvas_win32.cmdList->lpVtbl->ResourceBarrier(canvas_win32.cmdList, 1, &barrier);
+
+    // Copy staging -> destination
+    canvas_win32.cmdList->lpVtbl->CopyResource(canvas_win32.cmdList, dst, staging);
+
+    // Transition to appropriate state based on buffer type
+    D3D12_RESOURCE_STATES final_state;
+    switch (buf->type)
+    {
+    case CANVAS_BUFFER_VERTEX:
+        final_state = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+        break;
+    case CANVAS_BUFFER_INDEX:
+        final_state = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+        break;
+    case CANVAS_BUFFER_UNIFORM:
+        final_state = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+        break;
+    case CANVAS_BUFFER_STORAGE:
+        final_state = D3D12_RESOURCE_STATE_COMMON;
+        break;
+    default:
+        final_state = D3D12_RESOURCE_STATE_COMMON;
+    }
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = final_state;
+    canvas_win32.cmdList->lpVtbl->ResourceBarrier(canvas_win32.cmdList, 1, &barrier);
+
+    // Close and execute
+    canvas_win32.cmdList->lpVtbl->Close(canvas_win32.cmdList);
+
+    ID3D12CommandList *cmdLists[] = {(ID3D12CommandList *)canvas_win32.cmdList};
+    canvas_win32.cmdQueue->lpVtbl->ExecuteCommandLists(canvas_win32.cmdQueue, 1, cmdLists);
+
+    // Wait for completion
+    canvas_win32.fence_value++;
+    canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+
+    if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
+    {
+        canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+        WaitForSingleObject(canvas_win32.fence_event, INFINITE);
+    }
+
+    staging->lpVtbl->Release(staging);
+
+    return CANVAS_OK;
+}
+
+canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data)
+{
+    CANVAS_VALID_PTR(window_id);
+
+    if (!canvas_win32.device)
+    {
+        CANVAS_ERR("GPU not initialized\n");
+        return NULL;
+    }
+
+    canvas_buffer *buf = calloc(1, sizeof(canvas_buffer));
+    if (!buf)
+        return NULL;
+
+    buf->size = size;
+    buf->type = type;
+    buf->usage = usage;
+    buf->window_id = window_id;
+
+    // Determine heap type
+    D3D12_HEAP_TYPE heap_type;
+    D3D12_RESOURCE_STATES initial_state;
+
+    if (usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        heap_type = D3D12_HEAP_TYPE_UPLOAD;
+        initial_state = D3D12_RESOURCE_STATE_GENERIC_READ;
+    }
+    else
+    {
+        heap_type = D3D12_HEAP_TYPE_DEFAULT;
+        initial_state = D3D12_RESOURCE_STATE_COMMON;
+    }
+
+    // Create buffer
+    D3D12_HEAP_PROPERTIES heap_props = {0};
+    heap_props.Type = heap_type;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC resource_desc = {0};
+    resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource_desc.Width = size;
+    resource_desc.Height = 1;
+    resource_desc.DepthOrArraySize = 1;
+    resource_desc.MipLevels = 1;
+    resource_desc.Format = DXGI_FORMAT_UNKNOWN;
+    resource_desc.SampleDesc.Count = 1;
+    resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ID3D12Resource *resource = NULL;
+    HRESULT hr = canvas_win32.device->lpVtbl->CreateCommittedResource(
+        canvas_win32.device,
+        &heap_props,
+        D3D12_HEAP_FLAG_NONE,
+        &resource_desc,
+        initial_state,
+        NULL,
+        &IID_ID3D12Resource,
+        (void **)&resource);
+
+    if (FAILED(hr))
+    {
+        CANVAS_ERR("Failed to create D3D12 buffer (HRESULT: 0x%08lX)\n", hr);
+        free(buf);
+        return NULL;
+    }
+
+    buf->platform_handle = resource;
+
+    // Persistent mapping for dynamic buffers
+    if (usage == CANVAS_BUFFER_DYNAMIC)
+    {
+        D3D12_RANGE read_range = {0, 0};
+        hr = resource->lpVtbl->Map(resource, 0, &read_range, &buf->mapped);
+
+        if (FAILED(hr))
+        {
+            CANVAS_ERR("Failed to map D3D12 buffer\n");
+            resource->lpVtbl->Release(resource);
+            free(buf);
+            return NULL;
+        }
+
+        if (initial_data)
+        {
+            memcpy(buf->mapped, initial_data, size);
+        }
+    }
+    else if (initial_data)
+    {
+        if (_d3d12_upload_buffer_data(buf, initial_data, size) != CANVAS_OK)
+        {
+            CANVAS_ERR("Failed to upload static buffer data\n");
+            resource->lpVtbl->Release(resource);
+            free(buf);
+            return NULL;
+        }
+    }
+
+    return buf;
+}
+
+void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t offset)
+{
+    if (!buf || !data)
+        return;
+
+    if (buf->usage != CANVAS_BUFFER_DYNAMIC)
+    {
+        CANVAS_WARN("Can only update dynamic buffers\n");
+        return;
+    }
+
+    if (offset + size > buf->size)
+    {
+        CANVAS_ERR("Buffer update out of bounds\n");
+        return;
+    }
+
+    memcpy((uint8_t *)buf->mapped + offset, data, size);
+}
+
+void *canvas_buffer_map(canvas_buffer *buf)
+{
+    if (!buf)
+        return NULL;
+
+    if (buf->usage == CANVAS_BUFFER_DYNAMIC)
+        return buf->mapped;
+
+    ID3D12Resource *resource = (ID3D12Resource *)buf->platform_handle;
+    D3D12_RANGE read_range = {0, 0};
+
+    void *mapped = NULL;
+    HRESULT hr = resource->lpVtbl->Map(resource, 0, &read_range, &mapped);
+
+    if (FAILED(hr))
+    {
+        CANVAS_ERR("Failed to map buffer\n");
+        return NULL;
+    }
+
+    return mapped;
+}
+
+void canvas_buffer_unmap(canvas_buffer *buf)
+{
+    if (!buf)
+        return;
+
+    if (buf->usage == CANVAS_BUFFER_DYNAMIC)
+        return;
+
+    ID3D12Resource *resource = (ID3D12Resource *)buf->platform_handle;
+    resource->lpVtbl->Unmap(resource, 0, NULL);
+}
+
+void canvas_buffer_destroy(canvas_buffer *buf)
+{
+    if (!buf)
+        return;
+
+    ID3D12Resource *resource = (ID3D12Resource *)buf->platform_handle;
+
+    if (buf->mapped && buf->usage == CANVAS_BUFFER_DYNAMIC)
+        resource->lpVtbl->Unmap(resource, 0, NULL);
+
+    resource->lpVtbl->Release(resource);
+    free(buf);
 }
 
 int _canvas_post_update()
