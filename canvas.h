@@ -239,9 +239,7 @@ typedef struct
     canvas_buffer_usage usage;
     int window_id;
 
-#ifdef CANVAS_VULKAN
-    VkDeviceMemory memory; // Vulkan needs separate memory handle
-#endif
+    uint64_t memory; // Vulkan needs separate memory handle
 } canvas_buffer;
 
 canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data);
@@ -668,7 +666,7 @@ typedef struct
 
 } canvas_context_type;
 
-canvas_context_type canvas_info = (canvas_context_type){0};
+canvas_context_type canvas_info = {0};
 
 canvas_pointer *canvas_get_primary_pointer(int window_id)
 {
@@ -1474,8 +1472,8 @@ static void _canvas_pointer_print_impl(int id, const char *file, int line)
     printf("\n");
 
     printf("Position:\n");
-    printf("  Window:          (%d, %d)\n", p->x, p->y);
-    printf("  Screen:          (%d, %d)\n", p->screen_x, p->screen_y);
+    printf("  Window:          (%ld, %ld)\n", p->x, p->y);
+    printf("  Screen:          (%ld, %ld)\n", p->screen_x, p->screen_y);
     printf("  Display:         %d\n", p->display);
     printf("  Inside Window:   %s\n", p->inside_window ? "YES" : "NO");
     printf("\n");
@@ -1591,7 +1589,7 @@ static void _canvas_pointer_print_impl(int id, const char *file, int line)
 
         if (s->time > 0.0)
         {
-            printf("  %c [%d] (%4d, %4d) @ %.6fs\n",
+            printf("  %c [%d] (%4ld, %4ld) @ %.6fs\n",
                    marker, idx, s->x, s->y, s->time);
         }
         else
@@ -1848,6 +1846,12 @@ static struct
     PFN_vkCreateImageView vkCreateImageView;
     PFN_vkDestroyImageView vkDestroyImageView;
 
+    PFN_vkCreateBuffer vkCreateBuffer;
+    PFN_vkDestroyBuffer vkDestroyBuffer;
+    PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements;
+    PFN_vkBindBufferMemory vkBindBufferMemory;
+    PFN_vkCmdCopyBuffer vkCmdCopyBuffer;
+
     // Command buffer recording
     PFN_vkCmdBeginRenderPass vkCmdBeginRenderPass;
     PFN_vkCmdEndRenderPass vkCmdEndRenderPass;
@@ -1861,6 +1865,7 @@ static struct
     PFN_vkFreeMemory vkFreeMemory;
     PFN_vkBindImageMemory vkBindImageMemory;
     PFN_vkMapMemory vkMapMemory;
+    PFN_vkUnmapMemory vkUnmapMemory;
 
     // Debug utils (optional, for validation)
     PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
@@ -2053,6 +2058,12 @@ static int vk_load_device_functions()
     VK_LOAD_DEVICE_FUNC(vkCmdPipelineBarrier);
     VK_LOAD_DEVICE_FUNC(vkResetCommandPool);
 
+    VK_LOAD_DEVICE_FUNC(vkCreateBuffer);
+    VK_LOAD_DEVICE_FUNC(vkDestroyBuffer);
+    VK_LOAD_DEVICE_FUNC(vkGetBufferMemoryRequirements);
+    VK_LOAD_DEVICE_FUNC(vkBindBufferMemory);
+    VK_LOAD_DEVICE_FUNC(vkCmdCopyBuffer);
+
     VK_LOAD_DEVICE_FUNC(vkCreateImage);
     VK_LOAD_DEVICE_FUNC(vkDestroyImage);
     VK_LOAD_DEVICE_FUNC(vkGetImageMemoryRequirements);
@@ -2061,6 +2072,7 @@ static int vk_load_device_functions()
     VK_LOAD_DEVICE_FUNC(vkFreeMemory);
     VK_LOAD_DEVICE_FUNC(vkBindImageMemory);
     VK_LOAD_DEVICE_FUNC(vkMapMemory);
+    VK_LOAD_DEVICE_FUNC(vkUnmapMemory);
 
     return CANVAS_OK;
 }
@@ -3008,6 +3020,21 @@ static int vk_draw_frame(int window_id)
     return CANVAS_OK;
 }
 
+static uint32_t vk_find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vk_info.vkGetPhysicalDeviceMemoryProperties(vk_info.physical_device, &mem_props);
+
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
+    {
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
+            return i;
+    }
+
+    CANVAS_ERR("Failed to find suitable memory type\n");
+    return 0;
+}
+
 static int _vulkan_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
 {
     VkBufferCreateInfo staging_info = {0};
@@ -3107,21 +3134,6 @@ static int _vulkan_upload_buffer_data(canvas_buffer *buf, void *data, size_t siz
     return CANVAS_OK;
 }
 
-static uint32_t vk_find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties)
-{
-    VkPhysicalDeviceMemoryProperties mem_props;
-    vk_info.vkGetPhysicalDeviceMemoryProperties(vk_info.physical_device, &mem_props);
-
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++)
-    {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
-            return i;
-    }
-
-    CANVAS_ERR("Failed to find suitable memory type\n");
-    return 0;
-}
-
 canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canvas_buffer_usage usage, size_t size, void *initial_data)
 {
     CANVAS_VALID_PTR(window_id);
@@ -3216,7 +3228,7 @@ canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canv
     vk_info.vkBindBufferMemory(vk_info.device, vk_buffer, memory, 0);
 
     buf->platform_handle = vk_buffer;
-    buf->memory = memory;
+    buf->memory = (uint64_t)memory;
 
     if (usage == CANVAS_BUFFER_DYNAMIC)
     {
@@ -3283,7 +3295,7 @@ void *canvas_buffer_map(canvas_buffer *buf)
 
     // Map device-local buffers on demand (not recommended)
     void *mapped = NULL;
-    VkResult result = vk_info.vkMapMemory(vk_info.device, buf->memory, 0, buf->size, 0, &mapped);
+    VkResult result = vk_info.vkMapMemory(vk_info.device, (VkDeviceMemory)buf->memory, 0, buf->size, 0, &mapped);
     if (result != VK_SUCCESS)
     {
         CANVAS_ERR("Failed to map Vulkan buffer\n");
@@ -3301,7 +3313,7 @@ void canvas_buffer_unmap(canvas_buffer *buf)
     if (buf->usage == CANVAS_BUFFER_DYNAMIC)
         return; // Persistently mapped
 
-    vk_info.vkUnmapMemory(vk_info.device, buf->memory);
+    vk_info.vkUnmapMemory(vk_info.device, (VkDeviceMemory)buf->memory);
 }
 
 void canvas_buffer_destroy(canvas_buffer *buf)
@@ -3313,11 +3325,11 @@ void canvas_buffer_destroy(canvas_buffer *buf)
 
     if (buf->mapped && buf->usage == CANVAS_BUFFER_DYNAMIC)
     {
-        vk_info.vkUnmapMemory(vk_info.device, buf->memory);
+        vk_info.vkUnmapMemory(vk_info.device, (VkDeviceMemory)buf->memory);
     }
 
     vk_info.vkDestroyBuffer(vk_info.device, vk_buffer, NULL);
-    vk_info.vkFreeMemory(vk_info.device, buf->memory, NULL);
+    vk_info.vkFreeMemory(vk_info.device, (VkDeviceMemory)buf->memory, NULL);
 
     free(buf);
 }
@@ -7099,7 +7111,6 @@ int _canvas_update()
             p->_samples[p->_sample_index].time = timestamp;
             p->_sample_index = (p->_sample_index + 1) % CANVAS_POINTER_SAMPLE_FRAMES;
 
-            int active_window = -1;
             bool found_window = false;
 
             for (int i = MAX_CANVAS - 1; i >= 0; i--)
@@ -7120,7 +7131,6 @@ int _canvas_update()
 
                     if (is_inside && !found_window)
                     {
-                        active_window = i;
                         found_window = true;
 
                         p->window_id = i;
