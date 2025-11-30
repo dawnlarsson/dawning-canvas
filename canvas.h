@@ -4637,9 +4637,22 @@ double canvas_get_time(canvas_time_data *time)
 
 void canvas_sleep(double seconds)
 {
+    if (seconds <= 0.0)
+        return;
+
     struct timespec ts;
     ts.tv_sec = (time_t)seconds;
-    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
+    double frac = seconds - (double)ts.tv_sec;
+
+    if (frac < 0.0)
+        frac = 0.0;
+    ts.tv_nsec = (long)(frac * 1e9);
+    if (ts.tv_nsec >= 1000000000L)
+    {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000L;
+    }
+
     nanosleep(&ts, NULL);
 }
 
@@ -7790,7 +7803,12 @@ float canvas_pointer_velocity(canvas_pointer *p)
 
 void canvas_pointer_delta(canvas_pointer *p, int64_t *dx, int64_t *dy)
 {
-    if (!p)
+    if (dx)
+        *dx = 0;
+    if (dy)
+        *dy = 0;
+
+    if (!p || !dx || !dy)
         return;
 
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
