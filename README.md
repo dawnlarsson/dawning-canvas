@@ -49,7 +49,7 @@ zig cc example/simple.c -I. -s -O3 -Qn -ldwmapi -ldxgi -ld3d12 && .\a.exe
 
 **MacOS**
 ```sh
-clang example/simple.c -framework Cocoa -framework QuartzCore -framework Metal -I./
+clang example/simple.c -framework Cocoa -framework QuartzCore -framework Metal -framework IOKit -I./
 ```
 
 **Linux**

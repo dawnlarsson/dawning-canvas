@@ -3577,15 +3577,14 @@ int _canvas_close(int window_id)
         return CANVAS_ERR_GET_WINDOW;
     }
 
-    _canvas_data[window_id].layer = NULL;
-    _canvas_data[window_id].view = NULL;
-    _canvas_data[window_id].scale = 0.0;
-
     if (_canvas_data[window_id].layer)
     {
         msg_void(_canvas_data[window_id].layer, "release");
-        _canvas_data[window_id].layer = NULL;
     }
+
+    _canvas_data[window_id].layer = NULL;
+    _canvas_data[window_id].view = NULL;
+    _canvas_data[window_id].scale = 0.0;
 
     msg_void(window, "close");
     msg_void(window, "release");
@@ -3933,6 +3932,20 @@ int _canvas_update_drawable_size(int window_id)
     double w = b.w * _canvas_data[window_id].scale;
     double h = b.h * _canvas_data[window_id].scale;
     msg_void_size(_canvas_data[window_id].layer, "setDrawableSize:", w, h);
+
+    return CANVAS_OK;
+}
+
+int _canvas_window_resize(int window_id)
+{
+    CANVAS_BOUNDS(window_id);
+
+    if (!_canvas_data[window_id].layer)
+        return CANVAS_OK;
+
+    canvas_info.canvas[window_id].resize = false;
+
+    _canvas_update_drawable_size(window_id);
 
     return CANVAS_OK;
 }
@@ -4741,6 +4754,24 @@ int canvas_fullscreen(int window_id)
 int _canvas_close(int window_id)
 {
     CANVAS_BOUNDS(window_id);
+
+    if (canvas_win32.device && canvas_win32.fence && canvas_win32.cmdQueue)
+    {
+        canvas_win32.fence_value++;
+        canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+        if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
+        {
+            canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+            WaitForSingleObject(canvas_win32.fence_event, INFINITE);
+        }
+    }
+
+    if (canvas_info.canvas[window_id].depth_texture)
+    {
+        ID3D12Resource *depth = (ID3D12Resource *)canvas_info.canvas[window_id].depth_texture;
+        depth->lpVtbl->Release(depth);
+        canvas_info.canvas[window_id].depth_texture = NULL;
+    }
 
     if (_canvas_data[window_id].swapChain)
     {
@@ -5829,9 +5860,52 @@ int _canvas_window_resize(int window_id)
         rtvHandle.ptr += canvas_win32.rtvDescriptorSize;
     }
 
+    if (canvas_info.canvas[window_id].depth_texture)
+    {
+        ID3D12Resource *old_depth = (ID3D12Resource *)canvas_info.canvas[window_id].depth_texture;
+        old_depth->lpVtbl->Release(old_depth);
+        canvas_info.canvas[window_id].depth_texture = NULL;
+    }
+
+    D3D12_HEAP_PROPERTIES depthHeapProps = {0};
+    depthHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC depthDesc = {0};
+    depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    depthDesc.Width = width;
+    depthDesc.Height = height;
+    depthDesc.DepthOrArraySize = 1;
+    depthDesc.MipLevels = 1;
+    depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE depthClearValue = {0};
+    depthClearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    depthClearValue.DepthStencil.Depth = 1.0f;
+
+    ID3D12Resource *depthTexture;
+    hr = canvas_win32.device->lpVtbl->CreateCommittedResource(
+        canvas_win32.device,
+        &depthHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &depthDesc,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        &depthClearValue,
+        &IID_ID3D12Resource,
+        (void **)&depthTexture);
+
+    if (SUCCEEDED(hr))
+    {
+        canvas_info.canvas[window_id].depth_texture = depthTexture;
+    }
+    else
+    {
+        CANVAS_WARN("failed to recreate depth texture (HRESULT: 0x%08lX)\n", hr);
+    }
+
     return CANVAS_OK;
 }
-
 static int _d3d12_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
 {
     D3D12_HEAP_PROPERTIES upload_heap = {0};
@@ -5876,6 +5950,15 @@ static int _d3d12_upload_buffer_data(canvas_buffer *buf, void *data, size_t size
 
     memcpy(mapped, data, size);
     staging->lpVtbl->Unmap(staging, 0, NULL);
+
+    // Wait for previous frames to finish before resetting command allocator
+    canvas_win32.fence_value++;
+    canvas_win32.cmdQueue->lpVtbl->Signal(canvas_win32.cmdQueue, canvas_win32.fence, canvas_win32.fence_value);
+    if (canvas_win32.fence->lpVtbl->GetCompletedValue(canvas_win32.fence) < canvas_win32.fence_value)
+    {
+        canvas_win32.fence->lpVtbl->SetEventOnCompletion(canvas_win32.fence, canvas_win32.fence_value, canvas_win32.fence_event);
+        WaitForSingleObject(canvas_win32.fence_event, INFINITE);
+    }
 
     // Reset command allocator and list
     canvas_win32.cmdAllocator->lpVtbl->Reset(canvas_win32.cmdAllocator);
@@ -6378,6 +6461,11 @@ int _canvas_close(int window_id)
 {
     CANVAS_BOUNDS(window_id);
 
+    if (vk_windows[window_id].initialized)
+    {
+        vk_cleanup_window(window_id);
+    }
+
     if (_canvas_using_wayland)
     {
     }
@@ -6455,7 +6543,7 @@ int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width,
 
 int _canvas_init_displays()
 {
-    canvas_info.display_count = 1;
+    canvas_info.display_count = 0;
 
     if (_canvas_using_wayland)
     {
@@ -6471,6 +6559,7 @@ int _canvas_init_displays()
         {
             CANVAS_WARN("XRRGetScreenResourcesCurrent failed\n");
             dlclose(xrandr.library);
+            xrandr.library = NULL;
             goto fallback;
         }
 
@@ -6548,9 +6637,16 @@ int _canvas_init_displays()
         }
 
         xrandr.XRRFreeScreenResources(sr);
-        dlclose(xrandr.library);
 
-        return canvas_info.display_count;
+        if (canvas_info.display_count > 0)
+        {
+            dlclose(xrandr.library);
+            xrandr.library = NULL;
+            return canvas_info.display_count;
+        }
+
+        dlclose(xrandr.library);
+        xrandr.library = NULL;
     }
 
 fallback:
@@ -6973,13 +7069,18 @@ int _canvas_init_x11()
 
 int _canvas_platform()
 {
-    if (canvas_info.init)
-        return CANVAS_OK;
+    _post_init();
+    start_hid();
 
-    //     int load_result = _canvas_init_wayland();
+    canvas_macos.app = msg_id(cls("NSApplication"), "sharedApplication");
+    if (!canvas_macos.app)
+    {
+        CANVAS_ERR("failed to get NSApplication\n");
+        return CANVAS_ERR_GET_PLATFORM;
+    }
 
-    if (!_canvas_using_wayland && _canvas_init_x11() < 0)
-        return CANVAS_ERR_GET_DISPLAY;
+    msg_void_long(canvas_macos.app, "setActivationPolicy:", NSApplicationActivationPolicyRegular);
+    msg_void_bool(canvas_macos.app, "activateIgnoringOtherApps:", true);
 
     return CANVAS_OK;
 }
@@ -7814,8 +7915,8 @@ void canvas_main_loop()
         canvas_info.pointers[i].scroll_y = 0;
     }
 
-    memset(canvas_keyboard.keys_pressed, 0, 256);
-    memset(canvas_keyboard.keys_released, 0, 256);
+    memset(canvas_keyboard.keys_pressed, 0, sizeof(canvas_keyboard.keys_pressed));
+    memset(canvas_keyboard.keys_released, 0, sizeof(canvas_keyboard.keys_released));
 }
 
 int canvas_exit()
