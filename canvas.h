@@ -735,6 +735,8 @@ typedef struct
     objc_id app;
     mach_timebase_info_data_t timebase;
 
+    IOHIDManagerRef hid_manager;
+
     // metal
     objc_id device;
     objc_id queue;
@@ -829,11 +831,21 @@ static inline objc_id msg_id_id(objc_id obj, const char *sel, objc_id arg)
     return ((msg_send_id_id)objc_msgSend)(obj, sel_c(sel), arg);
 }
 
+#if defined(__x86_64__)
+typedef void (*msg_send_stret)(void *, objc_id, objc_sel);
+static inline _CGRect msg_rect(objc_id obj, const char *sel)
+{
+    _CGRect rect;
+    ((msg_send_stret)objc_msgSend_stret)(&rect, obj, sel_c(sel));
+    return rect;
+}
+#else
 static inline _CGRect msg_rect(objc_id obj, const char *sel)
 {
     typedef _CGRect (*msg_send_rect)(objc_id, objc_sel);
     return ((msg_send_rect)objc_msgSend)(obj, sel_c(sel));
 }
+#endif
 
 static inline void msg_void_size(objc_id obj, const char *sel, double width, double height)
 {
@@ -1101,6 +1113,7 @@ static struct
     int (*XFree)(void *);
     bool (*XQueryPointer)(Display *, Window, Window *, Window *, int *, int *, int *, int *, unsigned int *);
     bool (*XTranslateCoordinates)(Display *, Window, Window, int, int, int *, int *, Window *);
+    int (*XFreeCursor)(Display *, unsigned long);
 
     int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
 
@@ -1949,11 +1962,10 @@ static bool vk_check_validation_layers()
         return false;
     }
 
-    VkLayerProperties *available_layers = malloc(layer_count * sizeof(VkLayerProperties));
+    VkLayerProperties *available_layers = (VkLayerProperties *)malloc(layer_count * sizeof(VkLayerProperties));
     if (!available_layers)
     {
         CANVAS_WARN("failed to allocate memory for layer properties\n");
-        free(available_layers);
         return false;
     }
 
@@ -2085,7 +2097,7 @@ static bool vk_check_device_extension_support(VkPhysicalDevice device)
     if (extension_count == 0)
         return false;
 
-    VkExtensionProperties *available_extensions = malloc(extension_count * sizeof(VkExtensionProperties));
+    VkExtensionProperties *available_extensions = (VkExtensionProperties *)malloc(extension_count * sizeof(VkExtensionProperties));
     if (!available_extensions)
         return false;
 
@@ -2113,7 +2125,7 @@ static bool vk_find_queue_families(VkPhysicalDevice device, VkSurfaceKHR surface
     if (queue_family_count == 0)
         return false;
 
-    VkQueueFamilyProperties *queue_families = malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
+    VkQueueFamilyProperties *queue_families = (VkQueueFamilyProperties *)malloc(queue_family_count * sizeof(VkQueueFamilyProperties));
     if (!queue_families)
         return false;
 
@@ -2168,7 +2180,7 @@ static VkResult vk_select_physical_device(VkSurfaceKHR test_surface)
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    VkPhysicalDevice *devices = malloc(device_count * sizeof(VkPhysicalDevice));
+    VkPhysicalDevice *devices = (VkPhysicalDevice *)malloc(device_count * sizeof(VkPhysicalDevice));
     if (!devices)
     {
         return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -2488,14 +2500,14 @@ static int vk_create_swapchain(int window_id)
     vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(vk_info.physical_device, vk_win->surface, &support.format_count, NULL);
     if (support.format_count > 0)
     {
-        support.formats = malloc(support.format_count * sizeof(VkSurfaceFormatKHR));
+        support.formats = (VkSurfaceFormatKHR *)malloc(support.format_count * sizeof(VkSurfaceFormatKHR));
         vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(vk_info.physical_device, vk_win->surface, &support.format_count, support.formats);
     }
 
     vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(vk_info.physical_device, vk_win->surface, &support.present_mode_count, NULL);
     if (support.present_mode_count > 0)
     {
-        support.present_modes = malloc(support.present_mode_count * sizeof(VkPresentModeKHR));
+        support.present_modes = (VkPresentModeKHR *)malloc(support.present_mode_count * sizeof(VkPresentModeKHR));
         vk_info.vkGetPhysicalDeviceSurfacePresentModesKHR(vk_info.physical_device, vk_win->surface, &support.present_mode_count, support.present_modes);
     }
 
@@ -3144,7 +3156,7 @@ canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canv
         return NULL;
     }
 
-    canvas_buffer *buf = calloc(1, sizeof(canvas_buffer));
+    canvas_buffer *buf = (canvas_buffer *)calloc(1, sizeof(canvas_buffer));
     if (!buf)
         return NULL;
 
@@ -3822,6 +3834,8 @@ int _canvas_platform()
 {
     _post_init();
 
+    canvas_macos.hid_manager = start_hid();
+
     canvas_macos.app = msg_id(cls("NSApplication"), "sharedApplication");
     if (!canvas_macos.app)
     {
@@ -4185,7 +4199,7 @@ canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canv
         return NULL;
     }
 
-    canvas_buffer *buf = calloc(1, sizeof(canvas_buffer));
+    canvas_buffer *buf = (canvas_buffer *)calloc(1, sizeof(canvas_buffer));
     if (!buf)
         return NULL;
 
@@ -6035,7 +6049,7 @@ canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canv
         return NULL;
     }
 
-    canvas_buffer *buf = calloc(1, sizeof(canvas_buffer));
+    canvas_buffer *buf = (canvas_buffer *)calloc(1, sizeof(canvas_buffer));
     if (!buf)
         return NULL;
 
@@ -7036,6 +7050,7 @@ int _canvas_init_x11()
     LOAD_X11(XFree);
     LOAD_X11(XQueryPointer);
     LOAD_X11(XTranslateCoordinates);
+    LOAD_X11(XFreeCursor);
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
@@ -7069,20 +7084,13 @@ int _canvas_init_x11()
 
 int _canvas_platform()
 {
-    _post_init();
-    start_hid();
+    if (canvas_info.init)
+        return CANVAS_OK;
 
-    canvas_macos.app = msg_id(cls("NSApplication"), "sharedApplication");
-    if (!canvas_macos.app)
-    {
-        CANVAS_ERR("failed to get NSApplication\n");
-        return CANVAS_ERR_GET_PLATFORM;
-    }
+    //     int load_result = _canvas_init_wayland();
 
-    msg_void_long(canvas_macos.app, "setActivationPolicy:", NSApplicationActivationPolicyRegular);
-    msg_void_bool(canvas_macos.app, "activateIgnoringOtherApps:", true);
-
-    return CANVAS_OK;
+    if (!_canvas_using_wayland && _canvas_init_x11() < 0)
+        return CANVAS_ERR_GET_DISPLAY;
 }
 
 static canvas_cursor_type _canvas_get_resize_cursor(int action)
@@ -7632,6 +7640,15 @@ int _canvas_exit()
     if (x11.display)
         x11.XCloseDisplay(x11.display);
 
+    if (x11.cursors_loaded)
+    {
+        for (int i = 0; i < 11; i++)
+        {
+            if (x11.cursors[i])
+                x11.XFreeCursor(x11.display, x11.cursors[i]);
+        }
+    }
+
     if (x11.library)
         dlclose(x11.library);
 
@@ -7905,7 +7922,10 @@ void canvas_main_loop()
         canvas_info.quit = 1;
     }
 
-    canvas_limit_fps(&canvas_info.time, canvas_info.limit_fps);
+    if (!canvas_info.os_timed)
+    {
+        canvas_limit_fps(&canvas_info.time, canvas_info.limit_fps);
+    }
 
     for (int i = 0; i < canvas_info.pointer_count; i++)
     {
