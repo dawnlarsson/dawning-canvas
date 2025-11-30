@@ -3044,7 +3044,7 @@ static uint32_t vk_find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags 
     }
 
     CANVAS_ERR("Failed to find suitable memory type\n");
-    return 0;
+    return CANVAS_FAIL;
 }
 
 static int _vulkan_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
@@ -4590,6 +4590,14 @@ int _canvas_exit()
         ((MSG_void_id)objc_msgSend)(canvas_macos.pool, sel_c("drain"));
         canvas_macos.pool = NULL;
     }
+
+    if (canvas_macos.hid_manager)
+    {
+        IOHIDManagerClose(canvas_macos.hid_manager, kIOHIDOptionsTypeNone);
+        CFRelease(canvas_macos.hid_manager);
+        canvas_macos.hid_manager = NULL;
+    }
+
     CGDisplayRemoveReconfigurationCallback(_canvas_display_reconfigure_callback, NULL);
     return CANVAS_OK;
 }
@@ -5132,6 +5140,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             return hit;
         }
+
+        break;
     }
 
     case WM_DISPLAYCHANGE:
@@ -7091,6 +7101,8 @@ int _canvas_platform()
 
     if (!_canvas_using_wayland && _canvas_init_x11() < 0)
         return CANVAS_ERR_GET_DISPLAY;
+
+    return CANVAS_OK;
 }
 
 static canvas_cursor_type _canvas_get_resize_cursor(int action)
@@ -7637,9 +7649,6 @@ int _canvas_exit()
     if (vk_info.library)
         vk_cleanup();
 
-    if (x11.display)
-        x11.XCloseDisplay(x11.display);
-
     if (x11.cursors_loaded)
     {
         for (int i = 0; i < 11; i++)
@@ -7648,6 +7657,9 @@ int _canvas_exit()
                 x11.XFreeCursor(x11.display, x11.cursors[i]);
         }
     }
+
+    if (x11.display)
+        x11.XCloseDisplay(x11.display);
 
     if (x11.library)
         dlclose(x11.library);
