@@ -676,6 +676,7 @@ canvas_pointer *canvas_get_primary_pointer(int window_id)
     canvas_pointer *p = &canvas_info.pointers[0];
     if (!p->active)
     {
+        memset(p, 0, sizeof(canvas_pointer));
         p->id = 0;
         p->type = CANVAS_POINTER_MOUSE;
         p->window_id = window_id;
@@ -1663,7 +1664,7 @@ int _canvas_window_index(void *window)
 {
     for (int i = 0; i < MAX_CANVAS; i++)
     {
-        if (canvas_info.canvas[i].window == window)
+        if (canvas_info.canvas[i]._valid && canvas_info.canvas[i].window == window)
             return i;
     }
 
@@ -3044,7 +3045,8 @@ static uint32_t vk_find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags 
     }
 
     CANVAS_ERR("Failed to find suitable memory type\n");
-    return CANVAS_FAIL;
+
+    return UINT32_MAX;
 }
 
 static int _vulkan_upload_buffer_data(canvas_buffer *buf, void *data, size_t size)
@@ -3072,6 +3074,13 @@ static int _vulkan_upload_buffer_data(canvas_buffer *buf, void *data, size_t siz
     alloc_info.memoryTypeIndex = vk_find_memory_type(
         mem_reqs.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (alloc_info.memoryTypeIndex == UINT32_MAX)
+    {
+        vk_info.vkDestroyBuffer(vk_info.device, staging_buffer, NULL);
+        CANVAS_ERR("Failed to find suitable memory type for staging buffer\n");
+        return CANVAS_FAIL;
+    }
 
     VkDeviceMemory staging_memory;
     result = vk_info.vkAllocateMemory(vk_info.device, &alloc_info,
@@ -3226,6 +3235,14 @@ canvas_buffer *canvas_buffer_create(int window_id, canvas_buffer_type type, canv
     alloc_info.allocationSize = mem_reqs.size;
     alloc_info.memoryTypeIndex = vk_find_memory_type(mem_reqs.memoryTypeBits, mem_props);
 
+    if (alloc_info.memoryTypeIndex == UINT32_MAX)
+    {
+        CANVAS_ERR("Failed to find suitable memory type for buffer\n");
+        vk_info.vkDestroyBuffer(vk_info.device, vk_buffer, NULL);
+        free(buf);
+        return NULL;
+    }
+
     VkDeviceMemory memory;
     result = vk_info.vkAllocateMemory(vk_info.device, &alloc_info, NULL, &memory);
     if (result != VK_SUCCESS)
@@ -3286,7 +3303,7 @@ void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t of
         return;
     }
 
-    if (offset + size > buf->size)
+    if (offset > buf->size || size > buf->size - offset)
     {
         CANVAS_ERR("Buffer update out of bounds\n");
         return;
@@ -3693,6 +3710,7 @@ int _canvas_refresh_displays()
 {
     canvas_info.display_count = 0;
     canvas_info.display_changed = false;
+    canvas_info.highest_refresh_rate = 0;
 
     uint32_t max_displays = MAX_DISPLAYS;
     CGDirectDisplayID display[MAX_DISPLAYS];
@@ -3996,6 +4014,7 @@ int _canvas_gpu_new_window(int window_id)
 
     if (!layer)
     {
+        msg_void(layer_alloc, "release");
         CANVAS_ERR("failed to create Metal layer\n");
         return CANVAS_ERR_GET_GPU;
     }
@@ -4268,7 +4287,7 @@ void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t of
         return;
     }
 
-    if (offset + size > buf->size)
+    if (offset > buf->size || size > buf->size - offset)
     {
         CANVAS_ERR("Buffer update out of bounds\n");
         return;
@@ -4895,6 +4914,7 @@ int _canvas_refresh_displays()
 {
     canvas_info.display_count = 0;
     canvas_info.display_changed = false;
+    canvas_info.highest_refresh_rate = 0;
 
     for (int i = 0; i < MAX_DISPLAYS; i++)
     {
@@ -5170,7 +5190,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (wParam != SIZE_MINIMIZED)
         {
-            canvas_info.canvas[window_index].resize = true;
+            UINT width = LOWORD(lParam);
+            UINT height = HIWORD(lParam);
+            if (width > 0 && height > 0)
+            {
+                canvas_info.canvas[window_index].width = width;
+                canvas_info.canvas[window_index].height = height;
+                canvas_info.canvas[window_index].resize = true;
+                canvas_info.canvas[window_index].os_resized = true;
+            }
 
             if (!canvas_info.os_timed)
             {
@@ -6164,7 +6192,7 @@ void canvas_buffer_update(canvas_buffer *buf, void *data, size_t size, size_t of
         return;
     }
 
-    if (offset + size > buf->size)
+    if (offset > buf->size || size > buf->size - offset)
     {
         CANVAS_ERR("Buffer update out of bounds\n");
         return;
@@ -6706,6 +6734,9 @@ int _canvas_get_window_display(int window_id)
 
 int _canvas_get_resize_edge_action(int window_id, int x, int y)
 {
+    if (window_id < 0 || window_id >= MAX_CANVAS)
+        return -1;
+
     int width = canvas_info.canvas[window_id].width;
     int height = canvas_info.canvas[window_id].height;
     int border = 8;
@@ -7796,8 +7827,8 @@ float canvas_pointer_direction(canvas_pointer *p)
     canvas_pointer_sample *s_new = &p->_samples[newest];
     canvas_pointer_sample *s_old = &p->_samples[oldest];
 
-    int dx = s_new->x - s_old->x;
-    int dy = s_new->y - s_old->y;
+    int64_t dx = s_new->x - s_old->x;
+    int64_t dy = s_new->y - s_old->y;
 
     return atan2f((float)dy, (float)dx);
 }
