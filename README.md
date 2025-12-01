@@ -40,6 +40,18 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
 
 **Note for Linux:** Wayland is loaded first, falls back to x11
 
+## Validation
+
+`-DCANVAS_VALIDATION`=N
+```
+ *   0 = Off (default)
+ *   1 = Errors only
+ *   2 = Errors + warnings
+ *   3 = Errors + warnings + info
+ *   4 = Errors + warnings + info + verbose
+ *   5 = All messages including debug/trace
+```
+
 ## Building the example
 
 **Windows**
