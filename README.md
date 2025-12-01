@@ -50,6 +50,7 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
  *   3 = Errors + warnings + info
  *   4 = Errors + warnings + info + verbose
  *   5 = All messages including debug/trace
+ *   6 = Full function entry / exit trace
 ```
 
 ## Building the example

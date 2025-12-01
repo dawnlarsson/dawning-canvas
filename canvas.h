@@ -71,7 +71,7 @@ CANVAS_EXTERN_C_BEGIN
 #include <stdlib.h>
 #include <math.h>
 
-#if !defined(_WIN32)
+#if defined(__linux__)
 #include <dlfcn.h>
 #endif
 
@@ -134,6 +134,11 @@ CANVAS_EXTERN_C_BEGIN
         fprintf(stdout, __VA_ARGS__);                                \
         fflush(stdout);                                              \
     } while (0)
+#else
+#define CANVAS_DBG(...) ((void)0)
+#endif
+
+#if CANVAS_VALIDATION >= 6
 #define CANVAS_TRACE(...)                                                             \
     do                                                                                \
     {                                                                                 \
@@ -142,7 +147,6 @@ CANVAS_EXTERN_C_BEGIN
         fflush(stdout);                                                               \
     } while (0)
 #else
-#define CANVAS_DBG(...) ((void)0)
 #define CANVAS_TRACE(...) ((void)0)
 #endif
 
@@ -277,12 +281,25 @@ CANVAS_EXTERN_C_BEGIN
     } while (0)
 
 #define CANVAS_ENTER_FUNC() CANVAS_TRACE("ENTER\n")
-#define CANVAS_EXIT_FUNC() CANVAS_TRACE("EXIT\n")
-#define CANVAS_EXIT_FUNC_WITH(val)                          \
-    do                                                      \
-    {                                                       \
-        CANVAS_TRACE("EXIT with %lld\n", (long long)(val)); \
+
+// Exit tracing at level 5+ (always defined inline based on level)
+#if CANVAS_VALIDATION >= 5
+#define CANVAS_EXIT_FUNC()                                                                   \
+    do                                                                                       \
+    {                                                                                        \
+        fprintf(stdout, "[CANVAS-TRACE] %s:%d %s(): EXIT\n", __FILE__, __LINE__, __func__); \
+        fflush(stdout);                                                                      \
     } while (0)
+#define CANVAS_EXIT_FUNC_WITH(val)                                                                                      \
+    do                                                                                                                  \
+    {                                                                                                                   \
+        fprintf(stdout, "[CANVAS-TRACE] %s:%d %s(): EXIT with %lld\n", __FILE__, __LINE__, __func__, (long long)(val)); \
+        fflush(stdout);                                                                                                 \
+    } while (0)
+#elif CANVAS_VALIDATION >= 1
+#define CANVAS_EXIT_FUNC() ((void)0)
+#define CANVAS_EXIT_FUNC_WITH(val) ((void)0)
+#endif
 
 // Return macros - combine exit tracing with return
 #define CANVAS_RETURN(val)           \
@@ -1316,6 +1333,7 @@ void canvas_library_close(void *lib)
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <dlfcn.h>
 
 typedef void *objc_id;
 typedef void *objc_sel;

@@ -9,8 +9,6 @@
                 "example/simple.c",
                 "-ldl",
                 "-lm",
-                "-DCANVAS_LOG",
-                "-DCANVAS_LOG_DEBUG",
                 "-g3",
                 "-O0",
                 "-ggdb",
@@ -25,7 +23,8 @@
                 "-pedantic",
                 "-o",
                 "simple",
-                "-I./"
+                "-I./",
+                "-DCANVAS_VALIDATION=5"
             ],
             "group": {
                 "kind": "build",
