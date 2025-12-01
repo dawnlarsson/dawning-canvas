@@ -71,7 +71,7 @@ CANVAS_EXTERN_C_BEGIN
 #include <stdlib.h>
 #include <math.h>
 
-#if defined(__linux__)
+#if !defined(_WIN32)
 #include <dlfcn.h>
 #endif
 
@@ -1316,7 +1316,6 @@ void canvas_library_close(void *lib)
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include <dlfcn.h>
 
 typedef void *objc_id;
 typedef void *objc_sel;
