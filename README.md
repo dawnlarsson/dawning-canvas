@@ -48,8 +48,8 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
  *   1 = Errors only
  *   2 = Errors + warnings
  *   3 = Errors + warnings + info
- *   4 = Errors + warnings + info + verbose
- *   5 = All messages including debug/trace
+ *   4 = Errors + warnings + info + verbose + asserts
+ *   5 = All messages including debug/trace + paranoid asserts
  *   6 = Full function entry / exit trace
 ```
 

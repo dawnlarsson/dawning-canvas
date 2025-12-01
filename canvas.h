@@ -291,6 +291,174 @@ static void _canvas_dump_state(void);
 
 #define canvas_pointer_print(id) _canvas_pointer_print_impl(id, __FILE__, __LINE__)
 
+#if CANVAS_VALIDATION >= 5
+
+// Magic canary values to detect memory corruption
+#define CANVAS_CANARY_HEAD 0xDEADCAFEBEEFBABEULL
+#define CANVAS_CANARY_TAIL 0xFEEDFACEC0FFEE42ULL
+#define CANVAS_POISON_BYTE 0xCD
+#define CANVAS_FREED_BYTE 0xDD
+#define CANVAS_UNINIT_BYTE 0xCC
+
+// Operation sequence tracking
+static uint64_t _canvas_op_sequence = 0;
+static const char *_canvas_last_op = "none";
+static const char *_canvas_last_op_file = "";
+static int _canvas_last_op_line = 0;
+
+// Auto-validation frequency (validate every N operations)
+#ifndef CANVAS_PARANOID_VALIDATE_FREQ
+#define CANVAS_PARANOID_VALIDATE_FREQ 100
+#endif
+
+// Track operation and auto-validate periodically
+#define CANVAS_PARANOID_OP(name)                                                                  \
+    do                                                                                            \
+    {                                                                                             \
+        _canvas_op_sequence++;                                                                    \
+        _canvas_last_op = name;                                                                   \
+        _canvas_last_op_file = __FILE__;                                                          \
+        _canvas_last_op_line = __LINE__;                                                          \
+        CANVAS_DBG("OP #%llu: %s\n", (unsigned long long)_canvas_op_sequence, name);              \
+        if ((_canvas_op_sequence % CANVAS_PARANOID_VALIDATE_FREQ) == 0)                           \
+        {                                                                                         \
+            CANVAS_DBG("Auto-validation at op #%llu\n", (unsigned long long)_canvas_op_sequence); \
+            _canvas_paranoid_validate_all();                                                      \
+        }                                                                                         \
+    } while (0)
+
+// Poison a memory region
+#define CANVAS_POISON_MEMORY(ptr, size)                                              \
+    do                                                                               \
+    {                                                                                \
+        if ((ptr) && (size) > 0)                                                     \
+        {                                                                            \
+            memset((ptr), CANVAS_POISON_BYTE, (size));                               \
+            CANVAS_DBG("Poisoned %zu bytes at %p\n", (size_t)(size), (void *)(ptr)); \
+        }                                                                            \
+    } while (0)
+
+// Mark memory as freed
+#define CANVAS_MARK_FREED(ptr, size)                                                     \
+    do                                                                                   \
+    {                                                                                    \
+        if ((ptr) && (size) > 0)                                                         \
+        {                                                                                \
+            memset((ptr), CANVAS_FREED_BYTE, (size));                                    \
+            CANVAS_DBG("Marked freed %zu bytes at %p\n", (size_t)(size), (void *)(ptr)); \
+        }                                                                                \
+    } while (0)
+
+// Check if memory looks poisoned (returns true if likely corrupted/uninitialized)
+static inline bool _canvas_memory_looks_poisoned(const void *ptr, size_t size)
+{
+    const unsigned char *p = (const unsigned char *)ptr;
+    size_t poison_count = 0;
+    size_t freed_count = 0;
+    for (size_t i = 0; i < size && i < 64; i++)
+    {
+        if (p[i] == CANVAS_POISON_BYTE)
+            poison_count++;
+        if (p[i] == CANVAS_FREED_BYTE)
+            freed_count++;
+    }
+    size_t check_size = (size < 64) ? size : 64;
+    return (poison_count > check_size / 2) || (freed_count > check_size / 2);
+}
+
+// Compute a simple checksum for state validation
+static inline uint32_t _canvas_state_checksum(const void *data, size_t len)
+{
+    const unsigned char *p = (const unsigned char *)data;
+    uint32_t hash = 0x811c9dc5; // FNV-1a offset basis
+    for (size_t i = 0; i < len; i++)
+    {
+        hash ^= p[i];
+        hash *= 0x01000193; // FNV-1a prime
+    }
+    return hash;
+}
+
+// Forward declarations for paranoid validation (types defined later)
+static void _canvas_paranoid_validate_all(void);
+static void _canvas_check_canaries(void);
+
+// Assert that a pointer doesn't look like freed/poisoned memory
+#define CANVAS_ASSERT_NOT_POISONED(ptr, size)                                        \
+    do                                                                               \
+    {                                                                                \
+        if (_canvas_memory_looks_poisoned((ptr), (size)))                            \
+        {                                                                            \
+            CANVAS_ERR("POISONED MEMORY DETECTED: %s at %p (size %zu)\n",            \
+                       #ptr, (void *)(ptr), (size_t)(size));                         \
+            CANVAS_ERR("Last op #%llu: %s at %s:%d\n",                               \
+                       (unsigned long long)_canvas_op_sequence,                      \
+                       _canvas_last_op, _canvas_last_op_file, _canvas_last_op_line); \
+            assert(0 && "poisoned memory detected");                                 \
+        }                                                                            \
+    } while (0)
+
+// Assert float is valid (not NaN or Inf)
+#define CANVAS_ASSERT_VALID_FLOAT(val)                                \
+    do                                                                \
+    {                                                                 \
+        float _v = (val);                                             \
+        if (_v != _v || _v == (1.0f / 0.0f) || _v == (-1.0f / 0.0f))  \
+        {                                                             \
+            CANVAS_ERR("INVALID FLOAT: %s = %f\n", #val, (double)_v); \
+            assert(0 && "invalid float (NaN or Inf)");                \
+        }                                                             \
+    } while (0)
+
+// Assert double is valid
+#define CANVAS_ASSERT_VALID_DOUBLE(val)                          \
+    do                                                           \
+    {                                                            \
+        double _v = (val);                                       \
+        if (_v != _v || _v == (1.0 / 0.0) || _v == (-1.0 / 0.0)) \
+        {                                                        \
+            CANVAS_ERR("INVALID DOUBLE: %s = %f\n", #val, _v);   \
+            assert(0 && "invalid double (NaN or Inf)");          \
+        }                                                        \
+    } while (0)
+
+// Check alignment
+#define CANVAS_ASSERT_ALIGNED(ptr, align)                                \
+    do                                                                   \
+    {                                                                    \
+        if (((uintptr_t)(ptr) & ((align) - 1)) != 0)                     \
+        {                                                                \
+            CANVAS_ERR("ALIGNMENT FAILED: %s = %p not aligned to %zu\n", \
+                       #ptr, (void *)(ptr), (size_t)(align));            \
+            assert(0 && "pointer alignment failed");                     \
+        }                                                                \
+    } while (0)
+
+// Detect double-free pattern
+#define CANVAS_ASSERT_NOT_DOUBLE_FREE(ptr)                                       \
+    do                                                                           \
+    {                                                                            \
+        if ((ptr) && *((unsigned char *)(ptr)) == CANVAS_FREED_BYTE)             \
+        {                                                                        \
+            CANVAS_ERR("DOUBLE FREE DETECTED: %s at %p\n", #ptr, (void *)(ptr)); \
+            assert(0 && "double free detected");                                 \
+        }                                                                        \
+    } while (0)
+
+#else // CANVAS_VALIDATION < 5
+
+#define CANVAS_PARANOID_OP(name) ((void)0)
+#define CANVAS_POISON_MEMORY(ptr, size) ((void)0)
+#define CANVAS_MARK_FREED(ptr, size) ((void)0)
+#define CANVAS_ASSERT_NOT_POISONED(ptr, size) ((void)0)
+#define CANVAS_ASSERT_VALID_FLOAT(val) ((void)0)
+#define CANVAS_ASSERT_VALID_DOUBLE(val) ((void)0)
+#define CANVAS_ASSERT_ALIGNED(ptr, align) ((void)0)
+#define CANVAS_ASSERT_NOT_DOUBLE_FREE(ptr) ((void)0)
+#define CANVAS_PARANOID_CHECK() ((void)0)
+
+#endif // CANVAS_VALIDATION >= 5
+
 #else
 
 #define CANVAS_INFO(...)
@@ -318,6 +486,18 @@ static void _canvas_dump_state(void);
 #define CANVAS_RETURN_VOID() return
 
 #define canvas_pointer_print(id) ((void)0)
+
+// Paranoid mode stubs for CANVAS_VALIDATION == 0
+#define CANVAS_PARANOID_OP(name) ((void)0)
+#define CANVAS_POISON_MEMORY(ptr, size) ((void)0)
+#define CANVAS_MARK_FREED(ptr, size) ((void)0)
+#define CANVAS_ASSERT_NOT_POISONED(ptr, size) ((void)0)
+#define CANVAS_ASSERT_VALID_FLOAT(val) ((void)0)
+#define CANVAS_ASSERT_VALID_DOUBLE(val) ((void)0)
+#define CANVAS_ASSERT_ALIGNED(ptr, align) ((void)0)
+#define CANVAS_ASSERT_NOT_DOUBLE_FREE(ptr) ((void)0)
+#define CANVAS_PARANOID_CHECK() ((void)0)
+static inline void _canvas_init_canaries(void) {}
 
 #endif
 
@@ -388,6 +568,9 @@ typedef struct
 
 typedef struct
 {
+#if CANVAS_VALIDATION >= 5
+    uint64_t _canary_head;
+#endif
     int id;
     canvas_pointer_type type;
     int window_id;
@@ -412,6 +595,9 @@ typedef struct
     int _sample_index;
 
     canvas_cursor_type cursor;
+#if CANVAS_VALIDATION >= 5
+    uint64_t _canary_tail;
+#endif
 } canvas_pointer;
 
 canvas_pointer *canvas_get_pointer(int id);
@@ -514,6 +700,9 @@ typedef struct
 
 typedef struct
 {
+#if CANVAS_VALIDATION >= 5
+    uint64_t _canary_head;
+#endif
     int index, display;
     int64_t x, y, width, height;
 
@@ -530,6 +719,9 @@ typedef struct
     canvas_mat4 view_matrix;
     canvas_mat4 projection_matrix;
     void *depth_texture;
+#if CANVAS_VALIDATION >= 5
+    uint64_t _canary_tail;
+#endif
 } canvas_type;
 
 typedef struct
@@ -820,6 +1012,9 @@ canvas_keyboard_state canvas_keyboard = {0};
 inline bool canvas_key_down(int key)
 {
     CANVAS_ASSERT_RANGE(key, 0, 255);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(&canvas_keyboard, sizeof(canvas_keyboard));
+#endif
     if (key < 0 || key >= 256)
         return false;
     return canvas_keyboard.keys[key];
@@ -828,6 +1023,9 @@ inline bool canvas_key_down(int key)
 inline bool canvas_key_pressed(int key)
 {
     CANVAS_ASSERT_RANGE(key, 0, 255);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(&canvas_keyboard, sizeof(canvas_keyboard));
+#endif
     if (key < 0 || key >= 256)
         return false;
     return canvas_keyboard.keys_pressed[key];
@@ -836,6 +1034,9 @@ inline bool canvas_key_pressed(int key)
 inline bool canvas_key_released(int key)
 {
     CANVAS_ASSERT_RANGE(key, 0, 255);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(&canvas_keyboard, sizeof(canvas_keyboard));
+#endif
     if (key < 0 || key >= 256)
         return false;
     return canvas_keyboard.keys_released[key];
@@ -889,6 +1090,9 @@ inline float pointer_dir(canvas_pointer *p)
 
 typedef struct
 {
+#if CANVAS_VALIDATION >= 5
+    uint64_t _canary_head;
+#endif
     bool init, init_gpu, init_post, os_timed, auto_exit, quit, display_changed;
     int display_count, limit_fps, highest_refresh_rate;
 
@@ -901,6 +1105,11 @@ typedef struct
     int pointer_count;
     canvas_pointer pointers[CANVAS_POINTER_BUDGET];
 
+#if CANVAS_VALIDATION >= 5
+    uint64_t _canary_tail;
+    uint32_t _state_checksum;    // Checksum of critical state
+    uint64_t _last_validated_op; // Last operation number when validated
+#endif
 } canvas_context_type;
 
 canvas_context_type canvas_info = {0};
@@ -1119,6 +1328,251 @@ static void _canvas_dump_state(void)
 
     CANVAS_INFO("=== END STATE DUMP ===\n");
 }
+
+#if CANVAS_VALIDATION >= 5
+
+static void _canvas_init_canaries(void)
+{
+    CANVAS_DBG("Initializing canaries for paranoid mode\n");
+
+    // Initialize context canaries
+    canvas_info._canary_head = CANVAS_CANARY_HEAD;
+    canvas_info._canary_tail = CANVAS_CANARY_TAIL;
+    canvas_info._state_checksum = 0;
+    canvas_info._last_validated_op = 0;
+
+    // Initialize window canaries
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        canvas_info.canvas[i]._canary_head = CANVAS_CANARY_HEAD;
+        canvas_info.canvas[i]._canary_tail = CANVAS_CANARY_TAIL;
+    }
+
+    // Initialize pointer canaries
+    for (int i = 0; i < CANVAS_POINTER_BUDGET; i++)
+    {
+        canvas_info.pointers[i]._canary_head = CANVAS_CANARY_HEAD;
+        canvas_info.pointers[i]._canary_tail = CANVAS_CANARY_TAIL;
+    }
+
+    CANVAS_DBG("Canaries initialized: HEAD=0x%llX TAIL=0x%llX\n",
+               (unsigned long long)CANVAS_CANARY_HEAD,
+               (unsigned long long)CANVAS_CANARY_TAIL);
+}
+
+static void _canvas_check_canaries(void)
+{
+    // CANVAS_DBG("Checking canaries...\n");
+
+    // Check context canaries
+    if (canvas_info._canary_head != CANVAS_CANARY_HEAD)
+    {
+        CANVAS_ERR("CANARY CORRUPTION: canvas_info._canary_head = 0x%llX (expected 0x%llX)\n",
+                   (unsigned long long)canvas_info._canary_head,
+                   (unsigned long long)CANVAS_CANARY_HEAD);
+        CANVAS_ERR("Memory corruption detected BEFORE canvas_info structure!\n");
+        assert(0 && "canary corruption (head)");
+    }
+    if (canvas_info._canary_tail != CANVAS_CANARY_TAIL)
+    {
+        CANVAS_ERR("CANARY CORRUPTION: canvas_info._canary_tail = 0x%llX (expected 0x%llX)\n",
+                   (unsigned long long)canvas_info._canary_tail,
+                   (unsigned long long)CANVAS_CANARY_TAIL);
+        CANVAS_ERR("Memory corruption detected AFTER canvas_info structure!\n");
+        assert(0 && "canary corruption (tail)");
+    }
+
+    // Check window canaries
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (canvas_info.canvas[i]._canary_head != CANVAS_CANARY_HEAD)
+        {
+            CANVAS_ERR("CANARY CORRUPTION: canvas[%d]._canary_head = 0x%llX\n",
+                       i, (unsigned long long)canvas_info.canvas[i]._canary_head);
+            assert(0 && "window canary corruption (head)");
+        }
+        if (canvas_info.canvas[i]._canary_tail != CANVAS_CANARY_TAIL)
+        {
+            CANVAS_ERR("CANARY CORRUPTION: canvas[%d]._canary_tail = 0x%llX\n",
+                       i, (unsigned long long)canvas_info.canvas[i]._canary_tail);
+            assert(0 && "window canary corruption (tail)");
+        }
+    }
+
+    // Check pointer canaries
+    for (int i = 0; i < CANVAS_POINTER_BUDGET; i++)
+    {
+        if (canvas_info.pointers[i]._canary_head != CANVAS_CANARY_HEAD)
+        {
+            CANVAS_ERR("CANARY CORRUPTION: pointers[%d]._canary_head = 0x%llX\n",
+                       i, (unsigned long long)canvas_info.pointers[i]._canary_head);
+            assert(0 && "pointer canary corruption (head)");
+        }
+        if (canvas_info.pointers[i]._canary_tail != CANVAS_CANARY_TAIL)
+        {
+            CANVAS_ERR("CANARY CORRUPTION: pointers[%d]._canary_tail = 0x%llX\n",
+                       i, (unsigned long long)canvas_info.pointers[i]._canary_tail);
+            assert(0 && "pointer canary corruption (tail)");
+        }
+    }
+
+    // CANVAS_DBG("All canaries OK\n");
+}
+
+static void _canvas_validate_pointer_sanity(canvas_pointer *p)
+{
+    if (!p)
+        return;
+
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+
+    // Validate floats aren't NaN/Inf
+    CANVAS_ASSERT_VALID_FLOAT(p->scroll_x);
+    CANVAS_ASSERT_VALID_FLOAT(p->scroll_y);
+    CANVAS_ASSERT_VALID_FLOAT(p->pressure);
+
+    // Validate sample times
+    for (int i = 0; i < CANVAS_POINTER_SAMPLE_FRAMES; i++)
+    {
+        CANVAS_ASSERT_VALID_DOUBLE(p->_samples[i].time);
+    }
+
+    // Validate sample index is in bounds
+    CANVAS_ASSERT_RANGE(p->_sample_index, 0, CANVAS_POINTER_SAMPLE_FRAMES - 1);
+
+    // Validate type enum
+    CANVAS_ASSERT_RANGE(p->type, CANVAS_POINTER_NONE, CANVAS_POINTER_PEN);
+
+    // Validate cursor enum
+    CANVAS_ASSERT_RANGE(p->cursor, CANVAS_CURSOR_HIDDEN, CANVAS_CURSOR_WAIT);
+
+    // Validate pressure is reasonable (0.0 to 1.0, allow slight overflow)
+    if (p->pressure < -0.1f || p->pressure > 1.1f)
+    {
+        CANVAS_WARN("Suspicious pressure value: %f (pointer %d)\n", p->pressure, p->id);
+    }
+}
+
+static void _canvas_validate_window_sanity(int id)
+{
+    if (id < 0 || id >= MAX_CANVAS)
+        return;
+
+    canvas_type *w = &canvas_info.canvas[id];
+
+    CANVAS_ASSERT_NOT_POISONED(w, sizeof(canvas_type));
+
+    if (!w->_valid)
+        return;
+
+    // Validate floats in clear color
+    for (int i = 0; i < 4; i++)
+    {
+        CANVAS_ASSERT_VALID_FLOAT(w->clear[i]);
+        if (w->clear[i] < 0.0f || w->clear[i] > 1.0f)
+        {
+            CANVAS_WARN("Suspicious clear color[%d]: %f (window %d)\n", i, w->clear[i], id);
+        }
+    }
+
+    // Validate time data
+    CANVAS_ASSERT_VALID_DOUBLE(w->time.current);
+    CANVAS_ASSERT_VALID_DOUBLE(w->time.delta);
+    CANVAS_ASSERT_VALID_DOUBLE(w->time.fps);
+
+    // Validate matrices (check for NaN)
+    for (int i = 0; i < 16; i++)
+    {
+        CANVAS_ASSERT_VALID_FLOAT(w->view_matrix.m[i]);
+        CANVAS_ASSERT_VALID_FLOAT(w->projection_matrix.m[i]);
+    }
+
+    // Validate title is null-terminated within bounds
+    bool found_null = false;
+    for (int i = 0; i < MAX_CANVAS_TITLE; i++)
+    {
+        if (w->title[i] == '\0')
+        {
+            found_null = true;
+            break;
+        }
+    }
+    if (!found_null)
+    {
+        CANVAS_ERR("Window %d title not null-terminated!\n", id);
+        assert(0 && "title buffer overflow");
+    }
+
+    // Validate enums
+    CANVAS_ASSERT_RANGE(w->cursor, CANVAS_CURSOR_HIDDEN, CANVAS_CURSOR_WAIT);
+    CANVAS_ASSERT_RANGE(w->active_cursor, CANVAS_CURSOR_HIDDEN, CANVAS_CURSOR_WAIT);
+
+    // Sanity check dimensions
+    if (w->width < 0 || w->width > 32768)
+    {
+        CANVAS_ERR("Suspicious window width: %" PRId64 " (window %d)\n", w->width, id);
+    }
+    if (w->height < 0 || w->height > 32768)
+    {
+        CANVAS_ERR("Suspicious window height: %" PRId64 " (window %d)\n", w->height, id);
+    }
+}
+
+static void _canvas_paranoid_validate_all(void)
+{
+    CANVAS_DBG("=== PARANOID VALIDATION START (op #%llu) ===\n",
+               (unsigned long long)_canvas_op_sequence);
+
+    // Check all canaries first
+    _canvas_check_canaries();
+
+    // Validate context isn't corrupted
+    CANVAS_ASSERT_NOT_POISONED(&canvas_info, sizeof(canvas_info));
+
+    // Run standard validations
+    _canvas_validate_all_windows();
+    _canvas_validate_all_displays();
+    _canvas_validate_all_pointers();
+
+    // Deep validate each window
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        _canvas_validate_window_sanity(i);
+    }
+
+    // Deep validate each pointer
+    for (int i = 0; i < CANVAS_POINTER_BUDGET; i++)
+    {
+        _canvas_validate_pointer_sanity(&canvas_info.pointers[i]);
+    }
+
+    // Validate time data
+    CANVAS_ASSERT_VALID_DOUBLE(canvas_info.time.current);
+    CANVAS_ASSERT_VALID_DOUBLE(canvas_info.time.delta);
+    CANVAS_ASSERT_VALID_DOUBLE(canvas_info.time.fps);
+
+    // Update tracking
+    canvas_info._last_validated_op = _canvas_op_sequence;
+
+    CANVAS_DBG("=== PARANOID VALIDATION COMPLETE ===\n");
+}
+
+// Call this at critical points to ensure everything is valid
+#define CANVAS_PARANOID_CHECK()                          \
+    do                                                   \
+    {                                                    \
+        _canvas_check_canaries();                        \
+        CANVAS_ASSERT_NOT_POISONED(&canvas_info,         \
+                                   sizeof(canvas_info)); \
+    } while (0)
+
+#else // CANVAS_VALIDATION < 5
+
+#define CANVAS_PARANOID_CHECK() ((void)0)
+static inline void _canvas_init_canaries(void) {}
+
+#endif // CANVAS_VALIDATION >= 5
+
 #endif
 
 canvas_pointer *canvas_get_primary_pointer(int window_id)
@@ -1135,7 +1589,15 @@ canvas_pointer *canvas_get_primary_pointer(int window_id)
 
     if (!p->active)
     {
+#if CANVAS_VALIDATION >= 5
+        uint64_t saved_head = p->_canary_head;
+        uint64_t saved_tail = p->_canary_tail;
+#endif
         memset(p, 0, sizeof(canvas_pointer));
+#if CANVAS_VALIDATION >= 5
+        p->_canary_head = saved_head;
+        p->_canary_tail = saved_tail;
+#endif
         p->id = 0;
         p->type = CANVAS_POINTER_MOUSE;
         p->window_id = window_id;
@@ -7541,6 +8003,12 @@ int _canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const ch
     canvas_info.canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
 
+#if CANVAS_VALIDATION >= 5
+    // Restore canaries after zeroing
+    canvas_info.canvas[window_id]._canary_head = CANVAS_CANARY_HEAD;
+    canvas_info.canvas[window_id]._canary_tail = CANVAS_CANARY_TAIL;
+#endif
+
     if (_canvas_using_wayland)
     {
     }
@@ -7965,6 +8433,11 @@ static bool _canvas_is_window_maximized(int window_id)
 int _canvas_update()
 {
     CANVAS_ENTER_FUNC();
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT(canvas_info._canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(canvas_info._canary_tail == CANVAS_CANARY_TAIL);
+#endif
+
     if (_canvas_using_wayland)
     {
     }
@@ -8536,21 +9009,36 @@ void canvas_time_init(canvas_time_data *time)
 bool canvas_pointer_down(canvas_pointer *p, canvas_pointer_button btn)
 {
     CANVAS_ENTER_FUNC();
-    CANVAS_ASSERT(p != NULL);
+    CANVAS_ASSERT_NOT_NULL(p);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+    CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+#endif
     CANVAS_RETURN((p->buttons & btn) != 0);
 }
 
 bool canvas_pointer_pressed(canvas_pointer *p, canvas_pointer_button btn)
 {
     CANVAS_ENTER_FUNC();
-    CANVAS_ASSERT(p != NULL);
+    CANVAS_ASSERT_NOT_NULL(p);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+    CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+#endif
     CANVAS_RETURN((p->buttons_pressed & btn) != 0);
 }
 
 bool canvas_pointer_released(canvas_pointer *p, canvas_pointer_button btn)
 {
     CANVAS_ENTER_FUNC();
-    CANVAS_ASSERT(p != NULL);
+    CANVAS_ASSERT_NOT_NULL(p);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+    CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+#endif
     CANVAS_RETURN((p->buttons_released & btn) != 0);
 }
 
@@ -8566,6 +9054,11 @@ canvas_pointer *canvas_get_pointer(int id)
     {
         CANVAS_ASSERT(p->active);
         CANVAS_ASSERT_RANGE(p->_sample_index, 0, CANVAS_POINTER_SAMPLE_FRAMES - 1);
+#if CANVAS_VALIDATION >= 5
+        CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+        CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+        CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+#endif
     }
     CANVAS_RETURN(p);
 }
@@ -8575,6 +9068,13 @@ float canvas_pointer_velocity(canvas_pointer *p)
     CANVAS_ENTER_FUNC();
     if (!p)
         CANVAS_RETURN(0.0f);
+
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+    CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+    CANVAS_ASSERT_RANGE(p->_sample_index, 0, CANVAS_POINTER_SAMPLE_FRAMES - 1);
+#endif
 
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
     int oldest = p->_sample_index;
@@ -8604,6 +9104,13 @@ void canvas_pointer_delta(canvas_pointer *p, int64_t *dx, int64_t *dy)
     if (!p || !dx || !dy)
         CANVAS_RETURN_VOID();
 
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+    CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+    CANVAS_ASSERT_RANGE(p->_sample_index, 0, CANVAS_POINTER_SAMPLE_FRAMES - 1);
+#endif
+
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
     int prev = (newest - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
 
@@ -8615,14 +9122,20 @@ void canvas_pointer_delta(canvas_pointer *p, int64_t *dx, int64_t *dy)
 int canvas_get_active_pointers(canvas_pointer **out)
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_CHECK();
     if (!out)
         CANVAS_RETURN(0);
 
     int count = 0;
     for (int i = 0; i < canvas_info.pointer_count; i++)
     {
+        CANVAS_ASSERT_RANGE(i, 0, CANVAS_POINTER_BUDGET - 1);
         if (canvas_info.pointers[i].active)
         {
+#if CANVAS_VALIDATION >= 5
+            CANVAS_ASSERT(canvas_info.pointers[i]._canary_head == CANVAS_CANARY_HEAD);
+            CANVAS_ASSERT(canvas_info.pointers[i]._canary_tail == CANVAS_CANARY_TAIL);
+#endif
             out[count++] = &canvas_info.pointers[i];
         }
     }
@@ -8634,6 +9147,13 @@ float canvas_pointer_direction(canvas_pointer *p)
     CANVAS_ENTER_FUNC();
     if (!p)
         CANVAS_RETURN(0.0f);
+
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(p, sizeof(canvas_pointer));
+    CANVAS_ASSERT(p->_canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(p->_canary_tail == CANVAS_CANARY_TAIL);
+    CANVAS_ASSERT_RANGE(p->_sample_index, 0, CANVAS_POINTER_SAMPLE_FRAMES - 1);
+#endif
 
     int newest = (p->_sample_index - 1 + CANVAS_POINTER_SAMPLE_FRAMES) % CANVAS_POINTER_SAMPLE_FRAMES;
     int oldest = p->_sample_index;
@@ -8650,10 +9170,16 @@ float canvas_pointer_direction(canvas_pointer *p)
 void canvas_pointer_capture(int window_id)
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas_pointer_capture");
     CANVAS_ASSERT_RANGE(window_id, 0, MAX_CANVAS - 1);
 
     if (!canvas_info.canvas[window_id]._valid)
         CANVAS_RETURN_VOID();
+
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_tail == CANVAS_CANARY_TAIL);
+#endif
 
     CANVAS_ASSERT_NOT_NULL(canvas_info.canvas[window_id].window);
 
@@ -8683,8 +9209,16 @@ void canvas_pointer_capture(int window_id)
 void canvas_pointer_release()
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas_pointer_release");
+    CANVAS_PARANOID_CHECK();
+
     for (int i = 0; i < canvas_info.pointer_count; i++)
     {
+        CANVAS_ASSERT_RANGE(i, 0, CANVAS_POINTER_BUDGET - 1);
+#if CANVAS_VALIDATION >= 5
+        CANVAS_ASSERT(canvas_info.pointers[i]._canary_head == CANVAS_CANARY_HEAD);
+        CANVAS_ASSERT(canvas_info.pointers[i]._canary_tail == CANVAS_CANARY_TAIL);
+#endif
         if (canvas_info.pointers[i].captured)
         {
             canvas_info.pointers[i].captured = false;
@@ -8717,6 +9251,10 @@ int canvas_startup()
     if (canvas_info.init)
         CANVAS_RETURN(CANVAS_OK);
 
+    // Initialize paranoid mode canaries first (before any other initialization)
+    _canvas_init_canaries();
+    CANVAS_PARANOID_OP("canvas_startup");
+
     canvas_info.auto_exit = true;
     canvas_info.limit_fps = 240;
 
@@ -8731,6 +9269,11 @@ int canvas_startup()
     {
         canvas_info.canvas[i] = (canvas_type){0};
         _canvas_data[i] = (canvas_data){0};
+#if CANVAS_VALIDATION >= 5
+        // Re-initialize canaries after zeroing
+        canvas_info.canvas[i]._canary_head = CANVAS_CANARY_HEAD;
+        canvas_info.canvas[i]._canary_tail = CANVAS_CANARY_TAIL;
+#endif
     }
 
     int result = _canvas_platform();
@@ -8747,6 +9290,7 @@ int canvas_startup()
 
     canvas_info.init = true;
 
+    CANVAS_PARANOID_CHECK();
     CANVAS_RETURN(CANVAS_OK);
 }
 
@@ -8754,6 +9298,7 @@ void canvas_main_loop()
 {
     CANVAS_ENTER_FUNC();
     CANVAS_ASSERT_INITIALIZED();
+    CANVAS_PARANOID_OP("canvas_main_loop");
 
     canvas_time_update(&canvas_info.time);
 
@@ -8768,6 +9313,7 @@ void canvas_main_loop()
         any_alive = true;
         CANVAS_ASSERT_NOT_NULL(canvas_info.canvas[i].window);
         CANVAS_ASSERT_RANGE(canvas_info.canvas[i].index, 0, MAX_CANVAS - 1);
+        CANVAS_PARANOID_CHECK();
 
         if (canvas_info.canvas[i].close)
         {
@@ -8815,6 +9361,7 @@ void canvas_main_loop()
 int canvas_exit()
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas_exit");
     CANVAS_INFO("quitting canvas");
     canvas_info.quit = 1;
     int result = _canvas_exit();
@@ -8824,6 +9371,9 @@ int canvas_exit()
 int canvas_run(canvas_update_callback default_callback)
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas_run");
+    CANVAS_PARANOID_CHECK();
+
     if (!canvas_info.init)
     {
         CANVAS_RETURN_ERR(CANVAS_FAIL, "refusing run, initialization failed.");
@@ -8850,7 +9400,23 @@ int canvas_run(canvas_update_callback default_callback)
 int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas_set");
     CANVAS_VALID(window_id);
+
+#if CANVAS_VALIDATION >= 5
+    // Validate window canaries
+    CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_tail == CANVAS_CANARY_TAIL);
+    // Sanity check dimensions
+    if (width > 0 && width > 32768)
+    {
+        CANVAS_WARN("suspicious width: %" PRId64 "\\n", width);
+    }
+    if (height > 0 && height > 32768)
+    {
+        CANVAS_WARN("suspicious height: %" PRId64 "\\n", height);
+    }
+#endif
 
     if (canvas_info.canvas[window_id].fullscreen) // todo: allow changing display in fullscreen
         CANVAS_RETURN(CANVAS_OK);
@@ -8950,6 +9516,8 @@ int canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const cha
 int canvas(int64_t x, int64_t y, int64_t width, int64_t height, const char *title)
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas");
+
     int result = _canvas_gpu_init();
     if (result != CANVAS_OK)
     {
@@ -8971,12 +9539,14 @@ int canvas(int64_t x, int64_t y, int64_t width, int64_t height, const char *titl
         CANVAS_RETURN_ERR(gpu_result, "GPU window setup failed\n");
     }
 
+    CANVAS_PARANOID_CHECK();
     CANVAS_RETURN(result);
 }
 
 int canvas_close(int window_id)
 {
     CANVAS_ENTER_FUNC();
+    CANVAS_PARANOID_OP("canvas_close");
     CANVAS_BOUNDS(window_id);
 
     if (!canvas_info.canvas[window_id]._valid)
@@ -8986,8 +9556,20 @@ int canvas_close(int window_id)
 
     _canvas_close(window_id);
 
+#if CANVAS_VALIDATION >= 5
+    // Poison the closed window's memory to catch use-after-close
+    uint64_t saved_head = canvas_info.canvas[window_id]._canary_head;
+    uint64_t saved_tail = canvas_info.canvas[window_id]._canary_tail;
+#endif
+
     canvas_info.canvas[window_id] = (canvas_type){0};
     _canvas_data[window_id] = (canvas_data){0};
+
+#if CANVAS_VALIDATION >= 5
+    // Restore canaries after zeroing
+    canvas_info.canvas[window_id]._canary_head = saved_head;
+    canvas_info.canvas[window_id]._canary_tail = saved_tail;
+#endif
 
     CANVAS_RETURN(CANVAS_OK);
 }
@@ -8996,6 +9578,10 @@ int canvas_set_update_callback(int window_id, canvas_update_callback callback)
 {
     CANVAS_ENTER_FUNC();
     CANVAS_VALID(window_id);
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_head == CANVAS_CANARY_HEAD);
+    CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_tail == CANVAS_CANARY_TAIL);
+#endif
 
     canvas_info.canvas[window_id].update = callback;
     CANVAS_RETURN(CANVAS_OK);
@@ -9005,7 +9591,19 @@ int canvas_color(int window_id, const float color[4])
 {
     CANVAS_ENTER_FUNC();
     CANVAS_VALID(window_id);
-    CANVAS_ASSERT(color != NULL);
+    CANVAS_ASSERT_NOT_NULL(color);
+
+#if CANVAS_VALIDATION >= 5
+    // Validate color values are sane floats
+    for (int i = 0; i < 4; i++)
+    {
+        CANVAS_ASSERT_VALID_FLOAT(color[i]);
+        if (color[i] < 0.0f || color[i] > 1.0f)
+        {
+            CANVAS_WARN("color[%d] = %f out of [0,1] range\n", i, color[i]);
+        }
+    }
+#endif
 
     canvas_info.canvas[window_id].clear[0] = color[0];
     canvas_info.canvas[window_id].clear[1] = color[1];
@@ -9021,7 +9619,16 @@ int canvas_color(int window_id, const float color[4])
 void canvas_time_update(canvas_time_data *time)
 {
     CANVAS_ENTER_FUNC();
-    CANVAS_ASSERT(time != NULL);
+    CANVAS_ASSERT_NOT_NULL(time);
+
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(time, sizeof(canvas_time_data));
+    CANVAS_ASSERT_VALID_DOUBLE(time->current);
+    CANVAS_ASSERT_VALID_DOUBLE(time->last);
+    CANVAS_ASSERT_VALID_DOUBLE(time->delta);
+    CANVAS_ASSERT_RANGE(time->frame_index, 0, 59);
+#endif
+
     time->current = canvas_get_time(time);
     time->raw_delta = time->current - time->last;
 
@@ -9060,7 +9667,17 @@ void canvas_time_update(canvas_time_data *time)
 int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_steps)
 {
     CANVAS_ENTER_FUNC();
-    CANVAS_ASSERT(time != NULL);
+    CANVAS_ASSERT_NOT_NULL(time);
+
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_NOT_POISONED(time, sizeof(canvas_time_data));
+    CANVAS_ASSERT_VALID_DOUBLE(fixed_dt);
+    CANVAS_ASSERT_VALID_DOUBLE(time->delta);
+    CANVAS_ASSERT_VALID_DOUBLE(time->accumulator);
+    CANVAS_ASSERT_POSITIVE(fixed_dt);
+    CANVAS_ASSERT_POSITIVE(max_steps);
+#endif
+
     time->accumulator += time->delta;
 
     int steps = 0;
@@ -9078,7 +9695,16 @@ int canvas_time_fixed_step(canvas_time_data *time, double fixed_dt, int max_step
 void canvas_limit_fps(canvas_time_data *time, double target_fps)
 {
     CANVAS_ENTER_FUNC();
-    CANVAS_ASSERT(time != NULL);
+    CANVAS_ASSERT_NOT_NULL(time);
+
+#if CANVAS_VALIDATION >= 5
+    CANVAS_ASSERT_VALID_DOUBLE(target_fps);
+    if (target_fps > 1000.0)
+    {
+        CANVAS_WARN("suspicious target_fps: %f\n", target_fps);
+    }
+#endif
+
     if (target_fps <= 0.0)
         CANVAS_RETURN_VOID();
 
