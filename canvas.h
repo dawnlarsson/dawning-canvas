@@ -67,11 +67,12 @@ CANVAS_EXTERN_C_BEGIN
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 
-#if defined(__linux__)
+#if !defined(_WIN32)
 #include <dlfcn.h>
 #endif
 
@@ -977,8 +978,8 @@ static void _canvas_pointer_print_impl(int id, const char *file, int line)
     printf("\n");
 
     printf("Position:\n");
-    printf("  Window:          (%ld, %ld)\n", p->x, p->y);
-    printf("  Screen:          (%ld, %ld)\n", p->screen_x, p->screen_y);
+    printf("  Window:          (%" PRId64 ", %" PRId64 ")\n", p->x, p->y);
+    printf("  Screen:          (%" PRId64 ", %" PRId64 ")\n", p->screen_x, p->screen_y);
     printf("  Display:         %d\n", p->display);
     printf("  Inside Window:   %s\n", p->inside_window ? "YES" : "NO");
     printf("\n");
@@ -1093,7 +1094,7 @@ static void _canvas_pointer_print_impl(int id, const char *file, int line)
 
         if (s->time > 0.0)
         {
-            printf("  %c [%d] (%4ld, %4ld) @ %.6fs\n",
+            printf("  %c [%d] (%4" PRId64 ", %4" PRId64 ") @ %.6fs\n",
                    marker, idx, s->x, s->y, s->time);
         }
         else
@@ -1115,7 +1116,7 @@ static void _canvas_validate_all_windows(void)
             CANVAS_ASSERT(canvas_info.canvas[i].width >= 0);
             CANVAS_ASSERT(canvas_info.canvas[i].height >= 0);
             CANVAS_ASSERT_RANGE(canvas_info.canvas[i].cursor, CANVAS_CURSOR_HIDDEN, CANVAS_CURSOR_WAIT);
-            CANVAS_DBG("Window %d: valid, size=%ldx%ld, display=%d\n",
+            CANVAS_DBG("Window %d: valid, size=%" PRId64 "x%" PRId64 ", display=%d\n",
                        i, canvas_info.canvas[i].width, canvas_info.canvas[i].height, canvas_info.canvas[i].display);
         }
     }
@@ -1128,7 +1129,7 @@ static void _canvas_validate_all_displays(void)
     for (int i = 0; i < canvas_info.display_count; i++)
     {
         CANVAS_VALIDATE_DISPLAY(&canvas_info.display[i]);
-        CANVAS_DBG("Display %d: %ldx%ld @ %dHz, primary=%d\n",
+        CANVAS_DBG("Display %d: %" PRId64 "x%" PRId64 " @ %dHz, primary=%d\n",
                    i, canvas_info.display[i].width, canvas_info.display[i].height,
                    canvas_info.display[i].refresh_rate, canvas_info.display[i].primary);
     }
@@ -1333,7 +1334,6 @@ void canvas_library_close(void *lib)
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include <dlfcn.h>
 
 typedef void *objc_id;
 typedef void *objc_sel;
