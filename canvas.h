@@ -1162,6 +1162,10 @@ typedef struct
 #define CANVAS_ERR_GET_PLATFORM -36
 #define CANVAS_ERR_INVALID_SIZE -37
 
+#ifdef KEY_EXECUTE
+#undef KEY_EXECUTE
+#endif
+
 typedef enum KEY
 {
     KEY_ERROR_ROLLOVER = 1,
@@ -2713,6 +2717,7 @@ canvas_platform_macos canvas_macos;
 #if defined(_WIN32)
 
 #include <dwmapi.h>
+#include <mmsystem.h>
 
 #define INITGUID
 
@@ -6685,10 +6690,20 @@ int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width,
 
     CANVAS_DISPLAY_BOUNDS(display);
 
-    int screen_x = canvas_info.display[display].x + x;
-    int screen_y = canvas_info.display[display].y + y;
+    int screen_x = (int)(canvas_info.display[display].x + x);
+    int screen_y = (int)(canvas_info.display[display].y + y);
 
-    SetWindowPos(window, NULL, screen_x, screen_y, width, height, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+    int win_width = (width == -1) ? (int)canvas_info.canvas[window_id].width : (int)width;
+    int win_height = (height == -1) ? (int)canvas_info.canvas[window_id].height : (int)height;
+
+    UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    
+    if (win_width <= 0 || win_height <= 0)
+        flags |= SWP_NOSIZE;
+
+
+    if (!SetWindowPos(window, NULL, screen_x, screen_y, win_width, win_height, flags))
+        CANVAS_WARN("SetWindowPos failed: %lu\n", GetLastError());
 
     if (title)
         SetWindowTextA(window, title);
@@ -7036,7 +7051,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOVING:
     {
-        canvas_info.canvas[window_index].os_moved = true;
 
         return CANVAS_OK;
     }
