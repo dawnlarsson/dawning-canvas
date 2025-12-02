@@ -72,7 +72,12 @@ CANVAS_EXTERN_C_BEGIN
 #include <stdlib.h>
 #include <math.h>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #endif
 
@@ -245,7 +250,16 @@ CANVAS_EXTERN_C_BEGIN
 #define CANVAS_ASSERT_GPU_INITIALIZED() ((void)0)
 #endif
 
-#define CANVAS_ENTER_FUNC() CANVAS_TRACE("ENTER\n")
+#if CANVAS_VALIDATION >= 7
+#define CANVAS_ENTER_FUNC()                                                                  \
+    do                                                                                       \
+    {                                                                                        \
+        fprintf(stdout, "[CANVAS-TRACE] %s:%d %s(): ENTER\n", __FILE__, __LINE__, __func__); \
+        fflush(stdout);                                                                      \
+    } while (0)
+#elif CANVAS_VALIDATION >= 1
+#define CANVAS_ENTER_FUNC() ((void)0)
+#endif
 
 // Exit tracing at level 6+ (matches CANVAS_TRACE level)
 #if CANVAS_VALIDATION >= 6
@@ -2698,7 +2712,6 @@ canvas_platform_macos canvas_macos;
 
 #if defined(_WIN32)
 
-#include <windows.h>
 #include <dwmapi.h>
 
 #define INITGUID

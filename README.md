@@ -50,7 +50,8 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
  *   3 = Errors + warnings + info
  *   4 = Errors + warnings + info + verbose + asserts
  *   5 = 4 + Paranoid asserts + paranoid crash handler
- *   6 = Full function entry / exit trace (CANVAS-TRACE)
+ *   6 = Tracing / function exit results (CANVAS-TRACE)
+ *   7 = Function enter tracing
 ```
 
 ## Building the example
