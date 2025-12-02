@@ -24,7 +24,7 @@
                 "-o",
                 "simple",
                 "-I./",
-                "-DCANVAS_VALIDATION=5"
+                "-DCANVAS_VALIDATION=6"
             ],
             "group": {
                 "kind": "build",

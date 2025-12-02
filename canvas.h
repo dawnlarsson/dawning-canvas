@@ -2854,6 +2854,9 @@ static struct
 
     int (*XGetWindowProperty)(Display *, Window, Atom, long, long, bool, Atom, Atom *, int *, unsigned long *, unsigned long *, unsigned char **);
 
+    void (*XLockDisplay)(Display *);
+    void (*XUnlockDisplay)(Display *);
+
     Atom internal_atom;
     Display *display;
 } x11;
@@ -4040,7 +4043,13 @@ static int vk_create_swapchain(int window_id)
 
     SwapchainSupportDetails support = {0};
 
-    vk_info.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk_info.physical_device, vk_win->surface, &support.capabilities);
+    VkResult caps_result = vk_info.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk_info.physical_device, vk_win->surface, &support.capabilities);
+    if (caps_result != VK_SUCCESS)
+    {
+        CANVAS_VERBOSE("vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed: %d, skipping swapchain creation\n", caps_result);
+        vk_win->needs_resize = true;
+        CANVAS_RETURN(CANVAS_OK);
+    }
 
     vk_info.vkGetPhysicalDeviceSurfaceFormatsKHR(vk_info.physical_device, vk_win->surface, &support.format_count, NULL);
     if (support.format_count > 0)
@@ -4069,7 +4078,10 @@ static int vk_create_swapchain(int window_id)
         if (support.formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && support.formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             surface_format = support.formats[i];
 
+    // Force FIFO mode for now to avoid X11 threading issues with many swapchains
+    // TODO: Investigate Mesa WSI X11 thread safety with multiple swapchains
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+#if 0
     for (uint32_t i = 0; i < support.present_mode_count; i++)
         if (support.present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
             present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
@@ -4077,11 +4089,20 @@ static int vk_create_swapchain(int window_id)
     for (uint32_t i = 0; i < support.present_mode_count; i++)
         if (support.present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
             present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+#endif
 
     VkExtent2D extent = vk_choose_swap_extent(&support.capabilities, window_id);
 
-    CANVAS_ASSERT(extent.width > 0);
-    CANVAS_ASSERT(extent.height > 0);
+    // Handle minimized or invalid window dimensions
+    if (extent.width == 0 || extent.height == 0)
+    {
+        CANVAS_VERBOSE("skipping swapchain creation for zero-sized window %d (%ux%u)\n",
+                       window_id, extent.width, extent.height);
+        vk_cleanup_swapchain_support_details(&support);
+        canvas_vulkan_window *vk_win_check = &vk_windows[window_id];
+        vk_win_check->needs_resize = true; // Retry when window is visible again
+        CANVAS_RETURN(CANVAS_OK);
+    }
 
     canvas_info.canvas[window_id].width = (int)extent.width;
     canvas_info.canvas[window_id].height = (int)extent.height;
@@ -4445,6 +4466,24 @@ static int vk_recreate_swapchain(int window_id)
 
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
 
+    if (vk_win->recreating_swapchain)
+    {
+        CANVAS_VERBOSE("skipping recursive swapchain recreation for window %d\n", window_id);
+        CANVAS_RETURN(CANVAS_OK);
+    }
+
+    int64_t width = canvas_info.canvas[window_id].width;
+    int64_t height = canvas_info.canvas[window_id].height;
+    if (width <= 0 || height <= 0)
+    {
+        CANVAS_VERBOSE("skipping swapchain recreation for minimized window %d (%" PRId64 "x%" PRId64 ")\n",
+                       window_id, width, height);
+        vk_win->needs_resize = true;
+        CANVAS_RETURN(CANVAS_OK);
+    }
+
+    vk_win->recreating_swapchain = true;
+
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         if (vk_win->in_flight_fences[i] != VK_NULL_HANDLE)
@@ -4453,8 +4492,7 @@ static int vk_recreate_swapchain(int window_id)
         }
     }
 
-    vk_info.vkQueueWaitIdle(vk_info.graphics_queue);
-    vk_info.vkQueueWaitIdle(vk_info.present_queue);
+    vk_info.vkDeviceWaitIdle(vk_info.device);
 
     vk_cleanup_swapchain(window_id);
 
@@ -4462,23 +4500,27 @@ static int vk_recreate_swapchain(int window_id)
     result = vk_create_swapchain(window_id);
     if (result != CANVAS_OK)
     {
+        vk_win->recreating_swapchain = false;
         CANVAS_RETURN_ERR(result, "vk_recreate_swapchain: Failed to create swapchain\n");
     }
 
     result = vk_create_framebuffers(window_id);
     if (result != CANVAS_OK)
     {
+        vk_win->recreating_swapchain = false;
         CANVAS_RETURN_ERR(result, "vk_recreate_swapchain: Failed to create framebuffers\n");
     }
 
     result = vk_create_command_buffers(window_id);
     if (result != CANVAS_OK)
     {
+        vk_win->recreating_swapchain = false;
         CANVAS_RETURN_ERR(result, "vk_recreate_swapchain: Failed to create command buffers\n");
     }
 
     vk_win->needs_resize = false;
     vk_win->current_frame = 0;
+    vk_win->recreating_swapchain = false;
 
     CANVAS_RETURN(CANVAS_OK);
 }
@@ -4540,8 +4582,20 @@ static int vk_draw_frame(int window_id)
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
 
     if (!vk_win->initialized)
-    {
         CANVAS_RETURN(CANVAS_OK);
+
+    if (vk_win->recreating_swapchain)
+        CANVAS_RETURN(CANVAS_OK);
+
+    if (vk_win->needs_resize)
+    {
+        int recreate_result = vk_recreate_swapchain(window_id);
+
+        if (recreate_result != CANVAS_OK)
+            CANVAS_RETURN(CANVAS_OK);
+
+        if (!vk_win->swapchain)
+            CANVAS_RETURN(CANVAS_OK);
     }
 
     CANVAS_ASSERT_NOT_NULL(vk_info.device);
@@ -4551,9 +4605,7 @@ static int vk_draw_frame(int window_id)
     VkFence current_fence = vk_win->in_flight_fences[frame_index];
 
     if (current_fence == VK_NULL_HANDLE)
-    {
         CANVAS_RETURN(CANVAS_FAIL);
-    }
 
     vk_info.vkWaitForFences(vk_info.device, 1, &current_fence, VK_TRUE, UINT64_MAX);
 
@@ -5046,9 +5098,7 @@ static void vk_cleanup_window(int window_id)
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
 
     if (!vk_win->initialized)
-    {
         CANVAS_RETURN_VOID();
-    }
 
     CANVAS_ASSERT_NOT_NULL(vk_info.device);
 
@@ -5105,9 +5155,7 @@ static void vk_cleanup(void)
     CANVAS_ENTER_FUNC();
 
     if (!vk_info.instance)
-    {
         CANVAS_RETURN_VOID();
-    }
 
     if (vk_info.device)
         vk_info.vkDeviceWaitIdle(vk_info.device);
@@ -8395,11 +8443,13 @@ int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width,
 
         if (title && strcmp(canvas_info.canvas[window_id].title, title) != 0)
         {
+            x11.XLockDisplay(x11.display);
             x11.XStoreName(x11.display, window, title);
             Atom net_wm_name = x11.XInternAtom(x11.display, "_NET_WM_NAME", 0);
             Atom utf8_string = x11.XInternAtom(x11.display, "UTF8_STRING", 0);
             x11.XChangeProperty(x11.display, window, net_wm_name, utf8_string, 8, 0,
                                 (unsigned char *)title, strlen(title));
+            x11.XUnlockDisplay(x11.display);
         }
 
         _canvas_data[window_id].client_set = true;
@@ -8412,11 +8462,13 @@ int _canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width,
             CANVAS_RETURN_ERR(CANVAS_FAIL, "window position out of range: %d,%d\n", global_x, global_y);
         }
 
+        x11.XLockDisplay(x11.display);
         x11.XMoveResizeWindow(x11.display, window,
                               (int)global_x, (int)global_y,
                               (unsigned int)width, (unsigned int)height);
 
         x11.XFlush(x11.display);
+        x11.XUnlockDisplay(x11.display);
     }
 
     canvas_info.canvas[window_id].os_moved = false;
@@ -8898,6 +8950,19 @@ int _canvas_init_x11()
         return CANVAS_ERR_LOAD_LIBRARY;
     }
 
+    int (*XInitThreads_ptr)(void) = dlsym(x11.library, "XInitThreads");
+    if (XInitThreads_ptr)
+    {
+        if (!XInitThreads_ptr())
+        {
+            CANVAS_WARN("XInitThreads failed - multi-threaded X11 may not work correctly\n");
+        }
+    }
+    else
+    {
+        CANVAS_WARN("XInitThreads not found - multi-threaded X11 may not work correctly\n");
+    }
+
     LOAD_X11(XOpenDisplay);
 
     x11.display = x11.XOpenDisplay(NULL);
@@ -8947,6 +9012,8 @@ int _canvas_init_x11()
     LOAD_X11(XQueryPointer);
     LOAD_X11(XTranslateCoordinates);
     LOAD_X11(XFreeCursor);
+    LOAD_X11(XLockDisplay);
+    LOAD_X11(XUnlockDisplay);
 
     x11.internal_atom = x11.XInternAtom(x11.display, "_CANVAS_INTERNAL", false);
 
@@ -9256,17 +9323,6 @@ int _canvas_update()
                     if (vk_win->initialized)
                     {
                         vk_win->needs_resize = true;
-
-                        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-                        {
-                            if (vk_win->in_flight_fences[i] != VK_NULL_HANDLE)
-                            {
-                                vk_info.vkWaitForFences(vk_info.device, 1,
-                                                        &vk_win->in_flight_fences[i], VK_TRUE, UINT64_MAX);
-                            }
-                        }
-
-                        vk_recreate_swapchain(window_id);
                     }
                 }
 
@@ -9442,15 +9498,12 @@ int _canvas_gpu_init(void)
 {
     CANVAS_ENTER_FUNC();
     if (canvas_info.init_gpu)
-    {
         CANVAS_RETURN(CANVAS_OK);
-    }
 
     int result = canvas_backend_vulkan_init();
+
     if (result != CANVAS_OK)
-    {
         CANVAS_RETURN(result);
-    }
 
     canvas_info.init_gpu = 1;
     CANVAS_RETURN(CANVAS_OK);
@@ -9468,9 +9521,7 @@ int _canvas_gpu_new_window(int window_id)
 
     result = vk_create_surface(window_id, &vk_win->surface);
     if (result != CANVAS_OK)
-    {
         CANVAS_RETURN_ERR(result, "failed to create surface for window %d\n", window_id);
-    }
 
     if (!vk_info.device)
     {
@@ -9541,9 +9592,7 @@ int _canvas_window_resize(int window_id)
     canvas_vulkan_window *vk_win = &vk_windows[window_id];
 
     if (!vk_win->initialized)
-    {
         CANVAS_RETURN(CANVAS_OK);
-    }
 
     vk_win->needs_resize = true;
     CANVAS_RETURN(CANVAS_OK);
@@ -9599,9 +9648,7 @@ double canvas_get_time(canvas_time_data *time)
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
     if (ts.tv_sec < 0 || ts.tv_nsec < 0)
-    {
         CANVAS_RETURN(0.0);
-    }
 
     uint64_t now = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 
@@ -9836,9 +9883,7 @@ void canvas_pointer_capture(int window_id)
 #elif defined(__linux__)
     if (!_canvas_using_wayland && x11.display)
     {
-        x11.XGrabPointer(x11.display,
-                         (Window)canvas_info.canvas[window_id].window,
-                         true,
+        x11.XGrabPointer(x11.display, (Window)canvas_info.canvas[window_id].window, true,
                          ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
                          X11_GrabModeAsync, X11_GrabModeAsync, None, None, X11_CurrentTime);
     }
@@ -9860,18 +9905,14 @@ void canvas_pointer_release()
         CANVAS_ASSERT(canvas_info.pointers[i]._canary_tail == CANVAS_CANARY_TAIL);
 #endif
         if (canvas_info.pointers[i].captured)
-        {
             canvas_info.pointers[i].captured = false;
-        }
     }
 
 #if defined(_WIN32)
     // ReleaseCapture();
 #elif defined(__linux__)
     if (!_canvas_using_wayland && x11.display)
-    {
         x11.XUngrabPointer(x11.display, X11_CurrentTime);
-    }
 #endif
     CANVAS_RETURN_VOID();
 }
@@ -9907,9 +9948,7 @@ int canvas_startup()
     canvas_time_init(&canvas_info.time);
 
     for (int i = 0; i < MAX_DISPLAYS; ++i)
-    {
         canvas_info.display[i] = (canvas_display){0};
-    }
 
     for (int i = 0; i < MAX_CANVAS; ++i)
     {
@@ -9923,16 +9962,13 @@ int canvas_startup()
     }
 
     int result = _canvas_platform();
+
     if (result != CANVAS_OK)
-    {
         CANVAS_RETURN_ERR(result, "platform initialization failed\n");
-    }
 
     result = _canvas_init_displays();
     if (result < 0)
-    {
         CANVAS_RETURN_ERR(result, "display initialization failed\n");
-    }
 
     canvas_info.init = true;
 
@@ -10010,9 +10046,7 @@ void canvas_main_loop()
     }
 
     if (!canvas_info.os_timed)
-    {
         canvas_limit_fps(&canvas_info.time, canvas_info.limit_fps);
-    }
 
     for (int i = 0; i < canvas_info.pointer_count; i++)
     {
@@ -10100,37 +10134,27 @@ int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, 
     CANVAS_ASSERT_STATE_GE(CANVAS_STATE_STARTUP_DONE);
     CANVAS_VALID(window_id);
 #if CANVAS_VALIDATION >= 5
-    // Validate window canaries
     CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_head == CANVAS_CANARY_HEAD);
     CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_tail == CANVAS_CANARY_TAIL);
-    // Sanity check dimensions
     if (width > 0 && width > 32768)
-    {
         CANVAS_WARN("suspicious width: %" PRId64 "\\n", width);
-    }
+
     if (height > 0 && height > 32768)
-    {
         CANVAS_WARN("suspicious height: %" PRId64 "\\n", height);
-    }
+
 #endif
 
     if (canvas_info.canvas[window_id].fullscreen) // todo: allow changing display in fullscreen
         CANVAS_RETURN(CANVAS_OK);
 
     if (canvas_info.display_count <= 0)
-    {
         CANVAS_RETURN_ERR(CANVAS_ERR_GET_DISPLAY, "no displays available\n");
-    }
 
     if (display < 0 || display >= canvas_info.display_count)
-    {
         display = _canvas_primary_display_index();
-    }
 
     if (width == 0 || height == 0)
-    {
         CANVAS_RETURN_ERR(CANVAS_ERR_INVALID_SIZE, "invalid window size\n");
-    }
 
     canvas_info.canvas[window_id].display = display;
 
@@ -10190,15 +10214,12 @@ int canvas_window(int64_t x, int64_t y, int64_t width, int64_t height, const cha
     int result = _canvas_window(x, y, width, height, title);
 
     if (result < 0)
-    {
         CANVAS_RETURN_ERR(result, "window creation failed\n");
-    }
 
     int set_result = canvas_set(result, -1, x, y, width, height, title);
+
     if (set_result != CANVAS_OK)
-    {
         CANVAS_RETURN_ERR(set_result, "window configuration failed\n");
-    }
 
     canvas_time_init(&canvas_info.canvas[result].time);
 
@@ -10215,25 +10236,21 @@ int canvas(int64_t x, int64_t y, int64_t width, int64_t height, const char *titl
     CANVAS_PARANOID_OP("canvas");
 
     int result = _canvas_gpu_init();
+
     if (result != CANVAS_OK)
-    {
         CANVAS_RETURN_ERR(result, "GPU initialization failed\n");
-    }
 
     result = canvas_window(x, y, width, height, title);
 
     if (result < 0)
-    {
         CANVAS_RETURN_ERR(result, "canvas window creation failed\n");
-    }
 
     canvas_color(result, (float[]){0.0f, 0.0f, 0.0f, 1.0f});
 
     int gpu_result = _canvas_gpu_new_window(result);
+
     if (gpu_result != CANVAS_OK)
-    {
         CANVAS_RETURN_ERR(gpu_result, "GPU window setup failed\n");
-    }
 
     CANVAS_PARANOID_CHECK();
     CANVAS_RETURN(result);
@@ -10295,10 +10312,9 @@ int canvas_color(int window_id, const float color[4])
     for (int i = 0; i < 4; i++)
     {
         CANVAS_ASSERT_VALID_FLOAT(color[i]);
+
         if (color[i] < 0.0f || color[i] > 1.0f)
-        {
             CANVAS_WARN("color[%d] = %f out of [0,1] range\n", i, color[i]);
-        }
     }
 #endif
 
@@ -10330,9 +10346,7 @@ void canvas_time_update(canvas_time_data *time)
     time->raw_delta = time->current - time->last;
 
     if (time->raw_delta > 0.1)
-    {
         time->raw_delta = 0.1;
-    }
 
     const double smoothing = 0.95;
     if (time->frame == 0)
@@ -10341,18 +10355,17 @@ void canvas_time_update(canvas_time_data *time)
     }
     else
     {
-        time->delta = time->delta * smoothing +
-                      time->raw_delta * (1.0 - smoothing);
+        time->delta = time->delta * smoothing + time->raw_delta * (1.0 - smoothing);
     }
 
     time->times[time->frame_index] = time->raw_delta;
     time->frame_index = (time->frame_index + 1) % 60;
 
     double avg_frame_time = 0.0;
+
     for (int i = 0; i < 60; i++)
-    {
         avg_frame_time += time->times[i];
-    }
+
     avg_frame_time /= 60.0;
     time->fps = (avg_frame_time > 0.0) ? (1.0 / avg_frame_time) : 0.0;
 
@@ -10397,9 +10410,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
 #if CANVAS_VALIDATION >= 5
     CANVAS_ASSERT_VALID_DOUBLE(target_fps);
     if (target_fps > 1000.0)
-    {
         CANVAS_WARN("suspicious target_fps: %f\n", target_fps);
-    }
 #endif
 
     if (target_fps <= 0.0)
@@ -10412,9 +10423,7 @@ void canvas_limit_fps(canvas_time_data *time, double target_fps)
     if (remaining > 0.0)
     {
         if (remaining > 0.002)
-        {
             canvas_sleep(remaining - 0.002);
-        }
 
         while (canvas_get_time(time) - (time->current - time->delta) < target_frame_time)
         {
