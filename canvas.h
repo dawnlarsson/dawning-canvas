@@ -84,6 +84,11 @@ CANVAS_EXTERN_C_BEGIN
 
 #include <stdio.h>
 #include <assert.h>
+#include <signal.h>
+#if !defined(_WIN32)
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 
 #define CANVAS_ERR(...)                                              \
     do                                                               \
@@ -498,6 +503,7 @@ static void _canvas_check_canaries(void);
 #define CANVAS_ASSERT_NOT_DOUBLE_FREE(ptr) ((void)0)
 #define CANVAS_PARANOID_CHECK() ((void)0)
 static inline void _canvas_init_canaries(void) {}
+static inline void _canvas_install_crash_handler(void) {}
 
 #endif
 
@@ -1009,7 +1015,7 @@ typedef struct
 
 canvas_keyboard_state canvas_keyboard = {0};
 
-inline bool canvas_key_down(int key)
+static inline bool canvas_key_down(int key)
 {
     CANVAS_ASSERT_RANGE(key, 0, 255);
 #if CANVAS_VALIDATION >= 5
@@ -1020,7 +1026,7 @@ inline bool canvas_key_down(int key)
     return canvas_keyboard.keys[key];
 }
 
-inline bool canvas_key_pressed(int key)
+static inline bool canvas_key_pressed(int key)
 {
     CANVAS_ASSERT_RANGE(key, 0, 255);
 #if CANVAS_VALIDATION >= 5
@@ -1031,7 +1037,7 @@ inline bool canvas_key_pressed(int key)
     return canvas_keyboard.keys_pressed[key];
 }
 
-inline bool canvas_key_released(int key)
+static inline bool canvas_key_released(int key)
 {
     CANVAS_ASSERT_RANGE(key, 0, 255);
 #if CANVAS_VALIDATION >= 5
@@ -1044,37 +1050,37 @@ inline bool canvas_key_released(int key)
 
 #ifndef CANVAS_NO_EASY_API
 
-inline bool key_down(int key)
+static inline bool key_down(int key)
 {
     return canvas_key_down(key);
 }
 
-inline bool key_press(int key)
+static inline bool key_press(int key)
 {
     return canvas_key_pressed(key);
 }
 
-inline bool key_up(int key)
+static inline bool key_up(int key)
 {
     return canvas_key_released(key);
 }
 
-inline bool pointer_down(canvas_pointer *p, canvas_pointer_button btn)
+static inline bool pointer_down(canvas_pointer *p, canvas_pointer_button btn)
 {
     return canvas_pointer_down(p, btn);
 }
 
-inline bool pointer_press(canvas_pointer *p, canvas_pointer_button btn)
+static inline bool pointer_press(canvas_pointer *p, canvas_pointer_button btn)
 {
     return canvas_pointer_pressed(p, btn);
 }
 
-inline bool pointer_up(canvas_pointer *p, canvas_pointer_button btn)
+static inline bool pointer_up(canvas_pointer *p, canvas_pointer_button btn)
 {
     return canvas_pointer_released(p, btn);
 }
 
-inline float pointer_vel(canvas_pointer *p)
+static inline float pointer_vel(canvas_pointer *p)
 {
     return canvas_pointer_velocity(p);
 }
@@ -1566,10 +1572,204 @@ static void _canvas_paranoid_validate_all(void)
                                    sizeof(canvas_info)); \
     } while (0)
 
+static volatile sig_atomic_t _canvas_in_crash_handler = 0;
+
+static void _canvas_crash_dump(void)
+{
+    // Prevent re-entry if we crash inside the crash handler
+    if (_canvas_in_crash_handler)
+        return;
+    _canvas_in_crash_handler = 1;
+
+    // Print last operation info
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf),
+                       "Last Operation: #%llu - %s\n"
+                       "Location:       %s:%d\n\n",
+                       (unsigned long long)_canvas_op_sequence,
+                       _canvas_last_op,
+                       _canvas_last_op_file,
+                       _canvas_last_op_line);
+    write(STDERR_FILENO, buf, len);
+
+    // Check canaries without asserting
+    const char *canary_header = "Canary Status:\n";
+    write(STDERR_FILENO, canary_header, strlen(canary_header));
+
+    if (canvas_info._canary_head != CANVAS_CANARY_HEAD)
+    {
+        len = snprintf(buf, sizeof(buf),
+                       "  [CORRUPT] canvas_info._canary_head = 0x%llX (expected 0x%llX)\n",
+                       (unsigned long long)canvas_info._canary_head,
+                       (unsigned long long)CANVAS_CANARY_HEAD);
+        write(STDERR_FILENO, buf, len);
+    }
+    else
+    {
+        write(STDERR_FILENO, "  [OK] canvas_info head canary\n", 31);
+    }
+
+    if (canvas_info._canary_tail != CANVAS_CANARY_TAIL)
+    {
+        len = snprintf(buf, sizeof(buf),
+                       "  [CORRUPT] canvas_info._canary_tail = 0x%llX (expected 0x%llX)\n",
+                       (unsigned long long)canvas_info._canary_tail,
+                       (unsigned long long)CANVAS_CANARY_TAIL);
+        write(STDERR_FILENO, buf, len);
+    }
+    else
+    {
+        write(STDERR_FILENO, "  [OK] canvas_info tail canary\n", 31);
+    }
+
+    // Check window canaries
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (canvas_info.canvas[i]._valid ||
+            canvas_info.canvas[i]._canary_head != CANVAS_CANARY_HEAD ||
+            canvas_info.canvas[i]._canary_tail != CANVAS_CANARY_TAIL)
+        {
+            if (canvas_info.canvas[i]._canary_head != CANVAS_CANARY_HEAD)
+            {
+                len = snprintf(buf, sizeof(buf),
+                               "  [CORRUPT] window[%d] head canary = 0x%llX\n",
+                               i, (unsigned long long)canvas_info.canvas[i]._canary_head);
+                write(STDERR_FILENO, buf, len);
+            }
+            if (canvas_info.canvas[i]._canary_tail != CANVAS_CANARY_TAIL)
+            {
+                len = snprintf(buf, sizeof(buf),
+                               "  [CORRUPT] window[%d] tail canary = 0x%llX\n",
+                               i, (unsigned long long)canvas_info.canvas[i]._canary_tail);
+                write(STDERR_FILENO, buf, len);
+            }
+        }
+    }
+
+    // Check pointer canaries
+    for (int i = 0; i < CANVAS_POINTER_BUDGET; i++)
+    {
+        if (canvas_info.pointers[i].active ||
+            canvas_info.pointers[i]._canary_head != CANVAS_CANARY_HEAD ||
+            canvas_info.pointers[i]._canary_tail != CANVAS_CANARY_TAIL)
+        {
+            if (canvas_info.pointers[i]._canary_head != CANVAS_CANARY_HEAD)
+            {
+                len = snprintf(buf, sizeof(buf),
+                               "  [CORRUPT] pointer[%d] head canary = 0x%llX\n",
+                               i, (unsigned long long)canvas_info.pointers[i]._canary_head);
+                write(STDERR_FILENO, buf, len);
+            }
+            if (canvas_info.pointers[i]._canary_tail != CANVAS_CANARY_TAIL)
+            {
+                len = snprintf(buf, sizeof(buf),
+                               "  [CORRUPT] pointer[%d] tail canary = 0x%llX\n",
+                               i, (unsigned long long)canvas_info.pointers[i]._canary_tail);
+                write(STDERR_FILENO, buf, len);
+            }
+        }
+    }
+
+    // State summary
+    const char *state_header = "\nState Summary:\n";
+    write(STDERR_FILENO, state_header, strlen(state_header));
+
+    len = snprintf(buf, sizeof(buf),
+                   "  init=%d, init_gpu=%d, init_post=%d\n"
+                   "  display_count=%d, pointer_count=%d\n"
+                   "  quit=%d, auto_exit=%d\n"
+                   "  last_validated_op=%llu\n",
+                   canvas_info.init, canvas_info.init_gpu, canvas_info.init_post,
+                   canvas_info.display_count, canvas_info.pointer_count,
+                   canvas_info.quit, canvas_info.auto_exit,
+                   (unsigned long long)canvas_info._last_validated_op);
+    write(STDERR_FILENO, buf, len);
+
+    // Active windows
+    const char *window_header = "\nActive Windows:\n";
+    write(STDERR_FILENO, window_header, strlen(window_header));
+
+    for (int i = 0; i < MAX_CANVAS; i++)
+    {
+        if (canvas_info.canvas[i]._valid)
+        {
+            len = snprintf(buf, sizeof(buf),
+                           "  [%d] %" PRId64 "x%" PRId64 " at (%" PRId64 ",%" PRId64 ") display=%d\n",
+                           i,
+                           canvas_info.canvas[i].width, canvas_info.canvas[i].height,
+                           canvas_info.canvas[i].x, canvas_info.canvas[i].y,
+                           canvas_info.canvas[i].display);
+            write(STDERR_FILENO, buf, len);
+        }
+    }
+
+#if !defined(_WIN32)
+    // Backtrace
+    const char *bt_header = "\nBacktrace:\n";
+    write(STDERR_FILENO, bt_header, strlen(bt_header));
+
+    void *bt_buffer[64];
+    int bt_size = backtrace(bt_buffer, 64);
+    backtrace_symbols_fd(bt_buffer, bt_size, STDERR_FILENO);
+#endif
+}
+
+static void _canvas_crash_handler(int sig)
+{
+    const char *sig_name = "UNKNOWN";
+    switch (sig)
+    {
+    case SIGSEGV:
+        sig_name = "SIGSEGV (Segmentation Fault)";
+        break;
+    case SIGABRT:
+        sig_name = "SIGABRT (Abort)";
+        break;
+    case SIGFPE:
+        sig_name = "SIGFPE (Floating Point Exception)";
+        break;
+    case SIGILL:
+        sig_name = "SIGILL (Illegal Instruction)";
+        break;
+    case SIGBUS:
+        sig_name = "SIGBUS (Bus Error)";
+        break;
+    default:
+        break;
+    }
+
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf), "\n!!! CRASH: %s (signal %d) !!!\n", sig_name, sig);
+    write(STDERR_FILENO, buf, len);
+
+    _canvas_crash_dump();
+
+    // Re-raise signal to get default behavior (core dump, etc)
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void _canvas_install_crash_handler(void)
+{
+    CANVAS_DBG("Installing crash handlers for SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS\n");
+
+    struct sigaction sa;
+    sa.sa_handler = _canvas_crash_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND; // Only handle once, then restore default
+
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+}
+
 #else // CANVAS_VALIDATION < 5
 
 #define CANVAS_PARANOID_CHECK() ((void)0)
 static inline void _canvas_init_canaries(void) {}
+static inline void _canvas_install_crash_handler(void) {}
 
 #endif // CANVAS_VALIDATION >= 5
 
@@ -9253,6 +9453,8 @@ int canvas_startup()
 
     // Initialize paranoid mode canaries first (before any other initialization)
     _canvas_init_canaries();
+    // Install crash handler for post-mortem diagnostics
+    _canvas_install_crash_handler();
     CANVAS_PARANOID_OP("canvas_startup");
 
     canvas_info.auto_exit = true;

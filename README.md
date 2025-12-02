@@ -49,7 +49,7 @@ This aims to provide all the basics to kickstart engines, frameworks, or other t
  *   2 = Errors + warnings
  *   3 = Errors + warnings + info
  *   4 = Errors + warnings + info + verbose + asserts
- *   5 = All messages including debug/trace + paranoid asserts
+ *   5 = All messages including debug/trace + paranoid asserts + paranoid crash handler
  *   6 = Full function entry / exit trace
 ```
 
