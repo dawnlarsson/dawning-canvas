@@ -247,8 +247,8 @@ CANVAS_EXTERN_C_BEGIN
 
 #define CANVAS_ENTER_FUNC() CANVAS_TRACE("ENTER\n")
 
-// Exit tracing at level 5+ (always defined inline based on level)
-#if CANVAS_VALIDATION >= 5
+// Exit tracing at level 6+ (matches CANVAS_TRACE level)
+#if CANVAS_VALIDATION >= 6
 #define CANVAS_EXIT_FUNC()                                                                  \
     do                                                                                      \
     {                                                                                       \
@@ -297,13 +297,21 @@ static void _canvas_dump_state(void);
 #define canvas_pointer_print(id) _canvas_pointer_print_impl(id, __FILE__, __LINE__)
 
 #if CANVAS_VALIDATION >= 5
+#if defined(__linux__)
+#include <time.h>
+#elif defined(__APPLE__)
+#include <mach/mach_time.h>
+#endif
 
-// Magic canary values to detect memory corruption
+// Magic canary values to detect memory corruption (like KASAN)
 #define CANVAS_CANARY_HEAD 0xDEADCAFEBEEFBABEULL
 #define CANVAS_CANARY_TAIL 0xFEEDFACEC0FFEE42ULL
-#define CANVAS_POISON_BYTE 0xCD
-#define CANVAS_FREED_BYTE 0xDD
-#define CANVAS_UNINIT_BYTE 0xCC
+#define CANVAS_POISON_BYTE 0xCD         // Uninitialized memory pattern
+#define CANVAS_FREED_BYTE 0xDD          // Freed memory pattern
+#define CANVAS_UNINIT_BYTE 0xCC         // Stack uninitialized pattern
+#define CANVAS_REDZONE_BYTE 0xBB        // Red zone pattern (like KASAN)
+#define CANVAS_MAGIC_ALIVE 0xA11VEEEULL // Object is valid
+#define CANVAS_MAGIC_DEAD 0xDEAD0000ULL // Object was destroyed
 
 // Operation sequence tracking
 static uint64_t _canvas_op_sequence = 0;
@@ -311,25 +319,381 @@ static const char *_canvas_last_op = "none";
 static const char *_canvas_last_op_file = "";
 static int _canvas_last_op_line = 0;
 
+#ifndef CANVAS_BREADCRUMB_SIZE
+#define CANVAS_BREADCRUMB_SIZE 64
+#endif
+
+typedef struct
+{
+    const char *op;
+    const char *file;
+    int line;
+    uint64_t seq;
+    uint64_t timestamp_ns;
+} _canvas_breadcrumb;
+
+static _canvas_breadcrumb _canvas_breadcrumbs[CANVAS_BREADCRUMB_SIZE];
+static int _canvas_breadcrumb_idx = 0;
+
+static inline uint64_t _canvas_get_timestamp_ns(void)
+{
+#if defined(__linux__)
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#elif defined(__APPLE__)
+    return mach_absolute_time();
+#else
+    return 0;
+#endif
+}
+
+static inline void _canvas_add_breadcrumb(const char *op, const char *file, int line, uint64_t seq)
+{
+    int idx = _canvas_breadcrumb_idx % CANVAS_BREADCRUMB_SIZE;
+    _canvas_breadcrumbs[idx].op = op;
+    _canvas_breadcrumbs[idx].file = file;
+    _canvas_breadcrumbs[idx].line = line;
+    _canvas_breadcrumbs[idx].seq = seq;
+    _canvas_breadcrumbs[idx].timestamp_ns = _canvas_get_timestamp_ns();
+    _canvas_breadcrumb_idx++;
+}
+
+static inline void _canvas_dump_breadcrumbs(void)
+{
+    fprintf(stderr, "\n=== BREADCRUMB TRAIL (last %d ops) ===\n", CANVAS_BREADCRUMB_SIZE);
+    int start = (_canvas_breadcrumb_idx > CANVAS_BREADCRUMB_SIZE)
+                    ? _canvas_breadcrumb_idx - CANVAS_BREADCRUMB_SIZE
+                    : 0;
+    int count = (_canvas_breadcrumb_idx > CANVAS_BREADCRUMB_SIZE)
+                    ? CANVAS_BREADCRUMB_SIZE
+                    : _canvas_breadcrumb_idx;
+    for (int i = 0; i < count; i++)
+    {
+        int idx = (start + i) % CANVAS_BREADCRUMB_SIZE;
+        _canvas_breadcrumb *b = &_canvas_breadcrumbs[idx];
+        fprintf(stderr, "  [%llu] %s @ %s:%d\n",
+                (unsigned long long)b->seq, b->op, b->file, b->line);
+    }
+    fprintf(stderr, "=====================================\n");
+}
+
+typedef enum
+{
+    CANVAS_STATE_UNINITIALIZED = 0,
+    CANVAS_STATE_STARTUP_BEGIN,
+    CANVAS_STATE_STARTUP_DONE,
+    CANVAS_STATE_RUNNING,
+    CANVAS_STATE_IN_CALLBACK,
+    CANVAS_STATE_SHUTDOWN_BEGIN,
+    CANVAS_STATE_SHUTDOWN_DONE,
+    CANVAS_STATE_DESTROYED
+} _canvas_api_state;
+
+static _canvas_api_state _canvas_current_state = CANVAS_STATE_UNINITIALIZED;
+static int _canvas_callback_depth = 0; // Detect recursive callbacks
+static int _canvas_max_callback_depth = 0;
+
+static const char *_canvas_state_name(_canvas_api_state s)
+{
+    switch (s)
+    {
+    case CANVAS_STATE_UNINITIALIZED:
+        return "UNINITIALIZED";
+    case CANVAS_STATE_STARTUP_BEGIN:
+        return "STARTUP_BEGIN";
+    case CANVAS_STATE_STARTUP_DONE:
+        return "STARTUP_DONE";
+    case CANVAS_STATE_RUNNING:
+        return "RUNNING";
+    case CANVAS_STATE_IN_CALLBACK:
+        return "IN_CALLBACK";
+    case CANVAS_STATE_SHUTDOWN_BEGIN:
+        return "SHUTDOWN_BEGIN";
+    case CANVAS_STATE_SHUTDOWN_DONE:
+        return "SHUTDOWN_DONE";
+    case CANVAS_STATE_DESTROYED:
+        return "DESTROYED";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+#define CANVAS_ASSERT_STATE(expected)                                                            \
+    do                                                                                           \
+    {                                                                                            \
+        if (_canvas_current_state != (expected))                                                 \
+        {                                                                                        \
+            CANVAS_ERR("STATE VIOLATION: expected %s, got %s\n",                                 \
+                       _canvas_state_name(expected), _canvas_state_name(_canvas_current_state)); \
+            CANVAS_ERR("Last op #%llu: %s at %s:%d\n",                                           \
+                       (unsigned long long)_canvas_op_sequence,                                  \
+                       _canvas_last_op, _canvas_last_op_file, _canvas_last_op_line);             \
+            _canvas_dump_breadcrumbs();                                                          \
+            assert(0 && "API state violation");                                                  \
+        }                                                                                        \
+    } while (0)
+
+#define CANVAS_ASSERT_STATE_GE(minimum)                                                         \
+    do                                                                                          \
+    {                                                                                           \
+        if (_canvas_current_state < (minimum))                                                  \
+        {                                                                                       \
+            CANVAS_ERR("STATE VIOLATION: need at least %s, got %s\n",                           \
+                       _canvas_state_name(minimum), _canvas_state_name(_canvas_current_state)); \
+            _canvas_dump_breadcrumbs();                                                         \
+            assert(0 && "API state violation - not initialized enough");                        \
+        }                                                                                       \
+    } while (0)
+
+#define CANVAS_ENTER_CALLBACK()                                                      \
+    do                                                                               \
+    {                                                                                \
+        _canvas_callback_depth++;                                                    \
+        if (_canvas_callback_depth > _canvas_max_callback_depth)                     \
+            _canvas_max_callback_depth = _canvas_callback_depth;                     \
+        if (_canvas_callback_depth > 10)                                             \
+        {                                                                            \
+            CANVAS_ERR("CALLBACK RECURSION: depth=%d (likely infinite recursion)\n", \
+                       _canvas_callback_depth);                                      \
+            _canvas_dump_breadcrumbs();                                              \
+            assert(0 && "excessive callback recursion");                             \
+        }                                                                            \
+    } while (0)
+
+#define CANVAS_EXIT_CALLBACK()                                       \
+    do                                                               \
+    {                                                                \
+        _canvas_callback_depth--;                                    \
+        if (_canvas_callback_depth < 0)                              \
+        {                                                            \
+            CANVAS_ERR("CALLBACK UNDERFLOW: depth went negative\n"); \
+            assert(0 && "callback depth underflow");                 \
+        }                                                            \
+    } while (0)
+
+static void *_canvas_stack_base = NULL;
+static size_t _canvas_stack_high_water = 0;
+
+#define CANVAS_STACK_CHECK()                                                           \
+    do                                                                                 \
+    {                                                                                  \
+        char _stack_probe;                                                             \
+        if (_canvas_stack_base == NULL)                                                \
+        {                                                                              \
+            _canvas_stack_base = &_stack_probe;                                        \
+        }                                                                              \
+        else                                                                           \
+        {                                                                              \
+            size_t depth = (_canvas_stack_base > (void *)&_stack_probe)                \
+                               ? (size_t)((char *)_canvas_stack_base - &_stack_probe)  \
+                               : (size_t)(&_stack_probe - (char *)_canvas_stack_base); \
+            if (depth > _canvas_stack_high_water)                                      \
+            {                                                                          \
+                _canvas_stack_high_water = depth;                                      \
+                if (depth > 1024 * 1024)                                               \
+                {                                                                      \
+                    CANVAS_WARN("STACK WARNING: depth=%zu bytes (>1MB)\n", depth);     \
+                }                                                                      \
+            }                                                                          \
+            if (depth > 8 * 1024 * 1024)                                               \
+            {                                                                          \
+                CANVAS_ERR("STACK OVERFLOW IMMINENT: depth=%zu bytes\n", depth);       \
+                _canvas_dump_breadcrumbs();                                            \
+                assert(0 && "stack too deep");                                         \
+            }                                                                          \
+        }                                                                              \
+    } while (0)
+
+typedef struct
+{
+    uint64_t magic;       // CANVAS_MAGIC_ALIVE or CANVAS_MAGIC_DEAD
+    uint32_t refcount;    // Reference count
+    uint32_t create_seq;  // Operation sequence when created
+    uint32_t destroy_seq; // Operation sequence when destroyed (or 0)
+    const char *create_file;
+    int create_line;
+} _canvas_object_tracker;
+
+#define CANVAS_OBJECT_INIT(tracker)                            \
+    do                                                         \
+    {                                                          \
+        (tracker)->magic = CANVAS_MAGIC_ALIVE;                 \
+        (tracker)->refcount = 1;                               \
+        (tracker)->create_seq = (uint32_t)_canvas_op_sequence; \
+        (tracker)->destroy_seq = 0;                            \
+        (tracker)->create_file = __FILE__;                     \
+        (tracker)->create_line = __LINE__;                     \
+    } while (0)
+
+#define CANVAS_OBJECT_CHECK(tracker, name)                                                \
+    do                                                                                    \
+    {                                                                                     \
+        if ((tracker)->magic == CANVAS_MAGIC_DEAD)                                        \
+        {                                                                                 \
+            CANVAS_ERR("USE AFTER DESTROY: %s (created at %s:%d, destroyed at op #%u)\n", \
+                       name, (tracker)->create_file, (tracker)->create_line,              \
+                       (tracker)->destroy_seq);                                           \
+            _canvas_dump_breadcrumbs();                                                   \
+            assert(0 && "use after destroy");                                             \
+        }                                                                                 \
+        if ((tracker)->magic != CANVAS_MAGIC_ALIVE)                                       \
+        {                                                                                 \
+            CANVAS_ERR("CORRUPTED OBJECT: %s magic=0x%llx (expected 0x%llx)\n",           \
+                       name, (unsigned long long)(tracker)->magic,                        \
+                       (unsigned long long)CANVAS_MAGIC_ALIVE);                           \
+            _canvas_dump_breadcrumbs();                                                   \
+            assert(0 && "object magic corrupted");                                        \
+        }                                                                                 \
+    } while (0)
+
+#define CANVAS_OBJECT_DESTROY(tracker)                          \
+    do                                                          \
+    {                                                           \
+        (tracker)->magic = CANVAS_MAGIC_DEAD;                   \
+        (tracker)->destroy_seq = (uint32_t)_canvas_op_sequence; \
+        (tracker)->refcount = 0;                                \
+    } while (0)
+
+static uint64_t _canvas_callback_start_ns = 0;
+#ifndef CANVAS_CALLBACK_TIMEOUT_MS
+#define CANVAS_CALLBACK_TIMEOUT_MS 1000 // 1 second default
+#endif
+
+#define CANVAS_WATCHDOG_START() \
+    _canvas_callback_start_ns = _canvas_get_timestamp_ns()
+
+#define CANVAS_WATCHDOG_CHECK()                                                                   \
+    do                                                                                            \
+    {                                                                                             \
+        if (_canvas_callback_start_ns > 0)                                                        \
+        {                                                                                         \
+            uint64_t elapsed = _canvas_get_timestamp_ns() - _canvas_callback_start_ns;            \
+            uint64_t timeout_ns = (uint64_t)CANVAS_CALLBACK_TIMEOUT_MS * 1000000ULL;              \
+            if (elapsed > timeout_ns)                                                             \
+            {                                                                                     \
+                CANVAS_WARN("WATCHDOG: callback running for %llu ms (timeout=%d ms)\n",           \
+                            (unsigned long long)(elapsed / 1000000), CANVAS_CALLBACK_TIMEOUT_MS); \
+            }                                                                                     \
+        }                                                                                         \
+    } while (0)
+
+typedef struct
+{
+    size_t total_allocations;
+    size_t total_frees;
+    size_t current_bytes;
+    size_t peak_bytes;
+    size_t window_count_peak;
+    size_t pointer_count_peak;
+} _canvas_memory_stats;
+
+static _canvas_memory_stats _canvas_mem_stats = {0};
+
+#define CANVAS_MEM_ALLOC(size)                                              \
+    do                                                                      \
+    {                                                                       \
+        _canvas_mem_stats.total_allocations++;                              \
+        _canvas_mem_stats.current_bytes += (size);                          \
+        if (_canvas_mem_stats.current_bytes > _canvas_mem_stats.peak_bytes) \
+            _canvas_mem_stats.peak_bytes = _canvas_mem_stats.current_bytes; \
+    } while (0)
+
+#define CANVAS_MEM_FREE(size)                          \
+    do                                                 \
+    {                                                  \
+        _canvas_mem_stats.total_frees++;               \
+        if (_canvas_mem_stats.current_bytes >= (size)) \
+            _canvas_mem_stats.current_bytes -= (size); \
+    } while (0)
+
+static inline void _canvas_dump_memory_stats(void)
+{
+    fprintf(stderr, "\n=== MEMORY STATISTICS ===\n");
+    fprintf(stderr, "  Allocations: %zu\n", _canvas_mem_stats.total_allocations);
+    fprintf(stderr, "  Frees: %zu\n", _canvas_mem_stats.total_frees);
+    fprintf(stderr, "  Leak count: %zu\n",
+            _canvas_mem_stats.total_allocations - _canvas_mem_stats.total_frees);
+    fprintf(stderr, "  Current bytes: %zu\n", _canvas_mem_stats.current_bytes);
+    fprintf(stderr, "  Peak bytes: %zu\n", _canvas_mem_stats.peak_bytes);
+    fprintf(stderr, "  Peak windows: %zu\n", _canvas_mem_stats.window_count_peak);
+    fprintf(stderr, "  Peak pointers: %zu\n", _canvas_mem_stats.pointer_count_peak);
+    fprintf(stderr, "  Stack high water: %zu bytes\n", _canvas_stack_high_water);
+    fprintf(stderr, "  Max callback depth: %d\n", _canvas_max_callback_depth);
+    fprintf(stderr, "=========================\n");
+}
+
+static int _canvas_lock_held = 0; // Bitmask of held "locks" (logical sections)
+#define CANVAS_LOCK_EVENT_LOOP 1
+#define CANVAS_LOCK_RENDER 2
+#define CANVAS_LOCK_CALLBACK 4
+
+#define CANVAS_LOCK_ACQUIRE(lock)                                                               \
+    do                                                                                          \
+    {                                                                                           \
+        if (_canvas_lock_held & (lock))                                                         \
+        {                                                                                       \
+            CANVAS_ERR("DEADLOCK: attempting to acquire lock 0x%x while already held\n", lock); \
+            _canvas_dump_breadcrumbs();                                                         \
+            assert(0 && "deadlock detected");                                                   \
+        }                                                                                       \
+        _canvas_lock_held |= (lock);                                                            \
+    } while (0)
+
+#define CANVAS_LOCK_RELEASE(lock)                                                   \
+    do                                                                              \
+    {                                                                               \
+        if (!(_canvas_lock_held & (lock)))                                          \
+        {                                                                           \
+            CANVAS_ERR("LOCK RELEASE ERROR: releasing lock 0x%x not held\n", lock); \
+            assert(0 && "releasing unheld lock");                                   \
+        }                                                                           \
+        _canvas_lock_held &= ~(lock);                                               \
+    } while (0)
+
+#define CANVAS_REDZONE_SIZE 16
+
+#define CANVAS_CHECK_REDZONE(ptr, size, name)                                              \
+    do                                                                                     \
+    {                                                                                      \
+        unsigned char *_p = (unsigned char *)(ptr);                                        \
+        for (int _i = 0; _i < CANVAS_REDZONE_SIZE; _i++)                                   \
+        {                                                                                  \
+            if (_p[-(CANVAS_REDZONE_SIZE - _i)] != CANVAS_REDZONE_BYTE)                    \
+            {                                                                              \
+                CANVAS_ERR("BUFFER UNDERFLOW: %s has corrupted leading red zone\n", name); \
+                assert(0 && "buffer underflow detected");                                  \
+            }                                                                              \
+            if (_p[(size) + _i] != CANVAS_REDZONE_BYTE)                                    \
+            {                                                                              \
+                CANVAS_ERR("BUFFER OVERFLOW: %s has corrupted trailing red zone at +%d\n", \
+                           name, _i);                                                      \
+                assert(0 && "buffer overflow detected");                                   \
+            }                                                                              \
+        }                                                                                  \
+    } while (0)
+
 // Auto-validation frequency (validate every N operations)
 #ifndef CANVAS_PARANOID_VALIDATE_FREQ
 #define CANVAS_PARANOID_VALIDATE_FREQ 100
 #endif
 
 // Track operation and auto-validate periodically
-#define CANVAS_PARANOID_OP(name)                                                                  \
-    do                                                                                            \
-    {                                                                                             \
-        _canvas_op_sequence++;                                                                    \
-        _canvas_last_op = name;                                                                   \
-        _canvas_last_op_file = __FILE__;                                                          \
-        _canvas_last_op_line = __LINE__;                                                          \
-        CANVAS_DBG("OP #%llu: %s\n", (unsigned long long)_canvas_op_sequence, name);              \
-        if ((_canvas_op_sequence % CANVAS_PARANOID_VALIDATE_FREQ) == 0)                           \
-        {                                                                                         \
-            CANVAS_DBG("Auto-validation at op #%llu\n", (unsigned long long)_canvas_op_sequence); \
-            _canvas_paranoid_validate_all();                                                      \
-        }                                                                                         \
+#define CANVAS_PARANOID_OP(name)                                                                    \
+    do                                                                                              \
+    {                                                                                               \
+        _canvas_op_sequence++;                                                                      \
+        _canvas_last_op = name;                                                                     \
+        _canvas_last_op_file = __FILE__;                                                            \
+        _canvas_last_op_line = __LINE__;                                                            \
+        _canvas_add_breadcrumb(name, __FILE__, __LINE__, _canvas_op_sequence);                      \
+        CANVAS_STACK_CHECK();                                                                       \
+        CANVAS_TRACE("OP #%llu: %s\n", (unsigned long long)_canvas_op_sequence, name);              \
+        if ((_canvas_op_sequence % CANVAS_PARANOID_VALIDATE_FREQ) == 0)                             \
+        {                                                                                           \
+            CANVAS_TRACE("Auto-validation at op #%llu\n", (unsigned long long)_canvas_op_sequence); \
+            _canvas_paranoid_validate_all();                                                        \
+        }                                                                                           \
     } while (0)
 
 // Poison a memory region
@@ -461,6 +825,21 @@ static void _canvas_check_canaries(void);
 #define CANVAS_ASSERT_ALIGNED(ptr, align) ((void)0)
 #define CANVAS_ASSERT_NOT_DOUBLE_FREE(ptr) ((void)0)
 #define CANVAS_PARANOID_CHECK() ((void)0)
+#define CANVAS_ASSERT_STATE(expected) ((void)0)
+#define CANVAS_ASSERT_STATE_GE(minimum) ((void)0)
+#define CANVAS_ENTER_CALLBACK() ((void)0)
+#define CANVAS_EXIT_CALLBACK() ((void)0)
+#define CANVAS_STACK_CHECK() ((void)0)
+#define CANVAS_OBJECT_INIT(tracker) ((void)0)
+#define CANVAS_OBJECT_CHECK(tracker, name) ((void)0)
+#define CANVAS_OBJECT_DESTROY(tracker) ((void)0)
+#define CANVAS_WATCHDOG_START() ((void)0)
+#define CANVAS_WATCHDOG_CHECK() ((void)0)
+#define CANVAS_MEM_ALLOC(size) ((void)0)
+#define CANVAS_MEM_FREE(size) ((void)0)
+#define CANVAS_LOCK_ACQUIRE(lock) ((void)0)
+#define CANVAS_LOCK_RELEASE(lock) ((void)0)
+#define CANVAS_CHECK_REDZONE(ptr, size, name) ((void)0)
 
 #endif // CANVAS_VALIDATION >= 5
 
@@ -502,8 +881,25 @@ static void _canvas_check_canaries(void);
 #define CANVAS_ASSERT_ALIGNED(ptr, align) ((void)0)
 #define CANVAS_ASSERT_NOT_DOUBLE_FREE(ptr) ((void)0)
 #define CANVAS_PARANOID_CHECK() ((void)0)
+#define CANVAS_ASSERT_STATE(expected) ((void)0)
+#define CANVAS_ASSERT_STATE_GE(minimum) ((void)0)
+#define CANVAS_ENTER_CALLBACK() ((void)0)
+#define CANVAS_EXIT_CALLBACK() ((void)0)
+#define CANVAS_STACK_CHECK() ((void)0)
+#define CANVAS_OBJECT_INIT(tracker) ((void)0)
+#define CANVAS_OBJECT_CHECK(tracker, name) ((void)0)
+#define CANVAS_OBJECT_DESTROY(tracker) ((void)0)
+#define CANVAS_WATCHDOG_START() ((void)0)
+#define CANVAS_WATCHDOG_CHECK() ((void)0)
+#define CANVAS_MEM_ALLOC(size) ((void)0)
+#define CANVAS_MEM_FREE(size) ((void)0)
+#define CANVAS_LOCK_ACQUIRE(lock) ((void)0)
+#define CANVAS_LOCK_RELEASE(lock) ((void)0)
+#define CANVAS_CHECK_REDZONE(ptr, size, name) ((void)0)
 static inline void _canvas_init_canaries(void) {}
 static inline void _canvas_install_crash_handler(void) {}
+static inline void _canvas_dump_breadcrumbs(void) {}
+static inline void _canvas_dump_memory_stats(void) {}
 
 #endif
 
@@ -1285,8 +1681,8 @@ static void _canvas_validate_all_windows(void)
             CANVAS_ASSERT(canvas_info.canvas[i].width >= 0);
             CANVAS_ASSERT(canvas_info.canvas[i].height >= 0);
             CANVAS_ASSERT_RANGE(canvas_info.canvas[i].cursor, CANVAS_CURSOR_HIDDEN, CANVAS_CURSOR_WAIT);
-            CANVAS_DBG("Window %d: valid, size=%" PRId64 "x%" PRId64 ", display=%d\n",
-                       i, canvas_info.canvas[i].width, canvas_info.canvas[i].height, canvas_info.canvas[i].display);
+            CANVAS_TRACE("Window %d: valid, size=%" PRId64 "x%" PRId64 ", display=%d\n",
+                         i, canvas_info.canvas[i].width, canvas_info.canvas[i].height, canvas_info.canvas[i].display);
         }
     }
 }
@@ -1300,9 +1696,9 @@ static void _canvas_validate_all_displays(void)
         CANVAS_ASSERT(canvas_info.display[i].width > 0);
         CANVAS_ASSERT(canvas_info.display[i].height > 0);
         CANVAS_ASSERT(canvas_info.display[i].refresh_rate > 0);
-        CANVAS_DBG("Display %d: %" PRId64 "x%" PRId64 " @ %dHz, primary=%d\n",
-                   i, canvas_info.display[i].width, canvas_info.display[i].height,
-                   canvas_info.display[i].refresh_rate, canvas_info.display[i].primary);
+        CANVAS_TRACE("Display %d: %" PRId64 "x%" PRId64 " @ %dHz, primary=%d\n",
+                     i, canvas_info.display[i].width, canvas_info.display[i].height,
+                     canvas_info.display[i].refresh_rate, canvas_info.display[i].primary);
     }
 }
 
@@ -1526,8 +1922,8 @@ static void _canvas_validate_window_sanity(int id)
 
 static void _canvas_paranoid_validate_all(void)
 {
-    CANVAS_DBG("=== PARANOID VALIDATION START (op #%llu) ===\n",
-               (unsigned long long)_canvas_op_sequence);
+    CANVAS_TRACE("=== PARANOID VALIDATION START (op #%llu) ===\n",
+                 (unsigned long long)_canvas_op_sequence);
 
     // Check all canaries first
     _canvas_check_canaries();
@@ -1560,7 +1956,7 @@ static void _canvas_paranoid_validate_all(void)
     // Update tracking
     canvas_info._last_validated_op = _canvas_op_sequence;
 
-    CANVAS_DBG("=== PARANOID VALIDATION COMPLETE ===\n");
+    CANVAS_TRACE("=== PARANOID VALIDATION COMPLETE ===\n");
 }
 
 // Call this at critical points to ensure everything is valid
@@ -1701,6 +2097,50 @@ static void _canvas_crash_dump(void)
                            canvas_info.canvas[i].display);
             write(STDERR_FILENO, buf, len);
         }
+    }
+
+    // API State
+    len = snprintf(buf, sizeof(buf),
+                   "\nAPI State: %s\n"
+                   "Callback depth: %d (max seen: %d)\n"
+                   "Locks held: 0x%x\n",
+                   _canvas_state_name(_canvas_current_state),
+                   _canvas_callback_depth, _canvas_max_callback_depth,
+                   _canvas_lock_held);
+    write(STDERR_FILENO, buf, len);
+
+    // Memory stats
+    len = snprintf(buf, sizeof(buf),
+                   "\nMemory Stats:\n"
+                   "  Allocations: %zu, Frees: %zu\n"
+                   "  Current: %zu bytes, Peak: %zu bytes\n"
+                   "  Stack high water: %zu bytes\n",
+                   _canvas_mem_stats.total_allocations, _canvas_mem_stats.total_frees,
+                   _canvas_mem_stats.current_bytes, _canvas_mem_stats.peak_bytes,
+                   _canvas_stack_high_water);
+    write(STDERR_FILENO, buf, len);
+
+    // Breadcrumb trail (last N operations)
+    const char *bc_header = "\nBreadcrumb Trail (recent ops):\n";
+    write(STDERR_FILENO, bc_header, strlen(bc_header));
+
+    int start = (_canvas_breadcrumb_idx > CANVAS_BREADCRUMB_SIZE)
+                    ? _canvas_breadcrumb_idx - CANVAS_BREADCRUMB_SIZE
+                    : 0;
+    int count = (_canvas_breadcrumb_idx > CANVAS_BREADCRUMB_SIZE)
+                    ? CANVAS_BREADCRUMB_SIZE
+                    : _canvas_breadcrumb_idx;
+    // Only show last 16 in crash dump to avoid overwhelming output
+    int show_count = (count > 16) ? 16 : count;
+    int show_start = start + count - show_count;
+
+    for (int i = 0; i < show_count; i++)
+    {
+        int idx = (show_start + i) % CANVAS_BREADCRUMB_SIZE;
+        _canvas_breadcrumb *b = &_canvas_breadcrumbs[idx];
+        len = snprintf(buf, sizeof(buf), "  [%llu] %s @ %s:%d\n",
+                       (unsigned long long)b->seq, b->op, b->file, b->line);
+        write(STDERR_FILENO, buf, len);
     }
 
 #if !defined(_WIN32)
@@ -3736,7 +4176,7 @@ static int vk_create_swapchain(int window_id)
         CANVAS_ASSERT_NOT_NULL(vk_win->swapchain_image_views[i]);
     }
 
-    CANVAS_VERBOSE("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
+    CANVAS_TRACE("swapchain created: %ux%u, %u images\n", extent.width, extent.height, vk_win->swapchain_image_count);
 
     CANVAS_RETURN(CANVAS_OK);
 }
@@ -9455,6 +9895,10 @@ int canvas_startup()
     _canvas_init_canaries();
     // Install crash handler for post-mortem diagnostics
     _canvas_install_crash_handler();
+
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_STARTUP_BEGIN;
+#endif
     CANVAS_PARANOID_OP("canvas_startup");
 
     canvas_info.auto_exit = true;
@@ -9492,6 +9936,9 @@ int canvas_startup()
 
     canvas_info.init = true;
 
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_STARTUP_DONE;
+#endif
     CANVAS_PARANOID_CHECK();
     CANVAS_RETURN(CANVAS_OK);
 }
@@ -9523,13 +9970,34 @@ void canvas_main_loop()
             continue;
         }
 
+        // Call user callback with tracking
         if (canvas_info.canvas[i].update)
         {
+#if CANVAS_VALIDATION >= 5
+            _canvas_current_state = CANVAS_STATE_IN_CALLBACK;
+            CANVAS_ENTER_CALLBACK();
+            CANVAS_WATCHDOG_START();
+#endif
             canvas_info.canvas[i].update(i);
+#if CANVAS_VALIDATION >= 5
+            CANVAS_WATCHDOG_CHECK();
+            CANVAS_EXIT_CALLBACK();
+            _canvas_current_state = CANVAS_STATE_RUNNING;
+#endif
         }
         else if (canvas_info.update_callback)
         {
+#if CANVAS_VALIDATION >= 5
+            _canvas_current_state = CANVAS_STATE_IN_CALLBACK;
+            CANVAS_ENTER_CALLBACK();
+            CANVAS_WATCHDOG_START();
+#endif
             canvas_info.update_callback(i);
+#if CANVAS_VALIDATION >= 5
+            CANVAS_WATCHDOG_CHECK();
+            CANVAS_EXIT_CALLBACK();
+            _canvas_current_state = CANVAS_STATE_RUNNING;
+#endif
         }
     }
 
@@ -9564,9 +10032,18 @@ int canvas_exit()
 {
     CANVAS_ENTER_FUNC();
     CANVAS_PARANOID_OP("canvas_exit");
+    CANVAS_ASSERT_STATE_GE(CANVAS_STATE_STARTUP_DONE);
     CANVAS_INFO("quitting canvas");
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_SHUTDOWN_BEGIN;
+#endif
     canvas_info.quit = 1;
     int result = _canvas_exit();
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_DESTROYED;
+    // Dump final stats
+    _canvas_dump_memory_stats();
+#endif
     CANVAS_RETURN(result);
 }
 
@@ -9581,15 +10058,32 @@ int canvas_run(canvas_update_callback default_callback)
         CANVAS_RETURN_ERR(CANVAS_FAIL, "refusing run, initialization failed.");
     }
 
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_RUNNING;
+#endif
+
     canvas_info.update_callback = default_callback;
 
     while (!canvas_info.quit)
     {
         canvas_info.os_timed = false;
+        CANVAS_LOCK_ACQUIRE(CANVAS_LOCK_EVENT_LOOP);
         canvas_main_loop();
+        CANVAS_LOCK_RELEASE(CANVAS_LOCK_EVENT_LOOP);
     }
 
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_SHUTDOWN_BEGIN;
+#endif
+
     int result = canvas_exit();
+
+#if CANVAS_VALIDATION >= 5
+    _canvas_current_state = CANVAS_STATE_SHUTDOWN_DONE;
+    // Dump stats at shutdown
+    _canvas_dump_memory_stats();
+#endif
+
     CANVAS_RETURN(result);
 }
 
@@ -9603,8 +10097,8 @@ int canvas_set(int window_id, int display, int64_t x, int64_t y, int64_t width, 
 {
     CANVAS_ENTER_FUNC();
     CANVAS_PARANOID_OP("canvas_set");
+    CANVAS_ASSERT_STATE_GE(CANVAS_STATE_STARTUP_DONE);
     CANVAS_VALID(window_id);
-
 #if CANVAS_VALIDATION >= 5
     // Validate window canaries
     CANVAS_ASSERT(canvas_info.canvas[window_id]._canary_head == CANVAS_CANARY_HEAD);
@@ -9749,6 +10243,7 @@ int canvas_close(int window_id)
 {
     CANVAS_ENTER_FUNC();
     CANVAS_PARANOID_OP("canvas_close");
+    CANVAS_ASSERT_STATE_GE(CANVAS_STATE_STARTUP_DONE);
     CANVAS_BOUNDS(window_id);
 
     if (!canvas_info.canvas[window_id]._valid)
